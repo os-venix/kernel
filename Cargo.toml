@@ -1,0 +1,15 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2021"
+authors = ["Connor Wood"]
+
+[dependencies]
+bootloader_api = "0.11"
+printk = "0.3"
+log = "0.4"
+
+[dependencies.conquer-once]
+version = "0.4.0"
+features = []
+default-features = false
