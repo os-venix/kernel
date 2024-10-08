@@ -50,6 +50,8 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
     memory::init(boot_info.recursive_index, &boot_info.memory_regions);
     allocator::init();
 
+    memory::init_full_mode();
+
     let mut vec = Vec::new();
     for i in 0 .. 500 {
 	vec.push(i);
