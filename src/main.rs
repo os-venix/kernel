@@ -2,6 +2,8 @@
 #![no_main]
 #![feature(abi_x86_interrupt)]
 
+//extern crate alloc;
+
 use bootloader_api;
 use core::panic::PanicInfo;
 use conquer_once::spin::OnceCell;
@@ -9,10 +11,12 @@ use printk;
 
 mod interrupts;
 mod gdt;
+mod memory;
 
 const CONFIG: bootloader_api::BootloaderConfig = {
     let mut config = bootloader_api::BootloaderConfig::new_default();
     config.kernel_stack_size = 100 * 1024; // 100 KiB
+    config.mappings.page_table_recursive = Some(bootloader_api::config::Mapping::Dynamic);
     config
 };
 bootloader_api::entry_point!(kernel_main, config = &CONFIG);
@@ -40,6 +44,7 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
     log::info!("Initialising CPU0...");
     gdt::init();
     interrupts::init_idt();
+    memory::init(boot_info.recursive_index, &boot_info.memory_regions);
 }
 
 fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {

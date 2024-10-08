@@ -9,6 +9,7 @@ bootloader_api = "0.11"
 printk = "0.3"
 log = "0.4"
 x86_64 = "0.15"
+spin = "0.9"
 
 [dependencies.conquer-once]
 version = "0.4.0"
