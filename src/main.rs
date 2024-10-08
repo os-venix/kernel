@@ -2,16 +2,19 @@
 #![no_main]
 #![feature(abi_x86_interrupt)]
 
-//extern crate alloc;
+extern crate alloc;
 
 use bootloader_api;
 use core::panic::PanicInfo;
 use conquer_once::spin::OnceCell;
 use printk;
 
+use alloc::vec::Vec;
+
 mod interrupts;
 mod gdt;
 mod memory;
+mod allocator;
 
 const CONFIG: bootloader_api::BootloaderConfig = {
     let mut config = bootloader_api::BootloaderConfig::new_default();
@@ -45,6 +48,14 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
     gdt::init();
     interrupts::init_idt();
     memory::init(boot_info.recursive_index, &boot_info.memory_regions);
+    allocator::init();
+
+    let mut vec = Vec::new();
+    for i in 0 .. 500 {
+	vec.push(i);
+    }
+
+    log::info!("Vec at {:p}", vec.as_slice());
 }
 
 fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
