@@ -39,6 +39,14 @@ impl VenixFrameAllocator {
 	    .map(|addr| PhysFrame::containing_address(PhysAddr::new(addr)))
     }
 
+    // Used for reporting, how much RAM is present in the system?
+    pub fn get_usable_memory(&self) -> u64 {
+	self.memory_map.iter()
+	    .filter(|r| r.kind == MemoryRegionKind::Usable)
+	    .map(|r| r.end - r.start)
+	    .sum()
+    }
+
     pub fn move_to_full_mode(&mut self) {
 	let mut free_regions: Vec<MemoryRegion> = Vec::new();
 
@@ -52,7 +60,7 @@ impl VenixFrameAllocator {
 		continue;
 	    }
 
-	    let size = (region.end - region.start) + 1;
+	    let size = region.end - region.start;
 	    let size_in_pages = size / 4096;
 
 	    if size_in_pages as usize <= self.next {
@@ -74,7 +82,7 @@ impl VenixFrameAllocator {
 unsafe impl FrameAllocator<Size4KiB> for VenixFrameAllocator {
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
 	if let Some(ref mut free_regions) = self.free_regions {
-	    if (free_regions[0].end - free_regions[0].start) + 1 == 4096 {
+	    if free_regions[0].end - free_regions[0].start == 4096 {
 		let region = free_regions.remove(0);
 		return Some(PhysFrame::containing_address(PhysAddr::new(region.start)));
 	    }

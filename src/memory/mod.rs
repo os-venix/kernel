@@ -46,6 +46,11 @@ pub fn init_full_mode() {
     frame_allocator.as_mut().expect("Attempted to access missing frame allocator").move_to_full_mode();
 }
 
+pub fn get_usable_ram() -> u64 {
+    let r = VENIX_FRAME_ALLOCATOR.read();
+    r.as_ref().expect("Attempted to read missing frame allocator").get_usable_memory()
+}
+
 pub fn allocate_by_size_kernel(size: u64) -> Result<VirtAddr, MapToError<Size4KiB>> {
     let page_range = {
 	let start = {
