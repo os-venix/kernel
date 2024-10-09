@@ -42,8 +42,16 @@ pub fn init(recursive_index: bootloader_api::info::Optional<u16>, memory_map: &'
 }
 
 pub fn init_full_mode() {
-    let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
-    frame_allocator.as_mut().expect("Attempted to access missing frame allocator").move_to_full_mode();
+    {
+	let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
+	frame_allocator.as_mut().expect("Attempted to access missing frame allocator").move_to_full_mode();
+    }
+    unsafe {
+	let r = KERNEL_PAGE_TABLE.read();
+	let level_4_table = r.as_ref().expect("Attempted to read missing Kernel page table").level_4_table();
+	let mut page_allocator = VENIX_PAGE_ALLOCATOR.write();
+	page_allocator.as_mut().expect("Attempted to access missing page allocator").move_to_full_mode(level_4_table);
+    }
 }
 
 pub fn get_usable_ram() -> u64 {

@@ -3,7 +3,7 @@ use crate::memory;
 use linked_list_allocator::LockedHeap;
 
 static KERNEL_HEAP_START: RwLock<u64> = RwLock::new(0);
-static KERNEL_HEAP_SIZE: usize = 100 * 1024; // 100 KiB
+static KERNEL_HEAP_SIZE: usize = 4 * 1024 * 1024; // Half a MiB
 
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
