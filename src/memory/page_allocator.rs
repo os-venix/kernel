@@ -6,8 +6,6 @@ use alloc::vec::Vec;
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 
 pub struct VenixPageAllocator {
-    runt_mode: bool,
-
     // Runt mode
     p4_first_completely_free: VirtAddr,
 
@@ -26,7 +24,6 @@ impl VenixPageAllocator {
 	    .expect("Could not find an appropriate p4 entry to initialise") as u64;
 
 	VenixPageAllocator {
-	    runt_mode: true,
 	    p4_first_completely_free: VirtAddr::new(first_free_p4_entry),
 	    free_regions: None,
 	}
@@ -102,19 +99,25 @@ impl VenixPageAllocator {
 		4 => uncompacted_entries.extend(
 		    (*page_table).iter()
 			.enumerate()
-			.filter(|(_, entry)| entry.flags().contains(PageTableFlags::PRESENT))
+			.filter(|(idx, entry)| entry
+				.flags()
+				.contains(PageTableFlags::PRESENT) && PageTableIndex::new(*idx as u16) != indices.0) // indices.0 will always be the recursive index
 			.flat_map(|(idx, _)| Self::gather_unused_regions_from_page(
 			    3, idx as u64 * p4_size, (indices.1, indices.2, indices.3, PageTableIndex::new(idx as u16))))),
 		3 => uncompacted_entries.extend(
 		    (*page_table).iter()
 			.enumerate()
-			.filter(|(_, entry)| entry.flags().contains(PageTableFlags::PRESENT))
+			.filter(|(idx, entry)| entry
+				.flags()
+				.contains(PageTableFlags::PRESENT) && PageTableIndex::new(*idx as u16) != indices.0) // indices.0 will always be the recursive index
 			.flat_map(|(idx, _)| Self::gather_unused_regions_from_page(
 			    2, offset_above + (idx as u64 * p3_size), (indices.1, indices.2, indices.3, PageTableIndex::new(idx as u16))))),
 		2 => uncompacted_entries.extend(
 		    (*page_table).iter()
 			.enumerate()
-			.filter(|(_, entry)| entry.flags().contains(PageTableFlags::PRESENT))
+			.filter(|(idx, entry)| entry
+				.flags()
+				.contains(PageTableFlags::PRESENT) && PageTableIndex::new(*idx as u16) != indices.0) // indices.0 will always be the recursive index
 			.flat_map(|(idx, _)| Self::gather_unused_regions_from_page(
 			    1, offset_above + (idx as u64 * p2_size), (indices.1, indices.2, indices.3, PageTableIndex::new(idx as u16))))),
 		_ => (),
@@ -161,17 +164,27 @@ impl VenixPageAllocator {
     }
 
     // Returns the first virtaddr in the range
-    pub fn get_page_range(&self, size: u64) -> VirtAddr {
+    pub fn get_page_range(&mut self, size: u64) -> VirtAddr {
 	let size_in_pages = size/4096;
 
-	if self.runt_mode {
+	if let Some(ref mut free_regions) = self.free_regions {
+	    for idx in 0 .. free_regions.len() {
+		if free_regions[idx].end - free_regions[idx].start == size {
+		    let region = free_regions.remove(idx);
+		    return VirtAddr::new(region.start);
+		} else if free_regions[idx].end - free_regions[idx].start > size {
+		    let start = free_regions[idx].start;
+		    free_regions[idx].start += start;
+		    return VirtAddr::new(start);
+		}
+	    }
+	    panic!("Kernel OOM");
+	} else {
 	    if size_in_pages > 1 << 39 {
 		panic!("Attempted to allocate more than a p4 entry in runt mode.");
 	    }
 
 	    return self.p4_first_completely_free;
-	} else {
-	    panic!("Full mode not implemented yet.");
 	}
     }
 }

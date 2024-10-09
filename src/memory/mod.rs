@@ -62,8 +62,8 @@ pub fn get_usable_ram() -> u64 {
 pub fn allocate_by_size_kernel(size: u64) -> Result<VirtAddr, MapToError<Size4KiB>> {
     let page_range = {
 	let start = {
-	    let r = VENIX_PAGE_ALLOCATOR.read();
-	    r.as_ref().expect("Attempted to read missing Kernel page allocator").get_page_range(size)
+	    let mut w = VENIX_PAGE_ALLOCATOR.write();
+	    w.as_mut().expect("Attempted to read missing Kernel page allocator").get_page_range(size)
 	};
 	let end = start + (size - 1);
 
