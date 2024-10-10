@@ -99,25 +99,19 @@ impl VenixPageAllocator {
 		4 => uncompacted_entries.extend(
 		    (*page_table).iter()
 			.enumerate()
-			.filter(|(idx, entry)| entry
-				.flags()
-				.contains(PageTableFlags::PRESENT) && PageTableIndex::new(*idx as u16) != indices.0) // indices.0 will always be the recursive index
+			.filter(|(_, entry)| entry.flags().contains(PageTableFlags::PRESENT))
 			.flat_map(|(idx, _)| Self::gather_unused_regions_from_page(
 			    3, idx as u64 * p4_size, (indices.1, indices.2, indices.3, PageTableIndex::new(idx as u16))))),
 		3 => uncompacted_entries.extend(
 		    (*page_table).iter()
 			.enumerate()
-			.filter(|(idx, entry)| entry
-				.flags()
-				.contains(PageTableFlags::PRESENT) && PageTableIndex::new(*idx as u16) != indices.0) // indices.0 will always be the recursive index
+			.filter(|(_, entry)| entry.flags().contains(PageTableFlags::PRESENT))
 			.flat_map(|(idx, _)| Self::gather_unused_regions_from_page(
 			    2, offset_above + (idx as u64 * p3_size), (indices.1, indices.2, indices.3, PageTableIndex::new(idx as u16))))),
 		2 => uncompacted_entries.extend(
 		    (*page_table).iter()
 			.enumerate()
-			.filter(|(idx, entry)| entry
-				.flags()
-				.contains(PageTableFlags::PRESENT) && PageTableIndex::new(*idx as u16) != indices.0) // indices.0 will always be the recursive index
+			.filter(|(_, entry)| entry.flags().contains(PageTableFlags::PRESENT))
 			.flat_map(|(idx, _)| Self::gather_unused_regions_from_page(
 			    1, offset_above + (idx as u64 * p2_size), (indices.1, indices.2, indices.3, PageTableIndex::new(idx as u16))))),
 		_ => (),
