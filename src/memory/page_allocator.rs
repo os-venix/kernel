@@ -81,7 +81,7 @@ impl VenixPageAllocator {
 			end: entry.end,
 			kind: MemoryRegionKind::Usable,
 		    });
-		} else if entry.end != entries[idx].start {
+		} else if entry.end != entries[idx + 1].start {
 		    compacted_entries.push(MemoryRegion {
 			start: current_start,
 			end: entry.end,

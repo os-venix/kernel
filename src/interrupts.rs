@@ -4,6 +4,7 @@ use lazy_static::lazy_static;
 use raw_cpuid::CpuId;
 
 use crate::gdt;
+use crate::sys::acpi;
 
 const IA32_APIC_BASE_MSR: u32 = 0x1B;
 const IA32_APIC_BASE_MSR_IS_BSP: u64 = 1 << 8;
@@ -33,6 +34,24 @@ pub fn init_idt() {
 }
 
 pub fn init_bsp_apic() {
+    {
+	let acpi = acpi::ACPI.get().expect("Attempted to access ACPI tables before ACPI is initialised").read();
+	let platform_info = match acpi.platform_info() {
+	    Ok(pi) => pi,
+	    Err(e) => panic!("{:#?}", e),
+	};
+
+	let interrupt_model = match platform_info.interrupt_model {
+	    acpi::InterruptModel::Unknown => panic!("ACPI reports no APIC presence. CPU not supported."),
+	    acpi::InterruptModel::Apic(a) => a,
+	    _ => panic!("Unrecognised interrupt model."),
+	};
+
+	if interrupt_model.also_has_legacy_pics {
+	    log::info!("Legacy PIC is present. Remapping.");
+	}
+    }
+
     let cpu_id = CpuId::new();
     let features = cpu_id.get_feature_info().expect("CPUID get features info failed.");
 

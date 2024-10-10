@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
+#![feature(allocator_api)]
 
 extern crate alloc;
 
@@ -15,6 +16,7 @@ mod interrupts;
 mod gdt;
 mod memory;
 mod allocator;
+mod sys;
 
 const CONFIG: bootloader_api::BootloaderConfig = {
     let mut config = bootloader_api::BootloaderConfig::new_default();
@@ -92,6 +94,7 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
     let usable_ram = memory::get_usable_ram();
     log::info!("Total usable RAM: {} MiB", (FixedU64::<U3>::from_num(usable_ram) / FixedU64::<U3>::from_num(1024 * 1024)).to_string());
 
+    sys::acpi::init(boot_info.rsdp_addr);
     interrupts::init_bsp_apic();
 }
 
