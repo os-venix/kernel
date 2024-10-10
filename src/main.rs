@@ -91,6 +91,8 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
     memory::init_full_mode();
     let usable_ram = memory::get_usable_ram();
     log::info!("Total usable RAM: {} MiB", (FixedU64::<U3>::from_num(usable_ram) / FixedU64::<U3>::from_num(1024 * 1024)).to_string());
+
+    interrupts::init_bsp_apic();
 }
 
 fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
