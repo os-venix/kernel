@@ -133,3 +133,17 @@ pub fn allocate_contiguous_region_kernel(size: u64, start_addr: PhysAddr, alloc_
 
     Ok(page_range.start.start_address())
 }
+
+pub fn allocate_arbitrary_contiguous_region_kernel(
+    phys_addr: usize, size: usize, alloc_type: MemoryAllocationType) -> Result<(VirtAddr, usize), MapToError<Size4KiB>> {
+    let start_phys_addr = phys_addr - (phys_addr % 4096);  // Page align
+    let total_size = size + (phys_addr % 4096) + (4096 - (size % 4096));  // Total amount, aligned to page boundaries
+
+    let allocated_region = allocate_contiguous_region_kernel(
+	total_size as u64, PhysAddr::new(start_phys_addr as u64), alloc_type)?;
+
+    let offset_from_start = phys_addr - start_phys_addr;
+    let virt_addr = allocated_region + offset_from_start as u64;
+
+    Ok((virt_addr, total_size as usize))
+}
