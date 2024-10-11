@@ -126,9 +126,8 @@ pub fn allocate_contiguous_region_kernel(size: u64, start_addr: PhysAddr, alloc_
 	let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
 	unsafe {
 	    let mut mapper = KERNEL_PAGE_TABLE.write();
-	    
 	    mapper.as_mut().expect("Attempted to use missing kernel page table")
-		.map_to(page, frame, flags, frame_allocator.as_mut().expect("Attempted to use missing frame allocator"))?.flush()
+		.map_to(page, frame, flags, frame_allocator.as_mut().expect("Attempted to use missing frame allocator"))?.flush();
 	};
     }
 

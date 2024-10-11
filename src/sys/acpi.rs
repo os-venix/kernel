@@ -46,6 +46,7 @@ pub static ACPI: Once<RwLock<SyncAcpiTables<VenixAcpiHandler>>> = Once::new();
 
 pub fn init(rdsp_addr: Optional<u64>) {
     let rdsp = rdsp_addr.into_option().expect("Unable to find ACPI tables.");
+
     let acpi = unsafe {
 	AcpiTables::from_rsdp(VenixAcpiHandler, rdsp as usize)
     };

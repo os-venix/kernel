@@ -30,14 +30,6 @@ pub static PRINTK: OnceCell<printk::LockedPrintk> = OnceCell::uninit();
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    unsafe {
-	let kernel_logger = match PRINTK.try_get() {
-	    Ok(logger) => logger,
-	    Err(_) => loop {} // Give up at this point
-	};
-	kernel_logger.force_unlock();
-    }
-
     log::error!("{}", info);
     loop {}
 }

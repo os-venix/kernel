@@ -161,17 +161,24 @@ impl VenixPageAllocator {
 
     // Returns the first virtaddr in the range
     pub fn get_page_range(&mut self, size: u64) -> VirtAddr {
-	let size_in_pages = size/4096;
+	let size_in_pages = size/4096 + if size % 4096 != 0 { 1 } else { 0 };
 
 	if let Some(ref mut free_regions) = self.free_regions {
 	    for idx in 0 .. free_regions.len() {
-		if free_regions[idx].end - free_regions[idx].start == size {
+		if free_regions[idx].start == 0 {
+		    free_regions[idx].start = 4096;
+		}
+		if free_regions[idx].end - free_regions[idx].start == size_in_pages*4096 {
 		    let region = free_regions.remove(idx);
-		    return VirtAddr::new(region.start);
-		} else if free_regions[idx].end - free_regions[idx].start > size {
+
+		    let sign_extended = ((region.start << 16) as i64) >> 16;
+		    return VirtAddr::new(sign_extended as u64);
+		} else if free_regions[idx].end - free_regions[idx].start > size_in_pages * 4096 {
 		    let start = free_regions[idx].start;
-		    free_regions[idx].start += start;
-		    return VirtAddr::new(start);
+		    free_regions[idx].start += size_in_pages * 4096;
+
+		    let sign_extended = ((start << 16) as i64) >> 16;
+		    return VirtAddr::new(sign_extended as u64);
 		}
 	    }
 	    panic!("Kernel OOM");
