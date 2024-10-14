@@ -17,6 +17,8 @@ mod gdt;
 mod memory;
 mod allocator;
 mod sys;
+mod drivers;
+mod driver;
 
 const CONFIG: bootloader_api::BootloaderConfig = {
     let mut config = bootloader_api::BootloaderConfig::new_default();
@@ -88,6 +90,11 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
 
     sys::acpi::init(boot_info.rsdp_addr);
     interrupts::init_bsp_apic();
+
+    driver::init();
+    drivers::init();
+
+    driver::configure_drivers();
 }
 
 fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {

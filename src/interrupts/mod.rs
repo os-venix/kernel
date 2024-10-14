@@ -30,5 +30,5 @@ pub fn init_bsp_apic() {
 	}
     }
     
-    x86_64::instructions::interrupts::enable();
+//    x86_64::instructions::interrupts::enable();
 }

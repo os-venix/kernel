@@ -6,6 +6,8 @@ pub use acpi::platform::interrupt::InterruptModel;
 use aml::{AmlContext, Handler, DebugVerbosity};
 use spin::{Once, RwLock};
 use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
 
 use crate::memory;
 
@@ -189,11 +191,18 @@ pub fn init(rdsp_addr: Optional<u64>) {
 	};
 	map_aml_table(dsdt, &mut aml);
 
-	log::info!("Test");
 	for ssdt in acpi_tables.ssdts() {
 	    map_aml_table(ssdt, &mut aml);
 	}
 
 	AML.call_once(|| RwLock::new(aml));
     }
+}
+
+pub fn eisa_id_to_string(eisa_id: u64) -> String {
+    let c1 = char::from_u32(0x40 + ((eisa_id & 0x7C) >> 2) as u32).expect("Unable to decode EISA string");
+    let c2 = char::from_u32(0x40 + (((eisa_id & 0x03) << 3) | ((eisa_id & 0xE000) >> 13)) as u32).expect("Unable to decode EISA string");
+    let c3 = char::from_u32(0x40 + ((eisa_id & 0x1F00) >> 8) as u32).expect("Unable to decode EISA string");
+
+    format!("{}{}{}{:02X}{:02X}", c1, c2, c3, (eisa_id & 0x00FF0000) >> 16, (eisa_id & 0xFF000000) >> 24)
 }
