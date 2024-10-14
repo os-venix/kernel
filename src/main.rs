@@ -52,6 +52,7 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
     log::info!("Initialising CPU0...");
     log::info!("Memory map:");
 
+    /*
     {
 	let mut current_start: u64 = 0;
 	for region_idx in 0 .. boot_info.memory_regions.len() {
@@ -78,7 +79,7 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
 	    }
 	}
     }
-
+*/
     gdt::init();
     interrupts::init_idt();
     memory::init(boot_info.recursive_index, &boot_info.memory_regions);
