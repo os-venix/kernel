@@ -4,6 +4,7 @@ use core::ptr::{read_volatile, write_volatile};
 use ::acpi::platform::interrupt::{TriggerMode, Polarity};
 use alloc::vec::Vec;
 use alloc::format;
+use alloc::collections::btree_map::BTreeMap;
 
 use crate::interrupts::IRQ_BASE;
 use crate::memory;
@@ -13,8 +14,8 @@ const IOAPICVER: u8 = 0x01;
 const IOAPIC_MAX_REDIRECITON_ENTRY_MASK: u32 = 0x00FF_0000;
 const IOAPIC_MAX_REDIRECTION_ENTRY_SHIFT: u32 = 16;
 
-const IOAPIC_INTMASK_ENABLED: u32 = 0 << 16;
 const IOAPIC_INTMASK_DISABLED: u32 = 1 << 16;
+const IOAPIC_INTMASK_ENABLED: u32 = !IOAPIC_INTMASK_DISABLED;
 
 const IOAPIC_TRIGGER_EDGE: u32 = 0 << 15;
 const IOAPIC_TRIGGER_LEVEL: u32 = 1 << 15;
@@ -32,6 +33,8 @@ struct IoApic {
     iowin: *mut u32,
     id: u8,
     global_system_interrupt_base: u32,
+
+    gsi_to_irq: BTreeMap<u32, u8>,
 }
 
 unsafe impl Send for IoApic {}
@@ -57,6 +60,7 @@ impl IoApic {
 	    iowin: (virt_addr + 0x10).as_mut_ptr(),
 	    id: id,
 	    global_system_interrupt_base: global_system_interrupt_base,
+	    gsi_to_irq: BTreeMap::new(),
 	}
     }
 
@@ -84,9 +88,11 @@ impl IoApic {
 	    gsi <= self.global_system_interrupt_base + self.get_max_redirection_table_entries() as u32
     }
 
-    pub fn map_interrupt(&self, gsi: u32, dest_apic: u32, trigger_mode: TriggerMode, polarity: Polarity, vector: u8) {
+    pub fn map_interrupt(&mut self, gsi: u32, dest_apic: u32, trigger_mode: TriggerMode, polarity: Polarity, vector: u8) {
+	self.gsi_to_irq.entry(gsi).and_modify(|irq| *irq = vector).or_insert(vector);
+
 	let ioredtbl_hi = dest_apic << 24;
-	let ioredtbl_lo = IOAPIC_INTMASK_ENABLED | match trigger_mode {
+	let ioredtbl_lo = IOAPIC_INTMASK_DISABLED | match trigger_mode {
 	    TriggerMode::Edge => IOAPIC_TRIGGER_EDGE,
 	    TriggerMode::Level => IOAPIC_TRIGGER_LEVEL,
 	    TriggerMode::SameAsBus => IOAPIC_TRIGGER_EDGE,
@@ -99,6 +105,24 @@ impl IoApic {
 	let ioredtbl_idx = gsi - self.global_system_interrupt_base;
 	let ioredtbl_lo_idx: u8 = (ioredtbl_idx as u8 * 2) + 0x10;
 	let ioredtbl_hi_idx: u8 = (ioredtbl_idx as u8 * 2) + 0x11;
+
+	self.write_reg(ioredtbl_lo_idx, ioredtbl_lo);
+	self.write_reg(ioredtbl_hi_idx, ioredtbl_hi);
+    }
+
+    pub fn get_irq_for_gsi(&self, gsi: u32) -> Option<u8> {
+	match self.gsi_to_irq.get(&gsi) {
+	    Some(&i) => Some(i),
+	    None => None,
+	}
+    }
+
+    pub fn enable_gsi(&self, gsi: u32) {
+	let ioredtbl_idx = gsi - self.global_system_interrupt_base;
+	let ioredtbl_lo_idx: u8 = (ioredtbl_idx as u8 * 2) + 0x10;
+	let ioredtbl_lo = self.read_reg(ioredtbl_lo_idx) & IOAPIC_INTMASK_ENABLED;
+	let ioredtbl_hi_idx: u8 = (ioredtbl_idx as u8 * 2) + 0x11;
+	let ioredtbl_hi = self.read_reg(ioredtbl_hi_idx);
 
 	self.write_reg(ioredtbl_lo_idx, ioredtbl_lo);
 	self.write_reg(ioredtbl_hi_idx, ioredtbl_hi);
@@ -128,7 +152,7 @@ pub fn init_io_apics(bsp_apic_id: u64) {
 
     let interrupt_source_overrides = interrupt_model.interrupt_source_overrides;
     for over in interrupt_source_overrides.iter() {
-	find_ioapic(over.global_system_interrupt, &ioapics)
+	find_ioapic(over.global_system_interrupt, &mut ioapics)
 	    .expect(
 		format!("Unable to find an I/O APIC for legacy IRQ {}/GSI {}",
 			over.isa_source,
@@ -157,7 +181,7 @@ pub fn init_io_apics(bsp_apic_id: u64) {
 		continue;
 	    }
 
-	find_ioapic(legacy_irq as u32, &ioapics)
+	find_ioapic(legacy_irq as u32, &mut ioapics)
 	    .expect(
 		format!("Unable to find an I/O APIC for legacy IRQ {}", legacy_irq)
 		    .as_str())
@@ -170,7 +194,29 @@ pub fn init_io_apics(bsp_apic_id: u64) {
     }
 }
 
-fn find_ioapic(gsi: u32, ioapics: &Vec<IoApic>) -> Option<&IoApic> {
-    ioapics.iter()
-	.find(|apic| apic.contains_gsi(gsi))
+fn find_ioapic(gsi: u32, ioapics: &mut Vec<IoApic>) -> Option<&mut IoApic> {
+    for apic in ioapics {
+	if (*apic).contains_gsi(gsi) {
+	    return Some(apic);
+	}
+    }
+
+    None
+}
+
+pub fn get_irq_for_gsi(gsi: u32) -> u8 {
+    let mut ioapics = IOAPICS.call_once(|| RwLock::new(Vec::<IoApic>::new())).write();
+    let io_apic = find_ioapic(gsi, &mut ioapics).expect(&format!("GSI {} not found", gsi));
+
+    match io_apic.get_irq_for_gsi(gsi) {
+	Some(irq) => irq,
+	None => unimplemented!(),
+    }
+}
+
+pub fn enable_gsi(gsi: u32) {
+    let mut ioapics = IOAPICS.call_once(|| RwLock::new(Vec::<IoApic>::new())).write();
+    let io_apic = find_ioapic(gsi, &mut ioapics).expect(&format!("GSI {} not found", gsi));
+
+    io_apic.enable_gsi(gsi);
 }

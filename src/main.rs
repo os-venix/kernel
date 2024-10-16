@@ -8,7 +8,6 @@ extern crate alloc;
 use bootloader_api;
 use core::panic::PanicInfo;
 use conquer_once::spin::OnceCell;
-use printk;
 use fixed::{types::extra::U3, FixedU64};
 use crate::alloc::string::ToString;
 
@@ -19,6 +18,7 @@ mod allocator;
 mod sys;
 mod drivers;
 mod driver;
+mod printk;
 
 const CONFIG: bootloader_api::BootloaderConfig = {
     let mut config = bootloader_api::BootloaderConfig::new_default();
@@ -90,6 +90,7 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
     log::info!("Total usable RAM: {} MiB", (FixedU64::<U3>::from_num(usable_ram) / FixedU64::<U3>::from_num(1024 * 1024)).to_string());
 
     sys::acpi::init(boot_info.rsdp_addr);
+    interrupts::init_handler_funcs();
     interrupts::init_bsp_apic();
 
     driver::init();

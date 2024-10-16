@@ -6,7 +6,6 @@ authors = ["Connor Wood"]
 
 [dependencies]
 bootloader_api = "0.11"
-printk = "0.3"
 log = "0.4"
 x86_64 = "0.15"
 spin = "0.9"
@@ -16,6 +15,8 @@ raw-cpuid = "11.2"
 acpi = "5.0"
 aml = "0.16"
 pic8259 = "0.11"
+paste = "1.0"
+noto-sans-mono-bitmap = "0.3"
 
 [dependencies.conquer-once]
 version = "0.4.0"

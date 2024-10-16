@@ -2,7 +2,6 @@ use crate::driver;
 use aml::{AmlName, AmlValue, value::Args, resource::{resource_descriptor_list, Resource, MemoryRangeDescriptor}};
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 use alloc::format;
 use spin::{Once, RwLock};
 use core::ptr::{read_volatile, write_volatile};
@@ -10,9 +9,15 @@ use x86_64::PhysAddr;
 
 use crate::sys::acpi;
 use crate::memory;
+use crate::interrupts;
 
 const LEG_RT_CNF: u64 = 0x02;
 const ENABLE_CNF: u64 = 0x01;
+
+const HPET_COUNTER_PERIODIC: u64 = 1 << 3;
+const HPET_COUNTER_NON_PERIODIC: u64 = !HPET_COUNTER_PERIODIC;
+const HPET_COUNTER_ENABLED: u64 = 1 << 2;
+const HPET_COUNTER_LEVEL_TRIGGERED: u64 = 1 << 1;
 
 struct HpetCounter {
     pub configuration_capability_register: *mut u64,
@@ -22,6 +27,7 @@ struct HpetCounter {
 
 struct Hpet {
     device_id: u64,
+    counter_64: bool,
     general_capabilities_register: *const u64,
     general_configuration_register: *mut u64,
     general_interrupt_status_register: *mut u64,
@@ -48,6 +54,7 @@ impl Hpet {
 
 	let mut hpet = Hpet {
 	    device_id: device_id,
+	    counter_64: false,
 	    general_capabilities_register: virt_addr.as_ptr(),
 	    general_configuration_register: (virt_addr + 0x10).as_mut_ptr(),
 	    general_interrupt_status_register: (virt_addr + 0x20).as_mut_ptr(),
@@ -60,7 +67,7 @@ impl Hpet {
 	};
 
 	for counter in 0..=num_counters {
-	    let counter_base = virt_addr + 0x100 + (counter * 020);
+	    let counter_base = virt_addr + 0x100 + (counter * 0x20);
 	    hpet.counters.push(HpetCounter {
 		configuration_capability_register: counter_base.as_mut_ptr(),
 		comparator_value_register: (counter_base + 0x08).as_mut_ptr(),
@@ -68,15 +75,125 @@ impl Hpet {
 	    });
 	}
 
+	let counter_64 = unsafe {
+	    (read_volatile::<u64>(hpet.general_capabilities_register) & 0x2000) >> 13
+	};
+	hpet.counter_64 = counter_64 == 1;
+
 	unsafe {
 	    write_volatile::<u64>(hpet.general_configuration_register, ENABLE_CNF);
 	}
 
+	let mut possible_routings: u32 = 0xFFFF_FFFF;
+	// Disable all counters
+	for counter in 0..=num_counters {
+	    let (routing, size) = unsafe {
+		let capabilities = read_volatile::<u64>(hpet.counters[counter as usize].configuration_capability_register);
+		(capabilities >> 32, ((capabilities & 0x20) >> 5) == 1)
+	    };
+
+	    possible_routings &= routing as u32;
+	    unsafe {
+		write_volatile::<u64>(hpet.counters[counter as usize].configuration_capability_register, 0);
+	    }
+	}
+
+	if possible_routings == 0 {
+	    panic!("No routings found in common for HPET. This is not yet a supported mode. All counters must use the same IRQ");
+	}
+
+	// Find the lowest possible IRQ
+	let mut gsi = 0;
+	for i in 0 .. 32 {
+	    if (possible_routings & 1) == 1 {
+		break;
+	    } else {
+		possible_routings >>= 1;
+		gsi += 1;
+	    }
+	}
+
+	interrupts::enable_gsi(gsi, &hpet_handler);
+	hpet.set_timer_one_shot_ms(0, 100);
+
 	hpet
+    }
+
+    pub fn find_timer_interrupting(&mut self) -> Option<u64> {
+	let mut gisr = unsafe {
+	    read_volatile::<u64>(self.general_interrupt_status_register)
+	};
+
+	if gisr != 0 {
+	    let mut interrupting_counter = 0;
+	    for i in 0 .. 64 {
+		if (gisr & 1) == 1 {
+		    break;
+		} else {
+		    gisr >>= 1;
+		    interrupting_counter += 1;
+		}
+	    }
+
+	    let interrupting_timer_ack = 1 << interrupting_counter;
+
+	    unsafe {
+		write_volatile::<u64>(self.general_interrupt_status_register, interrupting_timer_ack);
+	    }
+	    Some(interrupting_counter)
+	} else {
+	    None
+	}
+    }
+
+    pub fn num_timers(&self) -> u8 {
+	unsafe {
+	    ((read_volatile::<u64>(self.general_capabilities_register) & 0xF00) >> 8) as u8
+	}
+    }
+    
+    pub fn set_timer_one_shot_ms(&self, timer: u8, time_ms: u64) {
+	let counter = &self.counters[timer as usize];
+	let mut config = unsafe {
+	    read_volatile::<u64>(counter.configuration_capability_register)
+	};
+
+	config &= HPET_COUNTER_NON_PERIODIC;
+	config |= HPET_COUNTER_ENABLED | HPET_COUNTER_LEVEL_TRIGGERED;
+
+	let counter_divider = unsafe {
+	    (read_volatile::<u64>(self.general_capabilities_register) & 0xFFFF_FFFF_0000_0000) >> 32
+	};
+
+	let time_in_ticks = (time_ms * 10_u64.pow(12)) / counter_divider;
+	let main_counter_val = unsafe {
+	    read_volatile::<u64>(self.main_counter_value_register)
+	};
+
+	let mut counter_comparator_val = main_counter_val.wrapping_add(time_in_ticks);
+	if !self.counter_64 {
+	    counter_comparator_val &= 0xFFFF_FFFF;
+	}
+
+	unsafe {
+	    write_volatile::<u64>(counter.comparator_value_register, counter_comparator_val);
+	    write_volatile::<u64>(counter.configuration_capability_register, config);
+	}
     }
 }
 
-static HPETS: Once<RwLock<Vec<Hpet>>> = Once::new();
+fn hpet_handler() {
+    let mut hpet = HPET.get().expect("Attempted to initialise HPET device before initialising driver").write();
+    if let Some(tmr) = hpet.find_timer_interrupting() {
+
+	log::info!("Timer {} triggered", tmr);
+
+	let next_tmr = (if hpet.num_timers() >= (tmr + 1) as u8 { tmr + 1 } else { 0 }) as u8;
+	hpet.set_timer_one_shot_ms(next_tmr, 100);
+    }
+}
+
+static HPET: Once<RwLock<Hpet>> = Once::new();
 
 pub fn init() {
     let hpet_driver = driver::DriverInfo {
@@ -84,7 +201,6 @@ pub fn init() {
 	init: init_driver,
     };
     driver::register_driver(hpet_driver);
-    HPETS.call_once(|| RwLock::new(Vec::<Hpet>::new()));
 }
 
 fn init_driver(driver_id: u64, acpi_device: &AmlName, uid: u32) {
@@ -112,8 +228,8 @@ fn init_driver(driver_id: u64, acpi_device: &AmlName, uid: u32) {
 	}).map(|r| match r {
 	    Resource::MemoryRange(MemoryRangeDescriptor::FixedLocation {
 		is_writable: _,
-		base_address: base_address,
-		range_length: range_length
+		base_address,
+		range_length
 	    }) => (base_address, range_length),
 	    _ => panic!("This shouldn't happen"),
 	}).nth(0).expect("No memory ranges returned for HPET");
@@ -125,8 +241,13 @@ fn init_driver(driver_id: u64, acpi_device: &AmlName, uid: u32) {
     };
     let device_id = driver::register_device(device);
 
-    {
-	let mut hpets = HPETS.get().expect("Attempted to initialise HPET device before initialising driver").write();
-	hpets.push(Hpet::new(device_id, *base_address, *range_length));
+    HPET.call_once(|| RwLock::new(Hpet::new(device_id, *base_address, *range_length)));
+
+    // Disable PIT, we don't use it
+    log::info!("Disabling PIT");
+    unsafe {
+	x86_64::instructions::port::PortWrite::write_to_port(0x43, 0x3A as u8);
+	x86_64::instructions::port::PortWrite::write_to_port(0x43, 0x7A as u8);
+	x86_64::instructions::port::PortWrite::write_to_port(0x43, 0xBA as u8);
     }
 }

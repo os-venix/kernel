@@ -1,9 +1,33 @@
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use lazy_static::lazy_static;
+use alloc::collections::btree_map::BTreeMap;
+use alloc::vec::Vec;
+use spin::{Once, RwLock};
 
 use crate::interrupts::local_apic;
 use crate::gdt;
 
+macro_rules! irq_handler_def {
+    ($irq:literal) => {
+	paste::item! {
+	    extern "x86-interrupt" fn [<irq_ $irq >] (_stack_frame: InterruptStackFrame) {
+		local_apic::ack_apic();
+
+		{
+		    let handler_funcs = HANDLER_FUNCS.get().expect("Handler funcs not initialised").read();
+		    match handler_funcs.get(&$irq) {
+			Some(h) => for func in h.iter() {
+			    (func)();
+			},
+			None => (),
+		    }
+		}
+	    }
+	}
+    };
+}
+
+static HANDLER_FUNCS: Once<RwLock<BTreeMap<u8, Vec<&(dyn Fn() + Send + Sync)>>>> = Once::new();
 
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
@@ -17,16 +41,16 @@ lazy_static! {
 	}
 
 	// IDT interrutps
-	idt[0x20].set_handler_fn(timer_handler);
-	idt[0x21].set_handler_fn(keyboard_handler);
-	idt[0x22].set_handler_fn(unknown_handler);
-	idt[0x23].set_handler_fn(com2_handler);
-	idt[0x24].set_handler_fn(com1_handler);
-	idt[0x25].set_handler_fn(lpt2_handler);
-	idt[0x26].set_handler_fn(fdd_handler);
-	idt[0x27].set_handler_fn(spurious_interrupt_handler);
-	idt[0x28].set_handler_fn(rtc_handler);
-	idt[0x29].set_handler_fn(unknown_handler);
+	idt[0x20].set_handler_fn(irq_32);
+	idt[0x21].set_handler_fn(irq_33);
+	idt[0x22].set_handler_fn(irq_34);
+	idt[0x23].set_handler_fn(irq_35);
+	idt[0x24].set_handler_fn(irq_36);
+	idt[0x25].set_handler_fn(irq_37);
+	idt[0x26].set_handler_fn(irq_38);
+	idt[0x27].set_handler_fn(irq_39);
+	idt[0x28].set_handler_fn(irq_40);
+	idt[0x29].set_handler_fn(irq_41);
 	idt[0x2A].set_handler_fn(unknown_handler);
 	idt[0x2B].set_handler_fn(unknown_handler);
 	idt[0x2C].set_handler_fn(mouse_handler);
@@ -43,6 +67,22 @@ lazy_static! {
 
 pub fn init() {
     IDT.load();
+}
+
+pub fn init_handlers() {
+    HANDLER_FUNCS.call_once(|| RwLock::new(BTreeMap::<u8, Vec::<&(dyn Fn() + Send + Sync)>>::new()));
+}
+
+pub fn add_handler_to_irq(irq: u8, handler: &'static (dyn Fn() + Send + Sync)) {
+    let mut handler_funcs = HANDLER_FUNCS.get().expect("Handler funcs have not been initialised").write();
+
+    if let Some(v) = handler_funcs.get_mut(&irq) {
+	v.push(handler);
+    } else {
+	let mut v = Vec::<&(dyn Fn() + Send + Sync)>::new();
+	v.push(handler);
+	handler_funcs.insert(irq, v);
+    }
 }
 
 // Faults
@@ -70,58 +110,20 @@ extern "x86-interrupt" fn spurious_interrupt_handler(_stack_frame: InterruptStac
     log::info!("Spurious interrupt happened :-)");
 }
 
-extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-	log::info!("Timer interrupt happened");
-	local_apic::ack_apic();
-    });
-}
-
-extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-	log::info!("Keyboard interrupt happened");
-	local_apic::ack_apic();
-    });
-}
+irq_handler_def!(32);
+irq_handler_def!(33);
+irq_handler_def!(34);
+irq_handler_def!(35);
+irq_handler_def!(36);
+irq_handler_def!(37);
+irq_handler_def!(38);
+irq_handler_def!(39);
+irq_handler_def!(40);
+irq_handler_def!(41);
 
 extern "x86-interrupt" fn unknown_handler(_stack_frame: InterruptStackFrame) {
     x86_64::instructions::interrupts::without_interrupts(|| {
 	log::info!("Unknown IRQ happened");
-	local_apic::ack_apic();
-    });
-}
-
-extern "x86-interrupt" fn com2_handler(_stack_frame: InterruptStackFrame) {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-	log::info!("COM2 IRQ happened");
-	local_apic::ack_apic();
-    });
-}
-
-extern "x86-interrupt" fn com1_handler(_stack_frame: InterruptStackFrame) {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-	log::info!("COM1 IRQ happened");
-	local_apic::ack_apic();
-    });
-}
-
-extern "x86-interrupt" fn lpt2_handler(_stack_frame: InterruptStackFrame) {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-	log::info!("LPT2 IRQ happened");
-	local_apic::ack_apic();
-    });
-}
-
-extern "x86-interrupt" fn fdd_handler(_stack_frame: InterruptStackFrame) {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-	log::info!("FDD IRQ happened");
-	local_apic::ack_apic();
-    });
-}
-
-extern "x86-interrupt" fn rtc_handler(_stack_frame: InterruptStackFrame) {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-	log::info!("RTC IRQ happened");
 	local_apic::ack_apic();
     });
 }
