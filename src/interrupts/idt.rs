@@ -3,6 +3,7 @@ use lazy_static::lazy_static;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
 use spin::{Once, RwLock};
+use alloc::boxed::Box;
 
 use crate::interrupts::local_apic;
 use crate::gdt;
@@ -27,7 +28,7 @@ macro_rules! irq_handler_def {
     };
 }
 
-static HANDLER_FUNCS: Once<RwLock<BTreeMap<u8, Vec<&(dyn Fn() + Send + Sync)>>>> = Once::new();
+static HANDLER_FUNCS: Once<RwLock<BTreeMap<u8, Vec<Box<(dyn Fn() + Send + Sync)>>>>> = Once::new();
 
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
@@ -70,16 +71,16 @@ pub fn init() {
 }
 
 pub fn init_handlers() {
-    HANDLER_FUNCS.call_once(|| RwLock::new(BTreeMap::<u8, Vec::<&(dyn Fn() + Send + Sync)>>::new()));
+    HANDLER_FUNCS.call_once(|| RwLock::new(BTreeMap::<u8, Vec::<Box<(dyn Fn() + Send + Sync)>>>::new()));
 }
 
-pub fn add_handler_to_irq(irq: u8, handler: &'static (dyn Fn() + Send + Sync)) {
+pub fn add_handler_to_irq(irq: u8, handler: Box<(dyn Fn() + Send + Sync)>) {
     let mut handler_funcs = HANDLER_FUNCS.get().expect("Handler funcs have not been initialised").write();
 
     if let Some(v) = handler_funcs.get_mut(&irq) {
 	v.push(handler);
     } else {
-	let mut v = Vec::<&(dyn Fn() + Send + Sync)>::new();
+	let mut v = Vec::<Box<(dyn Fn() + Send + Sync)>>::new();
 	v.push(handler);
 	handler_funcs.insert(irq, v);
     }

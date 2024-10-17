@@ -212,7 +212,7 @@ fn init_driver(driver_id: u64, acpi_device: &AmlName, uid: u32) {
 	    Args::EMPTY,
 	) {
 	    Ok(AmlValue::Buffer(v)) => AmlValue::Buffer(v),
-	    _ => panic!("CRS expected for HPET"),
+	    _ => panic!("CRS expected for PCIe Bus"),
 	}
     };
 

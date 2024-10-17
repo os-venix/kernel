@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use alloc::boxed::Box;
 use aml::value::{Args, AmlValue};
 use aml::{AmlName, AmlError};
 
@@ -40,7 +41,7 @@ pub fn init_bsp_apic() {
 pub fn enable_gsi(gsi: u32, handler: &'static (dyn Fn() + Send + Sync)) {
     let irq = io_apic::get_irq_for_gsi(gsi);
     log::info!("GSI = {}, IRQ = {}", gsi, irq);
-    idt::add_handler_to_irq(irq, handler);
+    idt::add_handler_to_irq(irq, Box::new(handler));
 
     io_apic::enable_gsi(gsi);
 }
