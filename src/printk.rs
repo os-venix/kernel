@@ -199,9 +199,9 @@ impl Printk {
                     self.next_line();
 
                 }
-                const LETTER_WIDTH: usize = get_raster_width(FontWeight::Regular, RasterHeight::Size16);
+                const LETTER_HEIGHT: usize = RasterHeight::Size16.val();
 
-                if self.y >= (self.height() - LETTER_WIDTH) {
+                if self.y >= (self.height() - LETTER_HEIGHT) {
                     self.clear();
                 }
 
