@@ -2,6 +2,7 @@ use crate::driver;
 use aml::{AmlName, AmlValue, value::Args, resource::{resource_descriptor_list, Resource, MemoryRangeDescriptor}};
 use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::boxed::Box;
 use alloc::format;
 use spin::{Once, RwLock};
 use core::ptr::{read_volatile, write_volatile};
@@ -26,7 +27,6 @@ struct HpetCounter {
 }
 
 struct Hpet {
-    device_id: u64,
     counter_64: bool,
     general_capabilities_register: *const u64,
     general_configuration_register: *mut u64,
@@ -39,7 +39,7 @@ unsafe impl Send for Hpet {}
 unsafe impl Sync for Hpet {}
 
 impl Hpet {
-    pub fn new(device_id: u64, base_addr: u32, size: u32) -> Hpet {
+    pub fn new(base_addr: u32, size: u32) -> Hpet {
 	let start_phys_addr = base_addr - (base_addr % 4096);  // Page align
 	let total_size = size + (base_addr % 4096) + (4096 - (size % 4096));  // Total amount, aligned to page boundaries
 
@@ -53,7 +53,6 @@ impl Hpet {
 	let virt_addr = allocated_region + offset_from_start as u64;
 
 	let mut hpet = Hpet {
-	    device_id: device_id,
 	    counter_64: false,
 	    general_capabilities_register: virt_addr.as_ptr(),
 	    general_configuration_register: (virt_addr + 0x10).as_mut_ptr(),
@@ -196,58 +195,76 @@ fn hpet_handler() {
 static HPET: Once<RwLock<Hpet>> = Once::new();
 
 pub fn init() {
-    let hpet_driver = driver::DriverInfo {
-	hid: String::from("PNP0103"),
-	init: init_driver,
-    };
-    driver::register_driver(hpet_driver);
+    let hpet_driver = HpetDriver {};
+    driver::register_driver(Box::new(hpet_driver));
 }
 
-fn init_driver(driver_id: u64, acpi_device: &AmlName, uid: u32) {
-    let crs_path = acpi_device.as_string() + "._CRS";
-    let crs = {
-	let mut aml = acpi::AML.get().expect("Attempted to access ACPI tables before ACPI is initialised").write();
-	match aml.invoke_method(
-	    &AmlName::from_str(&crs_path).expect(&format!("Unable to construct AmlName {}", &crs_path)),
-	    Args::EMPTY,
-	) {
-	    Ok(AmlValue::Buffer(v)) => AmlValue::Buffer(v),
-	    _ => panic!("CRS expected for PCIe Bus"),
+pub struct HpetDriver {}
+impl driver::Driver for HpetDriver {
+    fn init(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) {
+	let system_bus_identifier = if let Some(sb_info) = info.as_any().downcast_ref::<driver::SystemBusDeviceIdentifier>() {
+	    sb_info
+	} else {
+	    panic!("Attempted to get SB identifier from a not SB device");
+	};
+
+	let crs_path = system_bus_identifier.path.as_string() + "._CRS";
+	let crs = {
+	    let mut aml = acpi::AML.get().expect("Attempted to access ACPI tables before ACPI is initialised").write();
+	    match aml.invoke_method(
+		&AmlName::from_str(&crs_path).expect(&format!("Unable to construct AmlName {}", &crs_path)),
+		Args::EMPTY,
+	    ) {
+		Ok(AmlValue::Buffer(v)) => AmlValue::Buffer(v),
+		_ => panic!("CRS expected for HPET"),
+	    }
+	};
+
+	let resources = match resource_descriptor_list(&crs) {
+	    Ok(v) => v,
+	    Err(e) => panic!("Malformed CRS for HPET: {:#?}", e),
+	};
+
+	let (base_address, range_length) = resources.iter()
+	    .filter(|r| match r {
+		Resource::MemoryRange(_) => true,
+		_ => false,
+	    }).map(|r| match r {
+		Resource::MemoryRange(MemoryRangeDescriptor::FixedLocation {
+		    is_writable: _,
+		    base_address,
+		    range_length
+		}) => (base_address, range_length),
+		_ => panic!("This shouldn't happen"),
+	    }).nth(0).expect("No memory ranges returned for HPET");
+
+	let device = driver::DeviceInfo {
+	    driver_id: 0,
+	    uid: system_bus_identifier.uid,
+	    is_loaded: true
+	};
+	let device_id = driver::register_device(device);
+
+	HPET.call_once(|| RwLock::new(Hpet::new(*base_address, *range_length)));
+
+	// Disable PIT, we don't use it
+	log::info!("Disabling PIT");
+	unsafe {
+	    x86_64::instructions::port::PortWrite::write_to_port(0x43, 0x3A as u8);
+	    x86_64::instructions::port::PortWrite::write_to_port(0x43, 0x7A as u8);
+	    x86_64::instructions::port::PortWrite::write_to_port(0x43, 0xBA as u8);
 	}
-    };
+    }
 
-    let resources = match resource_descriptor_list(&crs) {
-	Ok(v) => v,
-	Err(e) => panic!("Malformed CRS for HPET: {:#?}", e),
-    };
+    fn check_device(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
+	if let Some(sb_info) = info.as_any().downcast_ref::<driver::SystemBusDeviceIdentifier>() {
+	    sb_info.hid == String::from("PNP0103")
+	} else {
+	    false
+	}
+    }
 
-    let (base_address, range_length) = resources.iter()
-	.filter(|r| match r {
-	    Resource::MemoryRange(_) => true,
-	    _ => false,
-	}).map(|r| match r {
-	    Resource::MemoryRange(MemoryRangeDescriptor::FixedLocation {
-		is_writable: _,
-		base_address,
-		range_length
-	    }) => (base_address, range_length),
-	    _ => panic!("This shouldn't happen"),
-	}).nth(0).expect("No memory ranges returned for HPET");
-
-    let device = driver::DeviceInfo {
-	driver_id: driver_id,
-	uid: uid,
-	is_loaded: true
-    };
-    let device_id = driver::register_device(device);
-
-    HPET.call_once(|| RwLock::new(Hpet::new(device_id, *base_address, *range_length)));
-
-    // Disable PIT, we don't use it
-    log::info!("Disabling PIT");
-    unsafe {
-	x86_64::instructions::port::PortWrite::write_to_port(0x43, 0x3A as u8);
-	x86_64::instructions::port::PortWrite::write_to_port(0x43, 0x7A as u8);
-	x86_64::instructions::port::PortWrite::write_to_port(0x43, 0xBA as u8);
+    fn check_new_device(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
+	!HPET.is_completed()
     }
 }
