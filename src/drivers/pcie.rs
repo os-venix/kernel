@@ -1,7 +1,10 @@
+use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::boxed::Box;
+use alloc::fmt;
+use core::any::Any;
 use aml::AmlName;
-use pci_types::{ConfigRegionAccess, PciAddress, PciHeader};
+use pci_types::{ConfigRegionAccess, PciAddress, PciHeader, VendorId, DeviceId, BaseClass, SubClass, Interface};
 use x86_64::instructions::port::{PortGeneric, ReadWriteAccess, WriteOnlyAccess};
 
 use crate::driver;
@@ -50,6 +53,93 @@ pub fn init() {
     driver::register_driver(Box::new(pci_driver));
 }
 
+pub struct PciDeviceType {
+    // Location
+    segment: u16,
+    bus: u8,
+    device: u8,
+    function: u8,
+
+    // ID
+    vendor_id: VendorId,
+    device_id: DeviceId,
+
+    // Type
+    base_class: BaseClass,
+    sub_class: SubClass,
+    interface: Interface,
+}
+
+impl driver::DeviceTypeIdentifier for PciDeviceType {
+    fn as_any(&self) -> &dyn Any {
+	self
+    }
+}
+
+impl fmt::Display for PciDeviceType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+	write!(f, "{}.{}.{}.{}/{}:{}/{}:{}:{}",
+	       self.segment, self.bus, self.device, self.function,
+	       self.vendor_id, self.device_id,
+	       self.base_class, self.sub_class, self.interface)
+    }
+}
+
+pub struct PciBus {
+    segment: u16,
+    bus: u8,
+}
+unsafe impl Send for PciBus { }
+unsafe impl Sync for PciBus { }
+
+impl PciBus {
+    pub fn new(segment: u16, bus: u8) -> PciBus {
+	PciBus {
+	    segment: segment,
+	    bus: bus,
+	}
+    }
+}
+
+impl driver::Bus for PciBus {
+    fn name(&self) -> String {
+	String::from("PCI")
+    }
+
+    fn enumerate(&self) -> Vec<Box<dyn driver::DeviceTypeIdentifier>> {
+	let pci_config_access = PciConfigAccess::new();
+	let mut found_devices = Vec::<Box<dyn driver::DeviceTypeIdentifier>>::new();
+	for device in 0 .. 32 {
+	    for function in 0 .. 8 {
+		let device_header = PciHeader::new(PciAddress::new(0, 0, device, function));
+		let (device_vendor_id, device_device_id) = device_header.id(pci_config_access);
+
+		if device_vendor_id == 0xFFFF {
+		    continue;
+		}
+
+		let (_, base_class, subclass, interface) = device_header.revision_and_class(pci_config_access);
+
+		found_devices.push(Box::new(PciDeviceType {
+		    segment: self.segment,
+		    bus: self.bus,
+		    device: device,
+		    function: function,
+
+		    vendor_id: device_vendor_id,
+		    device_id: device_device_id,
+
+		    base_class: base_class,
+		    sub_class: subclass,
+		    interface: interface
+		}));
+	    }
+	}
+
+	found_devices
+    }
+}
+
 pub struct PciDriver {}
 impl driver::Driver for PciDriver {
     fn init(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) {
@@ -78,20 +168,7 @@ impl driver::Driver for PciDriver {
 		}
 	    }
 	} else {
-	    for device in 0 .. 32 {
-		for function in 0 .. 8 {
-		    let device_header = PciHeader::new(PciAddress::new(0, 0, device, function));
-		    let (device_vendor_id, device_device_id) = device_header.id(pci_config_access);
-
-		    if device_vendor_id == 0xFFFF {
-			continue;
-		    }
-
-		    let (_, base_class, subclass, interface) = device_header.revision_and_class(pci_config_access);
-
-		    log::info!("Found PCI device, vendor = {:X}, device = {:X}, function = {:X}, class = {:?}, subclass = {:?}, IF = {:?}", device_vendor_id, device_device_id, function, base_class, subclass, interface);
-		}
-	    }
+	    driver::register_bus_and_enumerate(Box::new(PciBus::new(0, 0)));
 	}
     }
 
