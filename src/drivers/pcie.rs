@@ -55,19 +55,16 @@ pub fn init() {
 
 pub struct PciDeviceType {
     // Location
-    segment: u16,
-    bus: u8,
-    device: u8,
-    function: u8,
+    pub address: PciAddress,
 
     // ID
-    vendor_id: VendorId,
-    device_id: DeviceId,
+    pub vendor_id: VendorId,
+    pub device_id: DeviceId,
 
     // Type
-    base_class: BaseClass,
-    sub_class: SubClass,
-    interface: Interface,
+    pub base_class: BaseClass,
+    pub sub_class: SubClass,
+    pub interface: Interface,
 }
 
 impl driver::DeviceTypeIdentifier for PciDeviceType {
@@ -78,8 +75,8 @@ impl driver::DeviceTypeIdentifier for PciDeviceType {
 
 impl fmt::Display for PciDeviceType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-	write!(f, "{}.{}.{}.{}/{}:{}/{}:{}:{}",
-	       self.segment, self.bus, self.device, self.function,
+	write!(f, "{}/{:X}:{:X}/{:X}:{:X}:{:X}",
+	       self.address,
 	       self.vendor_id, self.device_id,
 	       self.base_class, self.sub_class, self.interface)
     }
@@ -121,10 +118,7 @@ impl driver::Bus for PciBus {
 		let (_, base_class, subclass, interface) = device_header.revision_and_class(pci_config_access);
 
 		found_devices.push(Box::new(PciDeviceType {
-		    segment: self.segment,
-		    bus: self.bus,
-		    device: device,
-		    function: function,
+		    address: PciAddress::new(self.segment, self.bus, device, function),
 
 		    vendor_id: device_vendor_id,
 		    device_id: device_device_id,
