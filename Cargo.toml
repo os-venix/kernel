@@ -18,6 +18,12 @@ pic8259 = "0.11"
 paste = "1.0"
 noto-sans-mono-bitmap = "0.3"
 pci_types = "0.10"
+bit_field = "0.10"
+
+[dependencies.itertools]
+version = "0.13"
+features = ["use_alloc"]
+default-features = false
 
 [dependencies.conquer-once]
 version = "0.4.0"
