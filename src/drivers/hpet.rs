@@ -26,6 +26,8 @@ struct HpetCounter {
     pub fsb_interrupt_route_register: *mut u64,
 }
 
+struct TimerCallback(u8, Box<dyn Fn() + Send + Sync>);
+
 struct Hpet {
     counter_64: bool,
     general_capabilities_register: *const u64,
@@ -33,6 +35,8 @@ struct Hpet {
     general_interrupt_status_register: *mut u64,
     main_counter_value_register: *mut u64,
     counters: Vec<HpetCounter>,
+    callbacks: Vec<TimerCallback>,
+    free_counters: Vec<u8>,
 }
 
 unsafe impl Send for Hpet {}
@@ -59,6 +63,8 @@ impl Hpet {
 	    general_interrupt_status_register: (virt_addr + 0x20).as_mut_ptr(),
 	    main_counter_value_register: (virt_addr + 0xF0).as_mut_ptr(),
 	    counters: Vec::new(),
+	    callbacks: Vec::new(),
+	    free_counters: Vec::new(),
 	};
 
 	let num_counters = unsafe {
@@ -72,6 +78,7 @@ impl Hpet {
 		comparator_value_register: (counter_base + 0x08).as_mut_ptr(),
 		fsb_interrupt_route_register: (counter_base + 0x10).as_mut_ptr(),
 	    });
+	    hpet.free_counters.push(counter as u8);
 	}
 
 	let counter_64 = unsafe {
@@ -113,7 +120,6 @@ impl Hpet {
 	}
 
 	interrupts::enable_gsi(gsi, &hpet_handler);
-	hpet.set_timer_one_shot_ms(0, 100);
 
 	hpet
     }
@@ -179,17 +185,34 @@ impl Hpet {
 	    write_volatile::<u64>(counter.configuration_capability_register, config);
 	}
     }
+
+    pub fn add_oneshot_ms(&mut self, time_ms: u64, callback: Box<dyn Fn() + Send + Sync>) {
+	if let Some(counter) = self.free_counters.pop() {
+	    self.callbacks.push(TimerCallback(counter, callback));
+	    self.set_timer_one_shot_ms(counter, time_ms);
+	}
+    }
+
+    pub fn handle_triggered_callbacks(&mut self) {
+	if let Some(counter) = self.find_timer_interrupting() {
+	    self.callbacks
+		.extract_if(|callback| callback.0 == counter as u8)
+		.map(|callback| callback.1())
+		.for_each(drop);
+
+	    self.free_counters.push(counter as u8);
+	}
+    }
 }
 
 fn hpet_handler() {
     let mut hpet = HPET.get().expect("Attempted to initialise HPET device before initialising driver").write();
-    if let Some(tmr) = hpet.find_timer_interrupting() {
+    hpet.handle_triggered_callbacks();
+}
 
-	log::info!("Timer {} triggered", tmr);
-
-	let next_tmr = (if hpet.num_timers() >= (tmr + 1) as u8 { tmr + 1 } else { 0 }) as u8;
-	hpet.set_timer_one_shot_ms(next_tmr, 100);
-    }
+pub fn add_oneshot(time_ms: u64, callback: Box<dyn Fn() + Send + Sync>) {
+    let mut hpet = HPET.get().expect("Attempted to initialise HPET device before initialising driver").write();
+    hpet.add_oneshot_ms(time_ms, callback);
 }
 
 static HPET: Once<RwLock<Hpet>> = Once::new();
@@ -197,6 +220,15 @@ static HPET: Once<RwLock<Hpet>> = Once::new();
 pub fn init() {
     let hpet_driver = HpetDriver {};
     driver::register_driver(Box::new(hpet_driver));
+}
+
+pub struct HpetDevice {}
+unsafe impl Send for HpetDevice { }
+unsafe impl Sync for HpetDevice { }
+impl driver::Device for HpetDevice {
+    fn read(&self, offset: u64, size: u64) -> Result<*const u8, ()> {
+	panic!("Shouldn't have attempted to read from the HPET. That makes no sense.");
+    }
 }
 
 pub struct HpetDriver {}
@@ -238,12 +270,8 @@ impl driver::Driver for HpetDriver {
 		_ => panic!("This shouldn't happen"),
 	    }).nth(0).expect("No memory ranges returned for HPET");
 
-	let device = driver::DeviceInfo {
-	    driver_id: 0,
-	    uid: system_bus_identifier.uid,
-	    is_loaded: true
-	};
-	let device_id = driver::register_device(device);
+	let device = Box::new(HpetDevice {});
+	driver::register_device(device);
 
 	HPET.call_once(|| RwLock::new(Hpet::new(*base_address, *range_length)));
 

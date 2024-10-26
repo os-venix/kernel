@@ -4,6 +4,7 @@
 #![feature(allocator_api)]
 #![feature(ascii_char)]
 #![feature(ascii_char_variants)]
+#![feature(extract_if)]
 
 extern crate alloc;
 
@@ -12,6 +13,7 @@ use core::panic::PanicInfo;
 use conquer_once::spin::OnceCell;
 use fixed::{types::extra::U3, FixedU64};
 use crate::alloc::string::ToString;
+use core::slice;
 
 mod interrupts;
 mod gdt;
@@ -99,6 +101,20 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
     drivers::init();
 
     driver::configure_drivers();
+
+    let buf_ptr = driver::read(1, 512, 512).expect("Read went wrong");
+    let buf = unsafe {
+	slice::from_raw_parts(buf_ptr, 512)
+    };
+
+    log::info!("");
+    log::info!("");
+    log::info!("");
+    log::info!("");
+    log::info!("");
+    log::info!("");
+
+    log::info!("{:?}", buf);
 }
 
 fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {

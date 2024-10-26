@@ -14,6 +14,7 @@ static VENIX_PAGE_ALLOCATOR: RwLock<Option<page_allocator::VenixPageAllocator>> 
 pub enum MemoryAllocationType {
     RAM,
     MMIO,
+    DMA,
 }
 
 pub fn init(recursive_index: bootloader_api::info::Optional<u16>, memory_map: &'static bootloader_api::info::MemoryRegions) {
@@ -95,6 +96,40 @@ pub fn allocate_by_size_kernel(size: u64) -> Result<VirtAddr, MapToError<Size4Ki
     }
 
     Ok(page_range.start.start_address())
+}
+
+pub fn allocate_by_size_kernel_dma(size: u64) -> Result<(VirtAddr, Vec<PhysAddr>), MapToError<Size4KiB>> {
+    let page_range = {
+	let start = {
+	    let mut w = VENIX_PAGE_ALLOCATOR.write();
+	    w.as_mut().expect("Attempted to read missing Kernel page allocator").get_page_range(size)
+	};
+	let end = start + (size - 1);
+
+	let start_page = Page::containing_address(start);
+	let end_page = Page::containing_address(end);
+
+	Page::range_inclusive(start_page, end_page)
+    };
+
+    let mut frame_range: Vec<PhysAddr> = Vec::new();
+
+    for page in page_range {
+	let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
+	let frame = frame_allocator.as_mut().expect("Attempted to use missing frame allocator").allocate_frame()
+	    .ok_or(MapToError::FrameAllocationFailed)?;
+	frame_range.push(frame.start_address());
+
+	let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+	unsafe {
+	    let mut mapper = KERNEL_PAGE_TABLE.write();
+	    
+	    mapper.as_mut().expect("Attempted to use missing kernel page table")
+		.map_to(page, frame, flags, frame_allocator.as_mut().expect("Attempted to use missing frame allocator"))?.flush()
+	};
+    }
+
+    Ok((page_range.start.start_address(), frame_range))
 }
 
 pub fn allocate_contiguous_region_kernel(size: u64, start_addr: PhysAddr, alloc_type: MemoryAllocationType) -> Result<VirtAddr, MapToError<Size4KiB>> {

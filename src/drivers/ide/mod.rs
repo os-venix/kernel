@@ -13,11 +13,13 @@ pub fn init() {
 pub struct IdeDriver {}
 impl driver::Driver for IdeDriver {
     fn init(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) {
-	let (address, interface) = if let Some(pci_info) = info.as_any().downcast_ref::<pcie::PciDeviceType>() {
-	    (pci_info.address, pci_info.interface)
+	let pci_info = if let Some(pci_info) = info.as_any().downcast_ref::<pcie::PciDeviceType>() {
+	    pci_info
 	} else {
 	    return;
 	};
+
+	let interface = pci_info.interface;
 
 	// For now, we only support compatibility mode
 	if (interface & 1) == 1 {
@@ -29,10 +31,22 @@ impl driver::Driver for IdeDriver {
 	let io_primary_base = 0x1F0;
 	let io_secondary_base = 0x170;
 
+	// This device supports bus mastering
+	let (busmaster_primary_base, busmaster_secondary_base) = if (interface & 0x80) != 0 {
+	    log::info!("Busmastering (DMA) IDE controller found");
+	    let bar = pcie::get_bar(*pci_info, 4).expect("Unable to find Busmaster BAR");
+
+	    // Assume I/O space for now. It might not be, but assume it is
+	    let busmaster_base = bar.unwrap_io();
+	    (Some(busmaster_base), Some(busmaster_base + 0x08))
+	} else {
+	    (None, None)
+	};
+
 	log::info!("Primary IDE Bus:");
-	ide::detect_drives(control_primary_base, io_primary_base);
+	ide::detect_drives(control_primary_base, io_primary_base, busmaster_primary_base);
 	log::info!("Secondary IDE Bus:");
-	ide::detect_drives(control_secondary_base, io_secondary_base);
+	ide::detect_drives(control_secondary_base, io_secondary_base, busmaster_secondary_base);
     }
 
     fn check_device(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {

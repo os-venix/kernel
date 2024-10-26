@@ -1,15 +1,23 @@
 use alloc::string::String;
 use core::arch::asm;
 use core::ascii;
+use core::slice;
+use alloc::sync::Arc;
+use alloc::boxed::Box;
+use spin::{RwLock, RwLockWriteGuard};
 use x86_64::instructions::port::Port;
 use itertools::Itertools;
 use alloc::vec;
 use core::ptr;
 use bit_field::BitField;
 
+use crate::driver;
+use crate::memory;
+
 const IDE_CTL_REG: u16 = 0;
 const IDE_CTL_NIEN: u8 = 1 << 1;
 const IDE_CTL_SRST: u8 = 1 << 2;
+const IDE_CTL_HOB: u8 = 1 << 7;
 
 const IDE_DRIVE_HEAD_REG: u16 = 6;
 const IDE_DRIVE_HEAD_BASE: u8 = 0xA0;  // LBA, + always set bits
@@ -19,18 +27,39 @@ const IDE_DRIVE_HEAD_DRIVE_SEL_SECONDARY: u8 = 1 << 4;
 const IDE_CMD_REG: u16 = 7;
 const IDE_CMD_IDENTIFY: u8 = 0xEC;
 const IDE_CMD_PACKET_IDENTIFY: u8 = 0xA1;
+const IDE_CMD_READ_PIO_EXT: u8 = 0x24;
+const IDE_CMD_READ_DMA_EXT: u8 = 0x25;
 
 const IDE_STATUS_REG: u16 = 7;
 const IDE_STATUS_ERR: u8 = 1;
 const IDE_STATUS_RDY: u8 = 1 << 6;
 const IDE_STATUS_BSY: u8 = 1 << 7;
+const IDE_STATUS_DF: u8 = 1 << 5;
+const IDE_STATUS_DRQ: u8 = 1 << 3;
 
 const IDE_REG_CYL_LO: u16 = 4;
 const IDE_REG_CYL_HI: u16 = 5;
 
+const IDE_REG_LBA0: u16 = 3;
+const IDE_REG_LBA1: u16 = 4;
+const IDE_REG_LBA2: u16 = 5;
+const IDE_REG_SECCOUNT: u16 = 2;
+
 const IDE_DATA_REG: u16 = 0;
+const IDE_ERR_REG: u16 = 1;
 
 const IDE_IDENT_MODEL: usize = 54;
+
+const IDE_BUSMASTER_PRDT_REG: u16 = 0x04;
+const IDE_BUSMASTER_COMMAND_REG: u16 = 0x00;
+const IDE_BUSMASTER_STATUS_REG: u16 = 0x02;
+
+const IDE_BUSMASTER_COMMAND_READ: u8 = 1 << 3;
+const IDE_BUSMASTER_COMMAND_START: u8 = 1 << 0;
+
+const IDE_BUSMASTER_STATUS_ACTIVE: u8 = 1 << 0;
+const IDE_BUSMASTER_STATUS_DMA_ERR: u8 = 1 << 1;
+const IDE_BUSMASTER_STATUS_INTERRUPT: u8 = 1 << 2;
 
 #[repr(C, packed(1))]
 #[derive(Copy, Clone)]
@@ -44,6 +73,21 @@ impl Default for ModelNumber {
 struct MediaSerialNumber([ascii::Char; 60]);
 impl Default for MediaSerialNumber {
     fn default() -> Self { MediaSerialNumber([ascii::Char::Null; 60]) }
+}
+
+#[derive(Debug)]
+enum Mode {
+    MWDMA2,
+    MWDMA1,
+    MWDMA0,
+    UDMA6,
+    UDMA5,
+    UDMA4,
+    UDMA3,
+    UDMA2,
+    UDMA1,
+    UDMA0,
+    PIO,
 }
 
 #[repr(C, packed(1))]
@@ -162,6 +206,35 @@ impl IdentifyStruct {
 	let c = self.supported_commands[1];
 	c.get_bit(10)
     }
+
+    fn get_mode(&self) -> Mode {
+	let dma_modes = self.dma_modes;
+	let udma_modes = self.udma_modes;
+
+	if dma_modes.get_bit(10) {
+	    Mode::MWDMA2
+	} else if dma_modes.get_bit(9) {
+	    Mode::MWDMA1
+	} else if dma_modes.get_bit(8) {
+	    Mode::MWDMA0
+	} else if udma_modes.get_bit(14) {
+	    Mode::UDMA6
+	} else if udma_modes.get_bit(13) {
+	    Mode::UDMA5
+	} else if udma_modes.get_bit(12) {
+	    Mode::UDMA4
+	} else if udma_modes.get_bit(11) {
+	    Mode::UDMA3
+	} else if udma_modes.get_bit(10) {
+	    Mode::UDMA2
+	} else if udma_modes.get_bit(9) {
+	    Mode::UDMA1
+	} else if udma_modes.get_bit(8) {
+	    Mode::UDMA0
+	} else {
+	    Mode::PIO
+	}
+    }
 }
 
 #[derive(Debug)]
@@ -175,36 +248,34 @@ enum DriveType {
 struct IdeController {
     control_base: u16,
     io_base: u16,
-    drive_0: Option<IdeDrive>,
-    drive_1: Option<IdeDrive>,
+    busmaster_base: Option<u32>,
 }
 
 impl IdeController {
-    pub fn new(control_base: u16, io_base: u16) -> IdeController {
+    pub fn new(control_base: u16, io_base: u16, busmaster_base: Option<u32>) {
 	let mut ide_controller = IdeController {
 	    control_base: control_base,
 	    io_base: io_base,
-	    drive_0: None,
-	    drive_1: None,
+	    busmaster_base: busmaster_base,
 	};
 
 	ide_controller.reset();
-	if let Some(ide_drive) = IdeDrive::new(control_base, io_base, 0) {
+
+	let locked = Arc::new(RwLock::new(ide_controller));
+	if let Some(ide_drive) = IdeDrive::new(locked.clone(), 0) {
 	    let model = ide_drive.ident.get_model();
 	    let size = ide_drive.ident.get_size_in_sectors();
 	    log::info!("Drive 0: {} - {} MiB", model, size / (1024 * 2));
 
-	    ide_controller.drive_0 = Some(ide_drive);
+	    log::info!("{}", driver::register_device(Box::new(ide_drive)));
 	}
-	if let Some(ide_drive) = IdeDrive::new(control_base, io_base, 1) {
+	if let Some(ide_drive) = IdeDrive::new(locked, 1) {
 	    let model = ide_drive.ident.get_model();
 	    let size = ide_drive.ident.get_size_in_sectors();
 	    log::info!("Drive 1: {} - {} MiB", model, size / (1024 * 2));
 
-	    ide_controller.drive_1 = Some(ide_drive);
+	    driver::register_device(Box::new(ide_drive));
 	}
-
-	ide_controller
     }
 
     fn reset(&self) {
@@ -223,18 +294,33 @@ impl IdeController {
 }
 
 struct IdeDrive {
-    control_base: u16,
-    io_base: u16,
+    controller: Arc<RwLock<IdeController>>,
     drive_num: u8,
     ident: IdentifyStruct,
     drive_type: DriveType,
 }
 
+unsafe impl Send for IdeDrive { }
+unsafe impl Sync for IdeDrive { }
+
+impl driver::Device for IdeDrive {
+    fn read(&self, offset: u64, size: u64) -> Result<*const u8, ()> {
+	if !self.ident.is_lba48() {
+	    unimplemented!();
+	}
+	let mode = self.ident.get_mode();
+
+	match mode {
+	    Mode::PIO => self.pio_read(offset, size),
+	    _ => self.dma_read(offset, size),
+	}
+    }
+}
+    
 impl IdeDrive {
-    pub fn new(control_base: u16, io_base: u16, drive_num: u8) -> Option<IdeDrive> {
+    pub fn new(controller: Arc<RwLock<IdeController>>, drive_num: u8) -> Option<IdeDrive> {
 	let mut ide_drive = IdeDrive {
-	    control_base: control_base,
-	    io_base: io_base,
+	    controller: controller,
 	    drive_num: drive_num,
 	    ident: IdentifyStruct {
 		..Default::default()
@@ -250,7 +336,7 @@ impl IdeDrive {
 	Some(ide_drive)
     }
 
-    fn select(&self) {
+    fn select(&self, ctl: &RwLockWriteGuard<'_, IdeController>) {
 	// TODO: make port a shared, locked resource
 	let select_cmd = IDE_DRIVE_HEAD_BASE | if self.drive_num == 0 {
 	    IDE_DRIVE_HEAD_DRIVE_SEL_PRIMARY
@@ -258,22 +344,23 @@ impl IdeDrive {
 	    IDE_DRIVE_HEAD_DRIVE_SEL_SECONDARY
 	};
 	unsafe {
-	    let mut drive_head_reg = Port::<u8>::new(self.io_base + IDE_DRIVE_HEAD_REG);
+	    let mut drive_head_reg = Port::<u8>::new(ctl.io_base + IDE_DRIVE_HEAD_REG);
 	    drive_head_reg.write(select_cmd);
 	}
 	for i in 0 .. 1000000 { unsafe { asm!("nop"); } }
     }
 
     fn check_exists_and_set_type(&mut self) -> bool {
-	self.select();
+	let mut ctl = self.controller.write();
+	self.select(&ctl);
 	unsafe {
-	    let mut cmd_reg = Port::<u8>::new(self.io_base + IDE_CMD_REG);
+	    let mut cmd_reg = Port::<u8>::new(ctl.io_base + IDE_CMD_REG);
 	    cmd_reg.write(IDE_CMD_IDENTIFY);
 	}
 	for i in 0 .. 1000000 { unsafe { asm!("nop"); } }
 
 	unsafe {
-	    let mut status_reg = Port::<u8>::new(self.io_base + IDE_STATUS_REG);
+	    let mut status_reg = Port::<u8>::new(ctl.io_base + IDE_STATUS_REG);
 	    // No drive detected
 	    if status_reg.read() == 0 {
 		return false;
@@ -283,8 +370,8 @@ impl IdeDrive {
 		let status = status_reg.read();
 		if status & IDE_STATUS_ERR == 1 {
 		    unsafe {
-			let mut reg_cyl_lo = Port::<u8>::new(self.io_base + IDE_REG_CYL_LO);
-			let mut reg_cyl_hi = Port::<u8>::new(self.io_base + IDE_REG_CYL_HI);
+			let mut reg_cyl_lo = Port::<u8>::new(ctl.io_base + IDE_REG_CYL_LO);
+			let mut reg_cyl_hi = Port::<u8>::new(ctl.io_base + IDE_REG_CYL_HI);
 
 			let cl = reg_cyl_lo.read();
 			let ch = reg_cyl_hi.read();
@@ -315,7 +402,8 @@ impl IdeDrive {
     }
 
     fn set_ident(&mut self) {
-	self.select();
+	let mut ctl = self.controller.write();
+	self.select(&ctl);
 
 	let cmd = match self.drive_type {
 	    DriveType::ATAPI => IDE_CMD_PACKET_IDENTIFY,
@@ -324,12 +412,12 @@ impl IdeDrive {
 	    DriveType::SATA => IDE_CMD_IDENTIFY,
 	};
 	unsafe {
-	    let mut cmd_reg = Port::<u8>::new(self.io_base + IDE_CMD_REG);
+	    let mut cmd_reg = Port::<u8>::new(ctl.io_base + IDE_CMD_REG);
 	    cmd_reg.write(cmd);
 	}
 
 	unsafe {
-	    let mut ctl_reg = Port::<u8>::new(self.control_base);
+	    let mut ctl_reg = Port::<u8>::new(ctl.control_base);
 	    ctl_reg.read();
 	    ctl_reg.read();
 	    ctl_reg.read();
@@ -339,7 +427,7 @@ impl IdeDrive {
 	let mut buf: [u32; 128] = [0; 128];
 	for i in 0 .. 128 {
 	    unsafe {
-		let mut data_reg = Port::<u32>::new(self.io_base + IDE_DATA_REG);
+		let mut data_reg = Port::<u32>::new(ctl.io_base + IDE_DATA_REG);
 		buf[i] = data_reg.read();
 	    }
 	}
@@ -348,8 +436,237 @@ impl IdeDrive {
 	    ptr::read(buf.as_ptr() as *const IdentifyStruct)
 	};
     }
+    
+    fn pio_read(&self, offset: u64, size: u64) -> Result<*const u8, ()> {
+	let mut ctl = self.controller.write();
+	self.select_drive_and_set_xfer_params(&ctl, offset, size);
+
+	unsafe {
+	    let mut cmd_reg = Port::<u8>::new(ctl.io_base + IDE_CMD_REG);
+	    cmd_reg.write(IDE_CMD_READ_PIO_EXT);
+	}
+
+	for i in 0 .. 1000000 { unsafe { asm!("nop"); } }
+	unsafe {
+	    let mut status_reg = Port::<u8>::new(ctl.io_base + IDE_STATUS_REG);
+
+	    loop {
+		let status = status_reg.read();
+		if status & IDE_STATUS_BSY == 0 {
+		    break;
+		}
+	    }
+
+	    let status = status_reg.read();
+	    if status & IDE_STATUS_ERR != 0 {
+		let mut err_reg = Port::<u8>::new(ctl.io_base + IDE_ERR_REG);
+		let err = err_reg.read();
+		panic!("Read failure: {:X}", err);
+	    }
+	    if status & IDE_STATUS_DRQ == 0 {
+		panic!("Read failure");
+	    }
+	    if status & IDE_STATUS_DF != 0 {
+		panic!("Read failure");
+	    }
+	}
+
+	unsafe {
+	    let mut buf_ptr = memory::allocate_by_size_kernel(size)
+		.expect("Unable to allocate heap").as_mut_ptr::<u16>();
+
+	    let buf_u16 = slice::from_raw_parts_mut(buf_ptr, (size / 2) as usize);
+
+	    let mut data_reg = Port::<u16>::new(ctl.io_base + IDE_DATA_REG);
+	    for i in 0 .. (size / 2) {
+		buf_u16[i as usize] = data_reg.read();
+	    }
+
+	    Ok(buf_ptr as *const u8)
+	}
+    }
+
+    fn dma_read(&self, offset: u64, size: u64) -> Result<*const u8, ()> {
+	let mut ctl = self.controller.write();
+
+	let (prdt_virt, prdt_phys) = memory::allocate_by_size_kernel_dma(4096).expect("Unable to allocate a PDRT memory region");
+	let prdt_phys_addr = prdt_phys[0].as_u64();
+	if prdt_phys_addr >= 1 << 32 {
+	    panic!("PRDT region is out of bounds, in higher half of physical memory");
+	}
+
+	let prdt = unsafe {
+	    slice::from_raw_parts_mut (prdt_virt.as_mut_ptr::<u32>(), 1024)
+	};
+
+	// We don't (yet) support multiple PRDs per transfer
+	if size > 65536 {
+	    panic!("Attempted to transfer more than max size");
+	}
+
+	let (buf_virt, buf_phys) = memory::allocate_by_size_kernel_dma(size).expect("Unable to allocate a PDRT memory region");
+
+	// Ensure the region  is contiguous. There are two ways to solve this better:
+	// 1.) Allow multiple PRD entires, one per non-contiguous region
+	// 2.) Support asking the memory manager for a contiguous region
+	// Both should be implemented, as it's likely both will be needed in the long run
+	// For now, we'll just accept this limitation
+	for (i, buf_page) in buf_phys.iter().enumerate() {
+	    if i != buf_phys.len() - 1 {
+		if buf_page.as_u64() + 4096 != buf_phys[i + 1].as_u64() {
+		    panic!("Attempted to transfer into more than one non-contiguous memory region");
+		}
+	    }
+	}
+
+	let buf_start_phys = buf_phys[0].as_u64();
+	if buf_start_phys >= 1 << 32 {
+	    panic!("DMA region is out of bounds, in higher half of physical memory");
+	}
+
+	prdt[0] = buf_start_phys as u32;
+	prdt[1] = (1 << 31) | (size as u32 & 0xFFFF);
+
+	let busmaster_base = ctl.busmaster_base.expect("Attempted to do DMA xfer to non-DMA controller") as u16;
+
+	unsafe {
+	    let mut prdt_addr_reg = Port::<u32>::new(busmaster_base + 0x04);
+	    prdt_addr_reg.write(prdt_phys_addr as u32);
+	}
+
+	unsafe {
+	    let mut prdt_command_reg = Port::<u8>::new(busmaster_base + IDE_BUSMASTER_COMMAND_REG);
+	    prdt_command_reg.write(IDE_BUSMASTER_COMMAND_READ);
+	}
+
+	unsafe {
+	    let mut prdt_status_reg = Port::<u8>::new(busmaster_base + IDE_BUSMASTER_STATUS_REG);
+	    let mut status = prdt_status_reg.read();
+	    status |= IDE_BUSMASTER_STATUS_DMA_ERR | IDE_BUSMASTER_STATUS_INTERRUPT;
+	    prdt_status_reg.write(status);
+	}
+
+	self.select_drive_and_set_xfer_params(&ctl, offset, size);
+	
+	unsafe {
+	    let mut cmd_reg = Port::<u8>::new(ctl.io_base + IDE_CMD_REG);
+	    cmd_reg.write(IDE_CMD_READ_DMA_EXT);
+	}
+
+	unsafe {
+	    let mut prdt_command_reg = Port::<u8>::new(busmaster_base + IDE_BUSMASTER_COMMAND_REG);
+	    prdt_command_reg.write(IDE_BUSMASTER_COMMAND_READ | IDE_BUSMASTER_COMMAND_START);
+	}
+
+	// TODO: we wait for the transfer here. We should be using interrupts to do other work, and let
+	// the transfer complete asynchronously.
+	for i in 0 .. 1000000 { unsafe { asm!("nop"); } }
+	unsafe {
+	    let mut status_reg = Port::<u8>::new(ctl.io_base + IDE_STATUS_REG);
+
+	    loop {
+		let status = status_reg.read();
+		if status & IDE_STATUS_BSY == 0 {
+		    break;
+		}
+	    }
+
+	    let status = status_reg.read();
+	    if status & IDE_STATUS_DF != 0 {
+		panic!("Read failure");
+	    }
+	    if status & IDE_STATUS_ERR != 0 {
+		let mut err_reg = Port::<u8>::new(ctl.io_base + IDE_ERR_REG);
+		let err = err_reg.read();
+		panic!("Read failure: {:X}", err);
+	    }
+	}
+	unsafe {
+	    let mut status_reg = Port::<u8>::new(busmaster_base + IDE_BUSMASTER_STATUS_REG);
+
+	    loop {
+		let status = status_reg.read();
+		if status & IDE_BUSMASTER_STATUS_ACTIVE == 0 {
+		    break;
+		}
+	    }
+
+	    let status = status_reg.read();
+	    if status & IDE_BUSMASTER_STATUS_DMA_ERR != 0 {
+		panic!("DMA error");
+	    }
+	}
+	
+	unsafe {
+	    let mut prdt_command_reg = Port::<u8>::new(busmaster_base + IDE_BUSMASTER_COMMAND_REG);
+	    prdt_command_reg.write(IDE_BUSMASTER_COMMAND_READ);
+	}
+
+	unsafe {
+	    let mut prdt_status_reg = Port::<u8>::new(busmaster_base + IDE_BUSMASTER_STATUS_REG);
+	    let mut status = prdt_status_reg.read();
+	    status |= IDE_BUSMASTER_STATUS_DMA_ERR | IDE_BUSMASTER_STATUS_INTERRUPT;
+	    prdt_status_reg.write(status);
+	}
+
+	Ok(buf_virt.as_ptr::<u8>())
+    }
+
+    fn select_drive_and_set_xfer_params(&self, ctl: &RwLockWriteGuard<'_, IdeController>, offset: u64, size: u64) {
+	self.select(&ctl);
+
+	let sectors_to_read = size / 512;
+	let offset_in_sectors = offset / 512;
+
+	log::info!("{}, {}", sectors_to_read, offset_in_sectors);
+	
+	unsafe {
+	    let mut ctl_reg = Port::<u8>::new(ctl.control_base + IDE_CTL_REG);
+	    let control_word = ctl_reg.read() | IDE_CTL_HOB;
+	    ctl_reg.write(control_word);
+	}
+	unsafe {
+	    let mut lba3_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA0);
+	    lba3_reg.write(((offset_in_sectors & 0xFF00_0000) >> 24) as u8);
+	}
+	unsafe {
+	    let mut lba4_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA1);
+	    lba4_reg.write(((offset_in_sectors & 0xFF_0000_0000) >> 32) as u8);
+	}
+	unsafe {
+	    let mut lba5_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA2);
+	    lba5_reg.write(((offset_in_sectors & 0xFF00_0000_0000) >> 40) as u8);
+	}
+
+	unsafe {
+	    let mut seccount1_reg = Port::<u8>::new(ctl.io_base + IDE_REG_SECCOUNT);
+	    seccount1_reg.write(((sectors_to_read & 0xFF00) >> 8) as u8);
+	}
+	unsafe {
+	    let mut ctl_reg = Port::<u8>::new(ctl.control_base + IDE_CTL_REG);
+	    let control_word = ctl_reg.read() & !IDE_CTL_HOB;
+	    ctl_reg.write(control_word);
+	}
+
+	unsafe {
+	    let mut lba0_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA0);
+	    lba0_reg.write((offset_in_sectors & 0xFF) as u8);
+	}
+	unsafe {
+	    let mut lba1_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA1);
+	    lba1_reg.write(((offset_in_sectors & 0xFF00) >> 8) as u8);
+	}
+	unsafe {
+	    let mut lba2_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA2);
+	    lba2_reg.write(((offset_in_sectors & 0xFF_0000) >> 16) as u8);
+	}	
+	unsafe {
+	    let mut seccount0_reg = Port::<u8>::new(ctl.io_base + IDE_REG_SECCOUNT);
+	    seccount0_reg.write((sectors_to_read & 0xFF) as u8);
+	}
+    }
 }
 
-pub fn detect_drives(control_base: u16, io_base: u16) {
-    IdeController::new(control_base, io_base);
+pub fn detect_drives(control_base: u16, io_base: u16, busmaster_base: Option<u32>) {
+    IdeController::new(control_base, io_base, busmaster_base);
 }

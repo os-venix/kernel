@@ -43,18 +43,12 @@ pub trait Bus {
     fn enumerate(&self) -> Vec<Box<dyn DeviceTypeIdentifier>>;
 }
 
-#[derive(Copy, Clone)]
-pub struct DeviceInfo {
-    // Identifying information
-    pub driver_id: u64,
-
-    // Tracking information
-    pub uid: u32,
-    pub is_loaded: bool,
+pub trait Device {
+    fn read(&self, offset: u64, size: u64) -> Result<*const u8, ()>;
 }
 
 static DRIVER_TABLE: Once<RwLock<Vec<Box<dyn Driver + Send + Sync>>>> = Once::new();
-static DEVICE_TABLE: Once<RwLock<Vec<DeviceInfo>>> = Once::new();
+static DEVICE_TABLE: Once<RwLock<Vec<Box<dyn Device + Send + Sync>>>> = Once::new();
 static BUS_TABLE: Once<RwLock<Vec<Box<dyn Bus + Send + Sync>>>> = Once::new();
 
 struct SystemBus { }
@@ -137,7 +131,7 @@ pub fn register_driver(driver: Box<dyn Driver + Send + Sync>) {
     driver_table.push(driver);
 }
 
-pub fn register_device(device: DeviceInfo) -> u64 {
+pub fn register_device(device: Box<dyn Device + Send + Sync>) -> u64 {
     let mut device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
     device_tbl.push(device);
     (device_tbl.len() - 1) as u64
@@ -163,4 +157,11 @@ pub fn register_bus_and_enumerate(bus: Box<dyn Bus + Send + Sync>) {
 
     let mut bus_tbl = BUS_TABLE.get().expect("Attempted to access bus table before it is initialised").write();
     bus_tbl.push(bus);
+}
+
+pub fn read(device_id: u64, offset: u64, size: u64) -> Result<*const u8, ()> {
+    let mut device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
+    let mut device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist");
+
+    device.read(offset, size)
 }

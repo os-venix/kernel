@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 use alloc::fmt;
 use core::any::Any;
 use aml::AmlName;
-use pci_types::{ConfigRegionAccess, PciAddress, PciHeader, VendorId, DeviceId, BaseClass, SubClass, Interface};
+use pci_types::{ConfigRegionAccess, PciAddress, PciHeader, HeaderType, EndpointHeader, Bar, VendorId, DeviceId, BaseClass, SubClass, Interface};
 use x86_64::instructions::port::{PortGeneric, ReadWriteAccess, WriteOnlyAccess};
 
 use crate::driver;
@@ -53,6 +53,7 @@ pub fn init() {
     driver::register_driver(Box::new(pci_driver));
 }
 
+#[derive(Copy, Clone)]
 pub struct PciDeviceType {
     // Location
     pub address: PciAddress,
@@ -177,4 +178,18 @@ impl driver::Driver for PciDriver {
     fn check_new_device(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
 	true // Not yet implemented
     }
+}
+
+pub fn get_bar(info: PciDeviceType, slot: u8) -> Option<Bar> {
+    let pci_config_access = PciConfigAccess::new();
+    let device_header = PciHeader::new(info.address);
+
+    let endpoint_header = match device_header.header_type(pci_config_access) {
+	HeaderType::Endpoint => EndpointHeader::from_header(device_header, pci_config_access).expect("Creating endpoint header failed"),
+	HeaderType::PciPciBridge => panic!("Attempted to access BAR of PciPciBridge"),
+	HeaderType::CardBusBridge => panic!("Attempted to access BAR of CardBusBridge"),
+	_ => panic!("Unknown header type"),
+    };
+
+    endpoint_header.bar(slot, pci_config_access)
 }

@@ -1,0 +1,4 @@
+struct BusMaster {
+    busmaster_base: u32,
+}
+
