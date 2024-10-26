@@ -13,6 +13,7 @@ use bit_field::BitField;
 
 use crate::driver;
 use crate::memory;
+use crate::sys::block;
 
 const IDE_CTL_REG: u16 = 0;
 const IDE_CTL_NIEN: u8 = 1 << 1;
@@ -237,7 +238,7 @@ impl IdentifyStruct {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum DriveType {
     ATA,
     ATAPI,
@@ -265,16 +266,20 @@ impl IdeController {
 	if let Some(ide_drive) = IdeDrive::new(locked.clone(), 0) {
 	    let model = ide_drive.ident.get_model();
 	    let size = ide_drive.ident.get_size_in_sectors();
-	    log::info!("Drive 0: {} - {} MiB", model, size / (1024 * 2));
 
-	    log::info!("{}", driver::register_device(Box::new(ide_drive)));
+	    log::info!("Drive 0: {} - {} MiB", model, size / (1024 * 2));
+	    let device_arc = Arc::new(ide_drive);
+	    driver::register_device(device_arc.clone());
+	    block::register_block_device(device_arc);
 	}
 	if let Some(ide_drive) = IdeDrive::new(locked, 1) {
 	    let model = ide_drive.ident.get_model();
 	    let size = ide_drive.ident.get_size_in_sectors();
 	    log::info!("Drive 1: {} - {} MiB", model, size / (1024 * 2));
 
-	    driver::register_device(Box::new(ide_drive));
+	    let device_arc = Arc::new(ide_drive);
+	    driver::register_device(device_arc.clone());
+	    block::register_block_device(device_arc);
 	}
     }
 
@@ -306,6 +311,9 @@ unsafe impl Sync for IdeDrive { }
 impl driver::Device for IdeDrive {
     fn read(&self, offset: u64, size: u64) -> Result<*const u8, ()> {
 	if !self.ident.is_lba48() {
+	    unimplemented!();
+	}
+	if self.drive_type != DriveType::ATA {
 	    unimplemented!();
 	}
 	let mode = self.ident.get_mode();
@@ -504,7 +512,7 @@ impl IdeDrive {
 	    panic!("Attempted to transfer more than max size");
 	}
 
-	let (buf_virt, buf_phys) = memory::allocate_by_size_kernel_dma(size).expect("Unable to allocate a PDRT memory region");
+	let (buf_virt, buf_phys) = memory::allocate_by_size_kernel_dma(size * 512).expect("Unable to allocate a PDRT memory region");
 
 	// Ensure the region  is contiguous. There are two ways to solve this better:
 	// 1.) Allow multiple PRD entires, one per non-contiguous region
@@ -525,7 +533,7 @@ impl IdeDrive {
 	}
 
 	prdt[0] = buf_start_phys as u32;
-	prdt[1] = (1 << 31) | (size as u32 & 0xFFFF);
+	prdt[1] = (1 << 31) | (((size as u32) * 512) & 0xFFFF);
 
 	let busmaster_base = ctl.busmaster_base.expect("Attempted to do DMA xfer to non-DMA controller") as u16;
 
@@ -615,11 +623,9 @@ impl IdeDrive {
     fn select_drive_and_set_xfer_params(&self, ctl: &RwLockWriteGuard<'_, IdeController>, offset: u64, size: u64) {
 	self.select(&ctl);
 
-	let sectors_to_read = size / 512;
-	let offset_in_sectors = offset / 512;
+	let sectors_to_read = size;
+	let offset_in_sectors = offset;
 
-	log::info!("{}, {}", sectors_to_read, offset_in_sectors);
-	
 	unsafe {
 	    let mut ctl_reg = Port::<u8>::new(ctl.control_base + IDE_CTL_REG);
 	    let control_word = ctl_reg.read() | IDE_CTL_HOB;

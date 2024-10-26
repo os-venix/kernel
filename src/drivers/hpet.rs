@@ -2,6 +2,7 @@ use crate::driver;
 use aml::{AmlName, AmlValue, value::Args, resource::{resource_descriptor_list, Resource, MemoryRangeDescriptor}};
 use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::sync::Arc;
 use alloc::boxed::Box;
 use alloc::format;
 use spin::{Once, RwLock};
@@ -270,7 +271,7 @@ impl driver::Driver for HpetDriver {
 		_ => panic!("This shouldn't happen"),
 	    }).nth(0).expect("No memory ranges returned for HPET");
 
-	let device = Box::new(HpetDevice {});
+	let device = Arc::new(HpetDevice {});
 	driver::register_device(device);
 
 	HPET.call_once(|| RwLock::new(Hpet::new(*base_address, *range_length)));

@@ -3,8 +3,10 @@ use core::fmt;
 use spin::{Once, RwLock};
 use alloc::vec::Vec;
 use alloc::string::{ToString, String};
+use alloc::sync::Arc;
 use alloc::boxed::Box;
 use alloc::format;
+
 use aml::{AmlName, LevelType, value::{AmlValue, Args}};
 
 use crate::sys::acpi;
@@ -48,7 +50,7 @@ pub trait Device {
 }
 
 static DRIVER_TABLE: Once<RwLock<Vec<Box<dyn Driver + Send + Sync>>>> = Once::new();
-static DEVICE_TABLE: Once<RwLock<Vec<Box<dyn Device + Send + Sync>>>> = Once::new();
+static DEVICE_TABLE: Once<RwLock<Vec<Arc<dyn Device + Send + Sync>>>> = Once::new();
 static BUS_TABLE: Once<RwLock<Vec<Box<dyn Bus + Send + Sync>>>> = Once::new();
 
 struct SystemBus { }
@@ -131,7 +133,7 @@ pub fn register_driver(driver: Box<dyn Driver + Send + Sync>) {
     driver_table.push(driver);
 }
 
-pub fn register_device(device: Box<dyn Device + Send + Sync>) -> u64 {
+pub fn register_device(device: Arc<dyn Device + Send + Sync>) -> u64 {
     let mut device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
     device_tbl.push(device);
     (device_tbl.len() - 1) as u64

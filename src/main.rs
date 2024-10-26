@@ -98,23 +98,10 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
     interrupts::init_bsp_apic();
 
     driver::init();
+    sys::block::init();
     drivers::init();
 
     driver::configure_drivers();
-
-    let buf_ptr = driver::read(1, 512, 512).expect("Read went wrong");
-    let buf = unsafe {
-	slice::from_raw_parts(buf_ptr, 512)
-    };
-
-    log::info!("");
-    log::info!("");
-    log::info!("");
-    log::info!("");
-    log::info!("");
-    log::info!("");
-
-    log::info!("{:?}", buf);
 }
 
 fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {

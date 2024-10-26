@@ -33,3 +33,7 @@ default-features = false
 [dependencies.lazy_static]
 version = "1.5"
 features = ["spin_no_std"]
+
+[dependencies.uuid]
+version = "1.11"
+default-features = false
