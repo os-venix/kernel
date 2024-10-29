@@ -8,14 +8,10 @@ use core::ascii;
 use uuid::Uuid;
 
 use crate::driver;
-
-const MBR_PART1_OFFSET: usize = 0x1BE;
-
-const MBR_SYSTEM_ID: usize = 0x04;
-
-static BLOCK_DEVICE_TABLE: Once<RwLock<Vec<Arc<dyn driver::Device + Send + Sync>>>> = Once::new();
+use crate::fs::fat;
 
 #[repr(C, packed(1))]
+#[derive(Copy, Clone)]
 struct PackedUuid {
     d1: u32,
     d2: u16,
@@ -63,6 +59,7 @@ struct PartitionTableHeader {
 }
 
 #[repr(C, packed(1))]
+#[derive(Copy, Clone)]
 struct PartitionEntry {
     partition_type_guid: PackedUuid,
     partition_guid: PackedUuid,
@@ -72,18 +69,23 @@ struct PartitionEntry {
     partition_name: [u16; 36],
 }
 
-pub fn init() {
-    BLOCK_DEVICE_TABLE.call_once(|| RwLock::new(Vec::new()));
+pub struct GptDevice {
+    mbr: Mbr,
+    pth: PartitionTableHeader,
+    pt: Vec<PartitionEntry>,
+    dev: Arc<dyn driver::Device + Send + Sync>,
 }
 
-pub fn register_block_device(dev: Arc<dyn driver::Device + Send + Sync>) {
-    let mbr_buf_ptr = dev.read(1, 1).expect("Read went wrong");
-    let mbr = unsafe {
-	ptr::read(mbr_buf_ptr as *const Mbr)
-    };
+impl GptDevice {
+    fn new(dev: Arc<dyn driver::Device + Send + Sync>) -> Option<Arc<GptDevice>> {
+	let mbr_buf_ptr = dev.read(1, 1).expect("Read went wrong");
+	let mbr = unsafe {
+	    ptr::read(mbr_buf_ptr as *const Mbr)
+	};
 
-    if mbr.partitions[0].system_id == 0xEE {
-	log::info!("Found a GPT device");
+	if mbr.partitions[0].system_id != 0xEE {
+	    return None;
+	}
 
 	let pth_buf_ptr = dev.read(2, 1).expect("Read went wrong");
 	let pth = unsafe {
@@ -94,7 +96,7 @@ pub fn register_block_device(dev: Arc<dyn driver::Device + Send + Sync>) {
 	    .map(|c| c.to_char())
 	    .collect::<String>();
 	if sig != "EFI PART" {
-	    panic!("Not actually GPT (or the partition table is in a weird place");
+	    return None;
 	}
 
 	let pt_size_in_sector_bytes = pth.partition_entry_array_size + (512 - (pth.partition_entry_array_size % 512));  // Total amount, aligned to page boundaries
@@ -125,7 +127,52 @@ pub fn register_block_device(dev: Arc<dyn driver::Device + Send + Sync>) {
 		&partition_entries[p as usize].partition_type_guid.d4);
 	    log::info!("Found partition {}, type = {}", partition_name, partition_uuid);
 	}
+
+	let device_arc = Arc::new(GptDevice {
+	    mbr: mbr,
+	    pth: pth,
+	    pt: partition_entries.clone(),
+	    dev: dev,
+	});
+
+	for partition in 0 .. partition_entries.len() {
+	    fat::register_fat_fs(device_arc.clone(), partition as u32);
+	}
+
+	Some(device_arc)
     }
 
-    
+    pub fn read(&self, partition: u32, starting_block: u64, size: u64) -> Result<*const u8, ()> {
+	if partition as usize >= self.pt.len() {
+	    return Err(());
+	}
+
+	let pt = self.pt[partition as usize];
+	if starting_block >= (pt.ending_lba - pt.starting_lba) {
+	    return Err(());
+	}
+
+	let adjusted_start = starting_block + pt.starting_lba;
+	if adjusted_start + size >= pt.ending_lba {
+	    return Err(());
+	}
+
+	self.dev.read(adjusted_start + 1, size)
+    }
+}
+
+unsafe impl Send for GptDevice { }
+unsafe impl Sync for GptDevice { }
+
+static BLOCK_DEVICE_TABLE: Once<RwLock<Vec<Arc<GptDevice>>>> = Once::new();
+
+pub fn init() {
+    BLOCK_DEVICE_TABLE.call_once(|| RwLock::new(Vec::new()));
+}
+
+pub fn register_block_device(dev: Arc<dyn driver::Device + Send + Sync>) {
+    if let Some(gpt_device) = GptDevice::new(dev) {
+	let mut device_tbl = BLOCK_DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
+	device_tbl.push(gpt_device);
+    }
 }

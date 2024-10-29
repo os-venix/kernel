@@ -23,6 +23,7 @@ mod sys;
 mod drivers;
 mod driver;
 mod printk;
+mod fs;
 
 const CONFIG: bootloader_api::BootloaderConfig = {
     let mut config = bootloader_api::BootloaderConfig::new_default();

@@ -205,8 +205,10 @@ impl Printk {
                     self.clear();
                 }
 
-                let mapped = get_raster(c, FontWeight::Regular, RasterHeight::Size16).unwrap();
-                self.render(mapped);
+                match get_raster(c, FontWeight::Regular, RasterHeight::Size16) {
+		    Some(s) => self.render(s),
+		    None => self.putch('?'),
+		};
             }
         }
     }
