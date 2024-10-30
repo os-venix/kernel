@@ -78,7 +78,7 @@ pub struct GptDevice {
 
 impl GptDevice {
     fn new(dev: Arc<dyn driver::Device + Send + Sync>) -> Option<Arc<GptDevice>> {
-	let mbr_buf_ptr = dev.read(1, 1).expect("Read went wrong");
+	let mbr_buf_ptr = dev.read(0, 1).expect("Read went wrong");
 	let mbr = unsafe {
 	    ptr::read(mbr_buf_ptr as *const Mbr)
 	};
@@ -87,7 +87,7 @@ impl GptDevice {
 	    return None;
 	}
 
-	let pth_buf_ptr = dev.read(2, 1).expect("Read went wrong");
+	let pth_buf_ptr = dev.read(1, 1).expect("Read went wrong");
 	let pth = unsafe {
 	    ptr::read(pth_buf_ptr as *const PartitionTableHeader)
 	};
@@ -101,7 +101,7 @@ impl GptDevice {
 
 	let pt_size_in_sector_bytes = pth.partition_entry_array_size + (512 - (pth.partition_entry_array_size % 512));  // Total amount, aligned to page boundaries
 	let pt_size_in_sectors = pt_size_in_sector_bytes / 512;
-	let pt_buf = dev.read(3, pt_size_in_sectors as u64).expect("Could not read Partition Entry table");
+	let pt_buf = dev.read(2, pt_size_in_sectors as u64).expect("Could not read Partition Entry table");
 
 	let mut partition_entries: Vec<PartitionEntry> = Vec::new();
 
@@ -157,7 +157,7 @@ impl GptDevice {
 	    return Err(());
 	}
 
-	self.dev.read(adjusted_start + 1, size)
+	self.dev.read(adjusted_start, size)
     }
 }
 

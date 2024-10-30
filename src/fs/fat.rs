@@ -20,6 +20,7 @@ enum Entry {
 }
 
 #[repr(C, packed(1))]
+#[derive(Default, Debug)]
 struct DirectoryEntry {
     file_name: [ascii::Char; 11],
     attributes: u8,
@@ -120,7 +121,18 @@ impl Fat16Fs {
 	    .map(|c| c.to_char())
 	    .collect::<String>();
 
-	log::info!("Found FAT16 volume {}", vol);
+	let root_directory_size_sectors = ((boot_record.root_directory_entries * 32) +
+					   (boot_record.bytes_per_sector - 1)) / boot_record.bytes_per_sector;
+	let total_sectors = if boot_record.sectors_in_volume != 0 { boot_record.sectors_in_volume as u32 } else { boot_record.large_sector_count };
+	let data_sectors = total_sectors - (boot_record.reserved_sectors as u32 + (boot_record.number_of_fats as u32 * boot_record.sectors_per_fat as u32) + root_directory_size_sectors as u32);
+
+	if boot_record.sectors_per_fat != 0 &&
+	    data_sectors >= 4085 &&
+	    data_sectors <= 65525 {
+		log::info!("Found FAT16 volume {}", vol);
+	    } else {
+		log::info!("Not FAT16");
+	    }
 
 	Some(Fat16Fs {
 	    boot_record: boot_record,
@@ -130,40 +142,62 @@ impl Fat16Fs {
 	})
     }
 
-    fn get_dir_entries(&self, path: String) -> Option<Vec<Entry>> {
-	if path != "/" {
-	    panic!("Attempted to read from non-root directory. Not implemented.");
-	}
-
+    fn get_root_directory(&self) -> *const u8 {
 	let sectors_per_lba = self.boot_record.bytes_per_sector / 512;
 
 	let root_directory_sect = self.boot_record.reserved_sectors +
 	    (self.boot_record.number_of_fats as u16 * self.boot_record.sectors_per_fat);
-	let root_directory_lba = root_directory_sect / sectors_per_lba;
+	let root_directory_lba = root_directory_sect * sectors_per_lba;
 
 	let root_directory_size_sectors = ((self.boot_record.root_directory_entries * 32) +
-				(self.boot_record.bytes_per_sector - 1)) / self.boot_record.bytes_per_sector;
+					   (self.boot_record.bytes_per_sector - 1)) / self.boot_record.bytes_per_sector;
 	let root_directory_size_lba = root_directory_size_sectors / sectors_per_lba;
 
-	let root_dir_buf_ptr = self.dev.read(
-	    self.partition, root_directory_lba as u64, root_directory_size_lba as u64).expect("Couldn't read root directory");
-	let mut files: Vec<Entry> = Vec::new();
+	self.dev.read(
+	    self.partition, root_directory_lba as u64, root_directory_size_lba as u64).expect("Couldn't read root directory")
+    }
 
+    fn get_allocation_table(&self) -> Vec<u16> {
+	let sectors_per_lba = self.boot_record.bytes_per_sector / 512;
+
+	let fat_lba = 1 * sectors_per_lba;
+
+	let fat_size_sectors = self.boot_record.sectors_per_fat;
+	let fat_size_lba = fat_size_sectors / sectors_per_lba;
+
+	let fat_buf_ptr = self.dev.read(
+	    self.partition, fat_lba as u64, fat_size_lba as u64).expect("Couldn't read FAT");
+
+	let mut table: Vec<u16> = Vec::new();
+	for entry in 0 .. self.boot_record.sectors_per_fat * self.boot_record.bytes_per_sector / 2 {
+	    unsafe {
+		table.push(
+		    ptr::read(fat_buf_ptr.wrapping_add(entry as usize * 2) as *const u16)
+		);
+	    }
+	}
+
+	table
+    }
+
+    fn get_filename(&self, dir: *const u8, index: usize) -> (Option<String>, usize) {
 	let mut file_name = String::new();
-	for entry in 0 .. self.boot_record.root_directory_entries {
+	let mut cnt = 0;
+
+	for entry in index .. self.boot_record.root_directory_entries as usize {
 	    let directory_entry = unsafe {
-		ptr::read(root_dir_buf_ptr.wrapping_add(entry as usize * 32) as *const DirectoryEntry)
+		ptr::read(dir.wrapping_add(entry as usize * 32) as *const DirectoryEntry)
 	    };
 
 	    if directory_entry.file_name[0].to_u8() == 0x00 {
-		break;
+		return (None, cnt);
 	    } else if directory_entry.file_name[0].to_u8() == 0xE5 {
-		continue;
+		return (None, cnt);
 	    }
 
 	    if directory_entry.attributes == 0x0F {
 		let long_filename_entry = unsafe {
-		    ptr::read(root_dir_buf_ptr.wrapping_add(entry as usize * 32) as *const LongFileName)
+		    ptr::read(dir.wrapping_add(entry as usize * 32) as *const LongFileName)
 		};
 
 		let name1 = long_filename_entry.name1;
@@ -190,12 +224,14 @@ impl Fat16Fs {
 		    String::from_utf16(name3_vec.as_slice()).expect("Malformed filename").as_str());
 		file_name.push_str(long_filename.as_str());
 
+		cnt += 1;
+
 		continue;
 	    }
 
 	    // Volume ID isn't a file
 	    if directory_entry.attributes & 0x08 != 0 {
-		continue;
+		return (None, cnt);
 	    }
 
 	    if file_name.is_empty() {
@@ -207,25 +243,158 @@ impl Fat16Fs {
 			.as_str());
 		file_name.push('.');
 		file_name.push_str(
-		directory_entry.file_name[8 .. 11].iter()
+		    directory_entry.file_name[8 .. 11].iter()
 			.map(|c| c.to_char())
 			.filter(|i| *i != '\0')
 			.collect::<String>()
 			.as_str());
 	    }
 
-	    if directory_entry.attributes & 0x10 != 0 {
-		log::info!("Found directory /{}/", file_name);
-		files.push(Entry::DIRECTORY(file_name));
-	    } else {
-		log::info!("Found file /{}", file_name);
-		files.push(Entry::FILE(file_name));
-	    }
+	    return (Some(file_name), cnt)
+	}
 
-	    file_name = String::new();
+	(None, cnt)
+    }
+
+    fn get_dir_entries(&self, path: String) -> Option<Vec<Entry>> {
+	if path != "/" {
+	    panic!("Attempted to read from non-root directory. Not implemented.");
+	}
+
+	let root_dir_buf_ptr = self.get_root_directory();
+
+	let mut ptr = 0;
+	let mut files: Vec<Entry> = Vec::new();
+	while ptr < self.boot_record.root_directory_entries {
+	    let (maybe_fn, offset) = self.get_filename(root_dir_buf_ptr, ptr as usize);
+	    ptr += offset as u16;
+
+	    if let Some(file_name) = maybe_fn {
+		let directory_entry = unsafe {
+		    ptr::read(root_dir_buf_ptr.wrapping_add(ptr as usize * 32) as *const DirectoryEntry)
+		};
+
+		if directory_entry.attributes & 0x10 != 0 {
+		    files.push(Entry::DIRECTORY(file_name));
+		} else {
+		    files.push(Entry::FILE(file_name));
+		}
+
+		ptr += 1;
+	    } else {
+		let directory_entry = unsafe {
+		    ptr::read(root_dir_buf_ptr.wrapping_add(ptr as usize * 32) as *const DirectoryEntry)
+		};
+
+		if directory_entry.file_name[0].to_u8() == 0x00 {
+		    break;
+		} else if directory_entry.file_name[0].to_u8() == 0xE5 {
+		    ptr += 1;
+		    continue;
+		} else if directory_entry.attributes & 0x08 != 0 {
+		    ptr += 1;
+		    continue;
+		}
+	    }
 	}
 
 	Some(files)
+    }
+
+    fn read(&self, path: String) -> Result<(*const u8, usize), ()> {
+	let parts = path.split("/")
+	    .filter(|s| s.len() != 0)
+	    .collect::<Vec<&str>>();
+
+	// We don't yet support subdirectories
+	if parts.len() != 1 {
+	    return Err(());
+	}
+	let root_dir_buf_ptr = self.get_root_directory();
+
+	// TODO: This code is really ugly and very low level, there must be a better way
+	let mut ptr = 0;
+	let mut directory_entry: DirectoryEntry = Default::default();
+	while ptr < self.boot_record.root_directory_entries {
+	    let (maybe_fn, offset) = self.get_filename(root_dir_buf_ptr, ptr as usize);
+	    ptr += offset as u16;
+
+	    if let Some(file_name) = maybe_fn {
+		if file_name == parts[0] {
+		    directory_entry = unsafe {
+			ptr::read(root_dir_buf_ptr.wrapping_add(ptr as usize * 32) as *const DirectoryEntry)
+		    };
+
+		    break;
+		}
+
+		ptr += 1;
+	    } else {
+		let directory_entry = unsafe {
+		    ptr::read(root_dir_buf_ptr.wrapping_add(ptr as usize * 32) as *const DirectoryEntry)
+		};
+
+		if directory_entry.file_name[0].to_u8() == 0x00 {
+		    return Err(());
+		} else if directory_entry.file_name[0].to_u8() == 0xE5 {
+		    ptr += 1;
+		    continue;
+		} else if directory_entry.attributes & 0x08 != 0 {
+		    ptr += 1;
+		    continue;
+		}
+	    }
+	}
+
+	// File not found
+	if ptr == self.boot_record.root_directory_entries {
+	    return Err(());
+	}
+
+	// This is FAT16, no high cluster
+	let mut cluster = directory_entry.cluster_low;
+	let fat = self.get_allocation_table();
+
+	let mut clusters_to_read: Vec<u16> = Vec::new();
+	clusters_to_read.push(cluster);
+
+	loop {
+	    cluster = fat[cluster as usize];
+
+	    if cluster >= 0xFFF8 {
+		break;
+	    }
+
+	    clusters_to_read.push(cluster);
+	}
+
+	if clusters_to_read.len() == 1 {
+	    let sectors_per_lba = self.boot_record.bytes_per_sector as u64 / 512;
+
+	    let root_directory_size_sectors: u64 = ((self.boot_record.root_directory_entries as u64 * 32) +
+						    (self.boot_record.bytes_per_sector as u64 - 1))
+		/ self.boot_record.bytes_per_sector as u64;
+
+	    let first_data_sector: u64 = self.boot_record.reserved_sectors as u64 +
+		(self.boot_record.number_of_fats as u64 * self.boot_record.sectors_per_fat as u64) +
+		root_directory_size_sectors as u64;
+
+	    let cluster_sector: u64 = ((clusters_to_read[0] as u64 - 2) * self.boot_record.sectors_per_cluster as u64)
+		+ first_data_sector;
+
+	    let cluster_lba = cluster_sector * sectors_per_lba;
+
+	    let size_sectors = 1 * self.boot_record.sectors_per_cluster as u64;
+	    let size_lba = size_sectors / sectors_per_lba;
+
+	    let buf_ptr = self.dev.read(
+		self.partition, cluster_lba as u64, size_lba as u64).expect("Couldn't read file");
+
+	    Ok((buf_ptr, directory_entry.file_size as usize))
+	} else {
+	    // Not supported
+	    Err(())
+	}
     }
 }
 
@@ -274,7 +443,20 @@ pub fn register_fat_fs(dev: Arc<block::GptDevice>, partition: u32) {
 		ptr::read(boot_record_buf_ptr.wrapping_add(0x24) as *const ExtendedBootRecord1216)
 	    };
 	    if let Some(fs) = Fat16Fs::new(dev, partition, boot_record, extended_boot_record) {
-		fs.get_dir_entries(String::from("/"));
+		match fs.read(String::from("/init")) {
+		    Ok((file_contents, file_size)) => {
+			let contents_ascii_char = unsafe {
+			    slice::from_raw_parts(file_contents as *const ascii::Char, file_size)
+			};
+
+			let contents = contents_ascii_char.iter()
+			    .map(|c| c.to_char())
+			    .collect::<String>();
+
+			log::info!("{}", contents);
+		    },
+		    Err(_) => panic!("Couldn't read /init"),
+		}
 	    }
 	},
 	_ => (),

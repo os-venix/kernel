@@ -12,6 +12,26 @@ macro_rules! irq_handler_def {
     ($irq:literal) => {
 	paste::item! {
 	    extern "x86-interrupt" fn [<irq_ $irq >] (_stack_frame: InterruptStackFrame) {
+		unsafe {
+		    core::arch::asm!(concat!(
+			"push rax\n",
+			"push rbx\n",
+			"push rcx\n",
+			"push rdx\n",
+			"push rsi\n",
+			"push rdi\n",
+			"push rbp\n",
+			"push r8\n",
+			"push r9\n",
+			"push r10\n",
+			"push r11\n",
+			"push r12\n",
+			"push r13\n",
+			"push r14\n",
+			"push r15\n",
+		    ));
+		}
+
 		local_apic::ack_apic();
 
 		{
@@ -22,6 +42,26 @@ macro_rules! irq_handler_def {
 			},
 			None => (),
 		    }
+		}
+		
+		unsafe {
+		    core::arch::asm!(concat!(
+			"pop r15\n",
+			"pop r14\n",
+			"pop r13\n",
+			"pop r12\n",
+			"pop r11\n",
+			"pop r10\n",
+			"pop r9\n",
+			"pop r8\n",
+			"pop rbp\n",
+			"pop rdi\n",
+			"pop rsi\n",
+			"pop rdx\n",
+			"pop rcx\n",
+			"pop rbx\n",
+			"pop rax\n",
+		    ));
 		}
 	    }
 	}

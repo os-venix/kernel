@@ -21,7 +21,7 @@ const IDE_CTL_SRST: u8 = 1 << 2;
 const IDE_CTL_HOB: u8 = 1 << 7;
 
 const IDE_DRIVE_HEAD_REG: u16 = 6;
-const IDE_DRIVE_HEAD_BASE: u8 = 0xA0;  // LBA, + always set bits
+const IDE_DRIVE_HEAD_BASE: u8 = 0x40;  // LBA, + always set bits
 const IDE_DRIVE_HEAD_DRIVE_SEL_PRIMARY: u8 = 0;
 const IDE_DRIVE_HEAD_DRIVE_SEL_SECONDARY: u8 = 1 << 4;
 
@@ -626,49 +626,37 @@ impl IdeDrive {
 	let sectors_to_read = size;
 	let offset_in_sectors = offset;
 
-	unsafe {
-	    let mut ctl_reg = Port::<u8>::new(ctl.control_base + IDE_CTL_REG);
-	    let control_word = ctl_reg.read() | IDE_CTL_HOB;
-	    ctl_reg.write(control_word);
-	}
-	unsafe {
-	    let mut lba3_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA0);
-	    lba3_reg.write(((offset_in_sectors & 0xFF00_0000) >> 24) as u8);
-	}
-	unsafe {
-	    let mut lba4_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA1);
-	    lba4_reg.write(((offset_in_sectors & 0xFF_0000_0000) >> 32) as u8);
-	}
-	unsafe {
-	    let mut lba5_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA2);
-	    lba5_reg.write(((offset_in_sectors & 0xFF00_0000_0000) >> 40) as u8);
-	}
+	if self.ident.is_lba48() {
+	    unsafe {
+		let mut lba3_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA0);
+		let mut lba4_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA1);
+		let mut lba5_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA2);
+		let mut seccount1_reg = Port::<u8>::new(ctl.io_base + IDE_REG_SECCOUNT);
+		let mut ctl_reg = Port::<u8>::new(ctl.control_base + IDE_CTL_REG);
 
-	unsafe {
-	    let mut seccount1_reg = Port::<u8>::new(ctl.io_base + IDE_REG_SECCOUNT);
-	    seccount1_reg.write(((sectors_to_read & 0xFF00) >> 8) as u8);
-	}
-	unsafe {
-	    let mut ctl_reg = Port::<u8>::new(ctl.control_base + IDE_CTL_REG);
-	    let control_word = ctl_reg.read() & !IDE_CTL_HOB;
-	    ctl_reg.write(control_word);
+		let control_word_high_order = ctl_reg.read() | IDE_CTL_HOB;
+		ctl_reg.write(control_word_high_order);
+
+		lba3_reg.write((offset >> 24) as u8);
+		lba4_reg.write((offset >> 32) as u8);
+		lba5_reg.write((offset >> 40) as u8);
+		seccount1_reg.write((size >> 8) as u8);
+
+		let control_word_low_order = ctl_reg.read() & !IDE_CTL_HOB;
+		ctl_reg.write(control_word_low_order);
+	    }
 	}
 
 	unsafe {
 	    let mut lba0_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA0);
-	    lba0_reg.write((offset_in_sectors & 0xFF) as u8);
-	}
-	unsafe {
 	    let mut lba1_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA1);
-	    lba1_reg.write(((offset_in_sectors & 0xFF00) >> 8) as u8);
-	}
-	unsafe {
 	    let mut lba2_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA2);
-	    lba2_reg.write(((offset_in_sectors & 0xFF_0000) >> 16) as u8);
-	}	
-	unsafe {
 	    let mut seccount0_reg = Port::<u8>::new(ctl.io_base + IDE_REG_SECCOUNT);
-	    seccount0_reg.write((sectors_to_read & 0xFF) as u8);
+	    
+	    lba0_reg.write(offset as u8);
+	    lba1_reg.write((offset >> 8) as u8);
+	    lba2_reg.write((offset >> 16) as u8);
+	    seccount0_reg.write(size as u8);
 	}
     }
 }
