@@ -12,8 +12,9 @@ use bootloader_api;
 use core::panic::PanicInfo;
 use conquer_once::spin::OnceCell;
 use fixed::{types::extra::U3, FixedU64};
-use crate::alloc::string::ToString;
+use alloc::string::{String, ToString};
 use core::slice;
+use core::ascii;
 
 mod interrupts;
 mod gdt;
@@ -100,23 +101,27 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
 
     driver::init();
     sys::block::init();
+    sys::vfs::init();
     drivers::init();
 
     driver::configure_drivers();
 
     sys::syscall::init();
-    log::info!("\n");
-    log::info!("\n");
-    log::info!("\n");
-    log::info!("\n");
 
-    unsafe {
-	core::arch::asm!(concat!(
-	    "syscall\n",
-	));
+    match sys::vfs::read(String::from("/init")) {
+	Ok((file_contents, file_size)) => {
+            let contents_ascii_char = unsafe {
+		slice::from_raw_parts(file_contents as *const ascii::Char, file_size)
+            };
+
+            let contents = contents_ascii_char.iter()
+		.map(|c| c.to_char())
+		.collect::<String>();
+
+            log::info!("{}", contents);
+	},
+	Err(_) => panic!("Couldn't read /init"),
     }
-    log::info!("Test");
-    loop { }
 }
 
 fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {

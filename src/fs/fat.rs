@@ -1,4 +1,5 @@
-use alloc::string::String;
+use alloc::boxed::Box;
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ascii;
@@ -6,6 +7,7 @@ use core::ptr;
 use core::slice;
 
 use crate::sys::block;
+use crate::sys::vfs;
 
 enum FatFsType {
     FAT12,
@@ -300,7 +302,10 @@ impl Fat16Fs {
 
 	Some(files)
     }
+}
 
+
+impl vfs::FileSystem for Fat16Fs {
     fn read(&self, path: String) -> Result<(*const u8, usize), ()> {
 	let parts = path.split("/")
 	    .filter(|s| s.len() != 0)
@@ -442,21 +447,9 @@ pub fn register_fat_fs(dev: Arc<block::GptDevice>, partition: u32) {
 	    let extended_boot_record = unsafe {
 		ptr::read(boot_record_buf_ptr.wrapping_add(0x24) as *const ExtendedBootRecord1216)
 	    };
+
 	    if let Some(fs) = Fat16Fs::new(dev, partition, boot_record, extended_boot_record) {
-		match fs.read(String::from("/init")) {
-		    Ok((file_contents, file_size)) => {
-			let contents_ascii_char = unsafe {
-			    slice::from_raw_parts(file_contents as *const ascii::Char, file_size)
-			};
-
-			let contents = contents_ascii_char.iter()
-			    .map(|c| c.to_char())
-			    .collect::<String>();
-
-			log::info!("{}", contents);
-		    },
-		    Err(_) => panic!("Couldn't read /init"),
-		}
+		vfs::mount("/".to_string(), Box::new(fs));
 	    }
 	},
 	_ => (),
