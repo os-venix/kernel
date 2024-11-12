@@ -35,7 +35,7 @@ pub fn init_bsp_apic() {
 	}
     }
     
-    x86_64::instructions::interrupts::enable();
+//    x86_64::instructions::interrupts::enable();
 }
 
 pub fn enable_gsi(gsi: u32, handler: &'static (dyn Fn() + Send + Sync)) {

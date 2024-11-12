@@ -78,7 +78,13 @@ pub struct GptDevice {
 
 impl GptDevice {
     fn new(dev: Arc<dyn driver::Device + Send + Sync>) -> Option<Arc<GptDevice>> {
-	let mbr_buf_ptr = dev.read(0, 1).expect("Read went wrong");
+	let mbr_buf_ptr = match dev.read(0, 1) {
+	    Ok(a) => a,
+	    Err(()) => {
+		log::info!("Read went wrong");
+		return None;
+	    }
+	};
 	let mbr = unsafe {
 	    ptr::read(mbr_buf_ptr as *const Mbr)
 	};

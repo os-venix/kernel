@@ -8,6 +8,9 @@ pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 struct Selectors {
     code_selector: SegmentSelector,
     data_selector: SegmentSelector,
+    user_dummy_selector: SegmentSelector,
+    user_code_selector: SegmentSelector,
+    user_data_selector: SegmentSelector,
     tss_selector: SegmentSelector,
 }
 
@@ -29,8 +32,11 @@ lazy_static! {
 	let mut gdt = GlobalDescriptorTable::new();
 	let code_selector = gdt.append(Descriptor::kernel_code_segment());
 	let data_selector = gdt.append(Descriptor::kernel_data_segment());
+	let user_dummy_selector = gdt.append(Descriptor::kernel_code_segment());  // Dummy to make SYSREQ work
+	let user_data_selector = gdt.append(Descriptor::user_data_segment());
+	let user_code_selector = gdt.append(Descriptor::user_code_segment());
 	let tss_selector = gdt.append(Descriptor::tss_segment(&TSS));
-	(gdt, Selectors { code_selector, data_selector, tss_selector })
+	(gdt, Selectors { code_selector, data_selector, user_dummy_selector, user_code_selector, user_data_selector, tss_selector })
     };
 }
 
@@ -44,4 +50,8 @@ pub fn init() {
 	DS::set_reg(GDT.1.data_selector);
 	load_tss(GDT.1.tss_selector);
     }
+}
+
+pub fn get_code_selectors() -> (SegmentSelector, SegmentSelector) {
+    (GDT.1.code_selector, GDT.1.user_dummy_selector)
 }

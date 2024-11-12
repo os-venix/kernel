@@ -310,11 +310,8 @@ unsafe impl Sync for IdeDrive { }
 
 impl driver::Device for IdeDrive {
     fn read(&self, offset: u64, size: u64) -> Result<*const u8, ()> {
-	if !self.ident.is_lba48() {
-	    unimplemented!();
-	}
 	if self.drive_type != DriveType::ATA {
-	    unimplemented!();
+	    return Err(());
 	}
 	let mode = self.ident.get_mode();
 
@@ -632,18 +629,11 @@ impl IdeDrive {
 		let mut lba4_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA1);
 		let mut lba5_reg = Port::<u8>::new(ctl.io_base + IDE_REG_LBA2);
 		let mut seccount1_reg = Port::<u8>::new(ctl.io_base + IDE_REG_SECCOUNT);
-		let mut ctl_reg = Port::<u8>::new(ctl.control_base + IDE_CTL_REG);
-
-		let control_word_high_order = ctl_reg.read() | IDE_CTL_HOB;
-		ctl_reg.write(control_word_high_order);
 
 		lba3_reg.write((offset >> 24) as u8);
 		lba4_reg.write((offset >> 32) as u8);
 		lba5_reg.write((offset >> 40) as u8);
 		seccount1_reg.write((size >> 8) as u8);
-
-		let control_word_low_order = ctl_reg.read() & !IDE_CTL_HOB;
-		ctl_reg.write(control_word_low_order);
 	    }
 	}
 

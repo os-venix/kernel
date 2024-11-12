@@ -103,6 +103,20 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
     drivers::init();
 
     driver::configure_drivers();
+
+    sys::syscall::init();
+    log::info!("\n");
+    log::info!("\n");
+    log::info!("\n");
+    log::info!("\n");
+
+    unsafe {
+	core::arch::asm!(concat!(
+	    "syscall\n",
+	));
+    }
+    log::info!("Test");
+    loop { }
 }
 
 fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {

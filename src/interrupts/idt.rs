@@ -33,6 +33,7 @@ macro_rules! irq_handler_def {
 		}
 
 		local_apic::ack_apic();
+		loop {}
 
 		{
 		    let handler_funcs = HANDLER_FUNCS.get().expect("Handler funcs not initialised").read();
@@ -73,9 +74,19 @@ static HANDLER_FUNCS: Once<RwLock<BTreeMap<u8, Vec<Box<(dyn Fn() + Send + Sync)>
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
 	let mut idt = InterruptDescriptorTable::new();
+	idt.divide_error.set_handler_fn(divide_error_handler);
+	idt.debug.set_handler_fn(debug_handler);
+	idt.non_maskable_interrupt.set_handler_fn(nmi_handler);
+	idt.overflow.set_handler_fn(overflow_handler);
+	idt.bound_range_exceeded.set_handler_fn(bound_range_exceeded_handler);
+	idt.device_not_available.set_handler_fn(device_not_available_handler);
+	idt.invalid_tss.set_handler_fn(invalid_tss_handler);
 	idt.breakpoint.set_handler_fn(breakpoint_handler);
 	idt.page_fault.set_handler_fn(page_fault_handler);
 	idt.general_protection_fault.set_handler_fn(gpf_handler);
+	idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
+	idt.segment_not_present.set_handler_fn(segment_not_present_handler);
+	idt.stack_segment_fault.set_handler_fn(stack_segment_handler);
 	unsafe {
 	    idt.double_fault.set_handler_fn(double_fault_handler)
 		.set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
@@ -127,8 +138,32 @@ pub fn add_handler_to_irq(irq: u8, handler: Box<(dyn Fn() + Send + Sync)>) {
 }
 
 // Faults
+extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
+    log::warn!("EXCEPTION: #DE\n{:#?}", stack_frame);
+}
+
+extern "x86-interrupt" fn debug_handler(stack_frame: InterruptStackFrame) {
+    log::warn!("EXCEPTION: #DB\n{:#?}", stack_frame);
+}
+
+extern "x86-interrupt" fn nmi_handler(stack_frame: InterruptStackFrame) {
+    log::warn!("EXCEPTION: #NMI\n{:#?}", stack_frame);
+}
+
+extern "x86-interrupt" fn overflow_handler(stack_frame: InterruptStackFrame) {
+    log::warn!("EXCEPTION: #OF\n{:#?}", stack_frame);
+}
+
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     log::warn!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
+}
+
+extern "x86-interrupt" fn bound_range_exceeded_handler(stack_frame: InterruptStackFrame) {
+    log::warn!("EXCEPTION: #BR\n{:#?}", stack_frame);
+}
+
+extern "x86-interrupt" fn device_not_available_handler(stack_frame: InterruptStackFrame) {
+    log::warn!("EXCEPTION: #NM\n{:#?}", stack_frame);
 }
 
 extern "x86-interrupt" fn double_fault_handler(stack_frame: InterruptStackFrame, _error_code: u64) -> ! {
@@ -144,7 +179,26 @@ extern "x86-interrupt" fn page_fault_handler(stack_frame: InterruptStackFrame, e
 extern "x86-interrupt" fn gpf_handler(stack_frame: InterruptStackFrame, error_code: u64) {
     x86_64::instructions::interrupts::disable();
     panic!("EXCEPTION: GPF error code 0x{:x}\n{:#?}", error_code, stack_frame);
-}    
+}
+
+extern "x86-interrupt" fn segment_not_present_handler(stack_frame: InterruptStackFrame, error_code: u64) {
+    x86_64::instructions::interrupts::disable();
+    panic!("EXCEPTION: NP error code 0x{:x}\n{:#?}", error_code, stack_frame);
+}
+
+extern "x86-interrupt" fn stack_segment_handler(stack_frame: InterruptStackFrame, error_code: u64) {
+    x86_64::instructions::interrupts::disable();
+    panic!("EXCEPTION: SS error code 0x{:x}\n{:#?}", error_code, stack_frame);
+}
+
+extern "x86-interrupt" fn invalid_tss_handler(stack_frame: InterruptStackFrame, error_code: u64) {
+    x86_64::instructions::interrupts::disable();
+    panic!("EXCEPTION: #TS error code 0x{:x}\n{:#?}", error_code, stack_frame);
+}
+
+extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
+    log::warn!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
+}
 
 // IRQs
 extern "x86-interrupt" fn spurious_interrupt_handler(_stack_frame: InterruptStackFrame) {
