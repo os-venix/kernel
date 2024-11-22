@@ -2,7 +2,7 @@ use core::any::Any;
 use core::fmt;
 use spin::{Once, RwLock};
 use alloc::vec::Vec;
-use alloc::string::{ToString, String};
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::boxed::Box;
 use alloc::format;
@@ -162,8 +162,8 @@ pub fn register_bus_and_enumerate(bus: Box<dyn Bus + Send + Sync>) {
 }
 
 pub fn read(device_id: u64, offset: u64, size: u64) -> Result<*const u8, ()> {
-    let mut device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
-    let mut device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist");
+    let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
+    let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist");
 
     device.read(offset, size)
 }

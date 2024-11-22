@@ -17,6 +17,13 @@ pub enum MemoryAllocationType {
     DMA,
 }
 
+#[derive(PartialEq, Eq)]
+pub enum MemoryAllocationOptions {
+    Arbitrary,
+    Contiguous,
+    ContiguousByStart(PhysAddr),
+}
+
 pub fn init(recursive_index: bootloader_api::info::Optional<u16>, memory_map: &'static bootloader_api::info::MemoryRegions) {
     let idx = recursive_index.into_option().expect("No recursive page table index found.");
 
@@ -67,7 +74,7 @@ pub fn get_usable_ram() -> u64 {
     r.as_ref().expect("Attempted to read missing frame allocator").get_usable_memory()
 }
 
-pub fn allocate_by_size_kernel(size: u64) -> Result<VirtAddr, MapToError<Size4KiB>> {
+pub fn kernel_allocate_early(size: u64) -> Result<VirtAddr, MapToError<Size4KiB>> {
     let page_range = {
 	let start = {
 	    let mut w = VENIX_PAGE_ALLOCATOR.write();
@@ -98,7 +105,7 @@ pub fn allocate_by_size_kernel(size: u64) -> Result<VirtAddr, MapToError<Size4Ki
     Ok(page_range.start.start_address())
 }
 
-pub fn allocate_by_size_kernel_dma(size: u64) -> Result<(VirtAddr, Vec<PhysAddr>), MapToError<Size4KiB>> {
+pub fn kernel_allocate(size: u64, alloc_type: MemoryAllocationType, alloc_options: MemoryAllocationOptions) -> Result<(VirtAddr, Vec<PhysAddr>), MapToError<Size4KiB>> {
     let page_range = {
 	let start = {
 	    let mut w = VENIX_PAGE_ALLOCATOR.write();
@@ -112,49 +119,29 @@ pub fn allocate_by_size_kernel_dma(size: u64) -> Result<(VirtAddr, Vec<PhysAddr>
 	Page::range_inclusive(start_page, end_page)
     };
 
-    let mut frame_range: Vec<PhysAddr> = Vec::new();
+    let mut frame_range: Vec<PhysFrame> = match alloc_options {
+	MemoryAllocationOptions::Arbitrary => {
+	    let mut range = Vec::new();	    
+	    let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
 
-    for page in page_range {
-	let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
-	let frame = frame_allocator.as_mut().expect("Attempted to use missing frame allocator").allocate_frame()
-	    .ok_or(MapToError::FrameAllocationFailed)?;
-	frame_range.push(frame.start_address());
+	    for _ in page_range {
+		let frame = frame_allocator.as_mut().expect("Attempted to use missing frame allocator").allocate_frame()
+		    .ok_or(MapToError::FrameAllocationFailed)?;
+		range.push(frame);
+	    }
 
-	let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-	unsafe {
-	    let mut mapper = KERNEL_PAGE_TABLE.write();
-	    
-	    mapper.as_mut().expect("Attempted to use missing kernel page table")
-		.map_to(page, frame, flags, frame_allocator.as_mut().expect("Attempted to use missing frame allocator"))?.flush()
-	};
-    }
-
-    Ok((page_range.start.start_address(), frame_range))
-}
-
-pub fn allocate_contiguous_region_kernel(size: u64, start_addr: PhysAddr, alloc_type: MemoryAllocationType) -> Result<VirtAddr, MapToError<Size4KiB>> {
-    if alloc_type == MemoryAllocationType::RAM {
-	// TODO: Check that the requested region is usable RAM and is free
-	panic!("Allocate contiguous region of usable physical RAM - not yet implemented!");
-    }
-
-    let page_range = {
-	let start = {
-	    let mut w = VENIX_PAGE_ALLOCATOR.write();
-	    w.as_mut().expect("Attempted to read missing Kernel page allocator").get_page_range(size)
-	};
-	let end = start + (size - 1);
-
-	let start_page = Page::containing_address(start);
-	let end_page = Page::containing_address(end);
-
-	Page::range_inclusive(start_page, end_page)
+	    range
+	},
+	MemoryAllocationOptions::Contiguous => {
+	    unimplemented!();
+	},
+	MemoryAllocationOptions::ContiguousByStart(start_addr) => {
+	    (0 .. size)
+		.step_by(4096)
+		.map(|addr| PhysFrame::containing_address(start_addr + addr))
+		.collect()
+	},
     };
-
-    let frame_range: Vec<PhysFrame> = (0 .. size)
-	.step_by(4096)
-	.map(|addr| PhysFrame::containing_address(start_addr + addr))
-	.collect();
 
     for (page, &frame) in page_range.zip(frame_range.iter()) {
 	let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
@@ -166,7 +153,7 @@ pub fn allocate_contiguous_region_kernel(size: u64, start_addr: PhysAddr, alloc_
 	};
     }
 
-    Ok(page_range.start.start_address())
+    Ok((page_range.start.start_address(), frame_range.iter().map(|frame| frame.start_address()).collect()))
 }
 
 pub fn allocate_arbitrary_contiguous_region_kernel(
@@ -174,8 +161,7 @@ pub fn allocate_arbitrary_contiguous_region_kernel(
     let start_phys_addr = phys_addr - (phys_addr % 4096);  // Page align
     let total_size = size + (phys_addr % 4096) + (4096 - (size % 4096));  // Total amount, aligned to page boundaries
 
-    let allocated_region = allocate_contiguous_region_kernel(
-	total_size as u64, PhysAddr::new(start_phys_addr as u64), alloc_type)?;
+    let allocated_region = kernel_allocate(total_size as u64, alloc_type, MemoryAllocationOptions::ContiguousByStart(PhysAddr::new(start_phys_addr as u64)))?.0;
 
     let offset_from_start = phys_addr - start_phys_addr;
     let virt_addr = allocated_region + offset_from_start as u64;

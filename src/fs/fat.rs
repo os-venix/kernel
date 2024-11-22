@@ -4,7 +4,6 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ascii;
 use core::ptr;
-use core::slice;
 
 use crate::sys::block;
 use crate::sys::vfs;

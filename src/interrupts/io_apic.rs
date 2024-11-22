@@ -1,4 +1,3 @@
-use x86_64::PhysAddr;
 use spin::{Once, RwLock};
 use core::ptr::{read_volatile, write_volatile};
 use ::acpi::platform::interrupt::{TriggerMode, Polarity};
@@ -42,18 +41,13 @@ unsafe impl Sync for IoApic {}
 
 impl IoApic {
     pub fn new(id: u8, base_addr: u32, global_system_interrupt_base: u32) -> IoApic {
-	let size = 8;
-	let start_phys_addr = base_addr - (base_addr % 4096);  // Page align
-	let total_size = size + (base_addr % 4096) + (4096 - (size % 4096));  // Total amount, aligned to page boundaries
+	let size = 0x20;
 
-	let allocated_region = match memory::allocate_contiguous_region_kernel(
-	    total_size as u64, PhysAddr::new(start_phys_addr as u64), memory::MemoryAllocationType::MMIO) {
+	let (virt_addr, _) = match memory::allocate_arbitrary_contiguous_region_kernel(
+	    base_addr as usize, size as usize, memory::MemoryAllocationType::MMIO) {
 	    Ok(v) => v,
 	    Err(e) => panic!("{:#?}", e),
 	};
-
-	let offset_from_start = base_addr - start_phys_addr;
-	let virt_addr = allocated_region + offset_from_start as u64;
 
 	IoApic {
 	    ioregsel: virt_addr.as_mut_ptr(),

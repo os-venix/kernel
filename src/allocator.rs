@@ -10,7 +10,7 @@ static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
 pub fn init() {
     let mut w = KERNEL_HEAP_START.write();
-    *w = memory::allocate_by_size_kernel(KERNEL_HEAP_SIZE as u64)
+    *w = memory::kernel_allocate_early(KERNEL_HEAP_SIZE as u64)
 	.expect("Unable to allocate heap").as_u64();
     unsafe {
 	ALLOCATOR.lock().init(*w as *mut u8, KERNEL_HEAP_SIZE);

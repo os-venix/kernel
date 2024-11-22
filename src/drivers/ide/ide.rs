@@ -3,7 +3,6 @@ use core::arch::asm;
 use core::ascii;
 use core::slice;
 use alloc::sync::Arc;
-use alloc::boxed::Box;
 use spin::{RwLock, RwLockWriteGuard};
 use x86_64::instructions::port::Port;
 use itertools::Itertools;
@@ -356,7 +355,7 @@ impl IdeDrive {
     }
 
     fn check_exists_and_set_type(&mut self) -> bool {
-	let mut ctl = self.controller.write();
+	let ctl = self.controller.write();
 	self.select(&ctl);
 	unsafe {
 	    let mut cmd_reg = Port::<u8>::new(ctl.io_base + IDE_CMD_REG);
@@ -407,7 +406,7 @@ impl IdeDrive {
     }
 
     fn set_ident(&mut self) {
-	let mut ctl = self.controller.write();
+	let ctl = self.controller.write();
 	self.select(&ctl);
 
 	let cmd = match self.drive_type {
@@ -477,8 +476,9 @@ impl IdeDrive {
 	}
 
 	unsafe {
-	    let mut buf_ptr = memory::allocate_by_size_kernel(size)
-		.expect("Unable to allocate heap").as_mut_ptr::<u16>();
+	    let mut buf_ptr = memory::kernel_allocate(
+		size, memory::MemoryAllocationType::RAM, memory::MemoryAllocationOptions::Arbitrary)
+		.expect("Unable to allocate heap").0.as_mut_ptr::<u16>();
 
 	    let buf_u16 = slice::from_raw_parts_mut(buf_ptr, (size / 2) as usize);
 
@@ -492,9 +492,11 @@ impl IdeDrive {
     }
 
     fn dma_read(&self, offset: u64, size: u64) -> Result<*const u8, ()> {
-	let mut ctl = self.controller.write();
+	let ctl = self.controller.write();
 
-	let (prdt_virt, prdt_phys) = memory::allocate_by_size_kernel_dma(4096).expect("Unable to allocate a PDRT memory region");
+	let (prdt_virt, prdt_phys) = memory::kernel_allocate(
+	    4096, memory::MemoryAllocationType::DMA, memory::MemoryAllocationOptions::Arbitrary)
+	    .expect("Unable to allocate a PDRT memory region");
 	let prdt_phys_addr = prdt_phys[0].as_u64();
 	if prdt_phys_addr >= 1 << 32 {
 	    panic!("PRDT region is out of bounds, in higher half of physical memory");
@@ -509,7 +511,9 @@ impl IdeDrive {
 	    panic!("Attempted to transfer more than max size");
 	}
 
-	let (buf_virt, buf_phys) = memory::allocate_by_size_kernel_dma(size * 512).expect("Unable to allocate a PDRT memory region");
+	let (buf_virt, buf_phys) = memory::kernel_allocate(
+	    size * 512, memory::MemoryAllocationType::DMA, memory::MemoryAllocationOptions::Arbitrary)
+	    .expect("Unable to allocate a PDRT memory region");
 
 	// Ensure the region  is contiguous. There are two ways to solve this better:
 	// 1.) Allow multiple PRD entires, one per non-contiguous region
@@ -619,9 +623,6 @@ impl IdeDrive {
 
     fn select_drive_and_set_xfer_params(&self, ctl: &RwLockWriteGuard<'_, IdeController>, offset: u64, size: u64) {
 	self.select(&ctl);
-
-	let sectors_to_read = size;
-	let offset_in_sectors = offset;
 
 	if self.ident.is_lba48() {
 	    unsafe {
