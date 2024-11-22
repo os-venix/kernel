@@ -108,7 +108,7 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
 
     sys::syscall::init();
 
-    match sys::vfs::read(String::from("/init")) {
+    match sys::vfs::read(String::from("/init/init.txt")) {
 	Ok((file_contents, file_size)) => {
             let contents_ascii_char = unsafe {
 		slice::from_raw_parts(file_contents as *const ascii::Char, file_size)
@@ -120,7 +120,7 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
 
             log::info!("{}", contents);
 	},
-	Err(_) => panic!("Couldn't read /init"),
+	Err(_) => panic!("Couldn't read /init/init.txt"),
     }
 }
 

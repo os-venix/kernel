@@ -16,9 +16,15 @@ enum FatFsType {
     EXFAT,
 }
 
+struct INode {
+    file_name: String,
+    file_size: u32,
+    start_cluster: u32,
+}
+
 enum Entry {
-    FILE(String),
-    DIRECTORY(String),
+    FILE(INode),
+    DIRECTORY(INode),
 }
 
 #[repr(C, packed(1))]
@@ -277,9 +283,17 @@ impl Fat16Fs {
 		};
 
 		if directory_entry.attributes & 0x10 != 0 {
-		    files.push(Entry::DIRECTORY(file_name));
+		    files.push(Entry::DIRECTORY(INode {
+			file_name: file_name,
+			file_size: directory_entry.file_size,
+			start_cluster: directory_entry.cluster_low as u32,
+		    }));
 		} else {
-		    files.push(Entry::FILE(file_name));
+		    files.push(Entry::FILE(INode {
+			file_name: file_name,
+			file_size: directory_entry.file_size,
+			start_cluster: directory_entry.cluster_low as u32,
+		    }));
 		}
 
 		ptr += 1;
@@ -302,45 +316,43 @@ impl Fat16Fs {
 
 	Some(files)
     }
-}
 
-
-impl vfs::FileSystem for Fat16Fs {
-    fn read(&self, path: String) -> Result<(*const u8, usize), ()> {
-	let parts = path.split("/")
-	    .filter(|s| s.len() != 0)
-	    .collect::<Vec<&str>>();
-
-	// We don't yet support subdirectories
-	if parts.len() != 1 {
-	    return Err(());
-	}
-	let root_dir_buf_ptr = self.get_root_directory();
-
-	// TODO: This code is really ugly and very low level, there must be a better way
+    fn find_dir_entry(&self, path: String, dir_buf_ptr: *const u8) -> Option<Entry> {
 	let mut ptr = 0;
-	let mut directory_entry: DirectoryEntry = Default::default();
-	while ptr < self.boot_record.root_directory_entries {
-	    let (maybe_fn, offset) = self.get_filename(root_dir_buf_ptr, ptr as usize);
+	loop {
+	    let (maybe_fn, offset) = self.get_filename(dir_buf_ptr, ptr as usize);
 	    ptr += offset as u16;
 
 	    if let Some(file_name) = maybe_fn {
-		if file_name == parts[0] {
-		    directory_entry = unsafe {
-			ptr::read(root_dir_buf_ptr.wrapping_add(ptr as usize * 32) as *const DirectoryEntry)
-		    };
-
-		    break;
+		if file_name != path {
+		    ptr += 1;
+		    continue;
 		}
 
-		ptr += 1;
+		let directory_entry = unsafe {
+		    ptr::read(dir_buf_ptr.wrapping_add(ptr as usize * 32) as *const DirectoryEntry)
+		};
+
+		if directory_entry.attributes & 0x10 != 0 {
+		    return Some(Entry::DIRECTORY(INode {
+			file_name: file_name,
+			file_size: directory_entry.file_size,
+			start_cluster: directory_entry.cluster_low as u32,
+		    }));
+		} else {
+		    return Some(Entry::FILE(INode {
+			file_name: file_name,
+			file_size: directory_entry.file_size,
+			start_cluster: directory_entry.cluster_low as u32,
+		    }));
+		}
 	    } else {
 		let directory_entry = unsafe {
-		    ptr::read(root_dir_buf_ptr.wrapping_add(ptr as usize * 32) as *const DirectoryEntry)
+		    ptr::read(dir_buf_ptr.wrapping_add(ptr as usize * 32) as *const DirectoryEntry)
 		};
 
 		if directory_entry.file_name[0].to_u8() == 0x00 {
-		    return Err(());
+		    break;
 		} else if directory_entry.file_name[0].to_u8() == 0xE5 {
 		    ptr += 1;
 		    continue;
@@ -351,55 +363,72 @@ impl vfs::FileSystem for Fat16Fs {
 	    }
 	}
 
-	// File not found
-	if ptr == self.boot_record.root_directory_entries {
-	    return Err(());
-	}
+	None
+    }
+}
 
-	// This is FAT16, no high cluster
-	let mut cluster = directory_entry.cluster_low;
-	let fat = self.get_allocation_table();
+impl vfs::FileSystem for Fat16Fs {
+    fn read(&self, path: String) -> Result<(*const u8, usize), ()> {
+	let parts = path.split("/")
+	    .filter(|s| s.len() != 0)
+	    .collect::<Vec<&str>>();
 
-	let mut clusters_to_read: Vec<u16> = Vec::new();
-	clusters_to_read.push(cluster);
+	let mut current_buf_ptr = self.get_root_directory();
+	let mut file_size: usize = 0 as usize;
 
-	loop {
-	    cluster = fat[cluster as usize];
+	for path_part in parts {
+	    let inode = match self.find_dir_entry(path_part.to_string(), current_buf_ptr).expect("Could not find file") {
+		Entry::DIRECTORY(i) => i,
+		Entry::FILE(i) => i,
+	    };
 
-	    if cluster >= 0xFFF8 {
-		break;
+	    // This is FAT16, no high cluster
+	    let mut cluster = inode.start_cluster as u16;
+	    let fat = self.get_allocation_table();
+
+	    let mut clusters_to_read: Vec<u16> = Vec::new();
+	    clusters_to_read.push(cluster);
+
+	    loop {
+		cluster = fat[cluster as usize];
+
+		if cluster >= 0xFFF8 {
+		    break;
+		}
+
+		clusters_to_read.push(cluster);
 	    }
 
-	    clusters_to_read.push(cluster);
+	    if clusters_to_read.len() == 1 {
+		let sectors_per_lba = self.boot_record.bytes_per_sector as u64 / 512;
+
+		let root_directory_size_sectors: u64 = ((self.boot_record.root_directory_entries as u64 * 32) +
+							(self.boot_record.bytes_per_sector as u64 - 1))
+		    / self.boot_record.bytes_per_sector as u64;
+
+		let first_data_sector: u64 = self.boot_record.reserved_sectors as u64 +
+		    (self.boot_record.number_of_fats as u64 * self.boot_record.sectors_per_fat as u64) +
+		    root_directory_size_sectors as u64;
+
+		let cluster_sector: u64 = ((clusters_to_read[0] as u64 - 2) * self.boot_record.sectors_per_cluster as u64)
+		    + first_data_sector;
+
+		let cluster_lba = cluster_sector * sectors_per_lba;
+
+		let size_sectors = 1 * self.boot_record.sectors_per_cluster as u64;
+		let size_lba = size_sectors / sectors_per_lba;
+
+		current_buf_ptr = self.dev.read(
+		    self.partition, cluster_lba as u64, size_lba as u64).expect("Couldn't read file");
+
+		file_size = inode.file_size as usize;
+	    } else {
+		// Not supported
+		return Err(());
+	    }
 	}
-
-	if clusters_to_read.len() == 1 {
-	    let sectors_per_lba = self.boot_record.bytes_per_sector as u64 / 512;
-
-	    let root_directory_size_sectors: u64 = ((self.boot_record.root_directory_entries as u64 * 32) +
-						    (self.boot_record.bytes_per_sector as u64 - 1))
-		/ self.boot_record.bytes_per_sector as u64;
-
-	    let first_data_sector: u64 = self.boot_record.reserved_sectors as u64 +
-		(self.boot_record.number_of_fats as u64 * self.boot_record.sectors_per_fat as u64) +
-		root_directory_size_sectors as u64;
-
-	    let cluster_sector: u64 = ((clusters_to_read[0] as u64 - 2) * self.boot_record.sectors_per_cluster as u64)
-		+ first_data_sector;
-
-	    let cluster_lba = cluster_sector * sectors_per_lba;
-
-	    let size_sectors = 1 * self.boot_record.sectors_per_cluster as u64;
-	    let size_lba = size_sectors / sectors_per_lba;
-
-	    let buf_ptr = self.dev.read(
-		self.partition, cluster_lba as u64, size_lba as u64).expect("Couldn't read file");
-
-	    Ok((buf_ptr, directory_entry.file_size as usize))
-	} else {
-	    // Not supported
-	    Err(())
-	}
+	
+	Ok((current_buf_ptr, file_size))
     }
 }
 
