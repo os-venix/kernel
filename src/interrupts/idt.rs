@@ -33,7 +33,6 @@ macro_rules! irq_handler_def {
 		}
 
 		local_apic::ack_apic();
-		loop {}
 
 		{
 		    let handler_funcs = HANDLER_FUNCS.get().expect("Handler funcs not initialised").read();

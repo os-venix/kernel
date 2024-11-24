@@ -1,6 +1,8 @@
 use spin::RwLock;
 use x86_64::{PhysAddr, VirtAddr};
-use x86_64::structures::paging::{frame::PhysFrame, mapper::MapToError, FrameAllocator, Mapper, Size4KiB, Page, PageTable, PageTableFlags, RecursivePageTable};
+use x86_64::structures::paging::{
+    frame::PhysFrame, mapper::MapToError, FrameAllocator, Mapper, Size4KiB, Page, PageTable, PageTableFlags, RecursivePageTable, PageTableIndex};
+use x86_64::registers::control::{Cr4, Cr4Flags};
 use alloc::vec::Vec;
 
 mod frame_allocator;
@@ -24,6 +26,33 @@ pub enum MemoryAllocationOptions {
     ContiguousByStart(PhysAddr),
 }
 
+unsafe fn recursively_make_pages_global(
+    level: u8,
+    indices: (PageTableIndex, PageTableIndex, PageTableIndex, PageTableIndex)) {
+    let page_table: *mut PageTable = Page::from_page_table_indices(
+	indices.0, indices.1, indices.2, indices.3)
+	.start_address()
+	.as_mut_ptr();
+
+    (*page_table).iter_mut()
+	.enumerate()
+	.filter(|(_, entry)| entry.flags().contains(PageTableFlags::PRESENT))  // Only mark entries that are actually in use
+	.filter(|(_, entry)| level == 1 || entry.flags().contains(PageTableFlags::WRITABLE))  // If the parent table isn't writable, we can't (and probably don't want to) update
+	.for_each(|(index, entry)| match level {
+	    4 => recursively_make_pages_global(3, (indices.1, indices.2, indices.3, PageTableIndex::new(index as u16))),
+	    3 => recursively_make_pages_global(2, (indices.1, indices.2, indices.3, PageTableIndex::new(index as u16))),
+	    2 => entry.set_flags(entry.flags() | PageTableFlags::GLOBAL),
+	    _ => panic!("Invalid page level while marking kernel table as global")
+	});
+}
+
+fn make_all_pages_global(recursive_index: PageTableIndex) {
+    unsafe {
+	Cr4::update(|flags| *flags |= Cr4Flags::PAGE_GLOBAL);
+	recursively_make_pages_global(4, (recursive_index, recursive_index, recursive_index, recursive_index));
+    }
+}
+
 pub fn init(recursive_index: bootloader_api::info::Optional<u16>, memory_map: &'static bootloader_api::info::MemoryRegions) {
     let idx = recursive_index.into_option().expect("No recursive page table index found.");
 
@@ -40,6 +69,8 @@ pub fn init(recursive_index: bootloader_api::info::Optional<u16>, memory_map: &'
 	    RecursivePageTable::new(pt4).unwrap()
 	})
     }
+
+    make_all_pages_global(PageTableIndex::new(idx));
 
     {
 	let mut w = VENIX_FRAME_ALLOCATOR.write();
@@ -93,7 +124,7 @@ pub fn kernel_allocate_early(size: u64) -> Result<VirtAddr, MapToError<Size4KiB>
 	let frame = frame_allocator.as_mut().expect("Attempted to use missing frame allocator").allocate_frame()
 	    .ok_or(MapToError::FrameAllocationFailed)?;
 
-	let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+	let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
 	unsafe {
 	    let mut mapper = KERNEL_PAGE_TABLE.write();
 	    
@@ -145,7 +176,7 @@ pub fn kernel_allocate(size: u64, alloc_type: MemoryAllocationType, alloc_option
 
     for (page, &frame) in page_range.zip(frame_range.iter()) {
 	let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
-	let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+	let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
 	unsafe {
 	    let mut mapper = KERNEL_PAGE_TABLE.write();
 	    mapper.as_mut().expect("Attempted to use missing kernel page table")
