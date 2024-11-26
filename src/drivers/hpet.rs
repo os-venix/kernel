@@ -7,7 +7,6 @@ use alloc::boxed::Box;
 use alloc::format;
 use spin::{Once, RwLock};
 use core::ptr::{read_volatile, write_volatile};
-use x86_64::PhysAddr;
 
 use crate::sys::acpi;
 use crate::memory;
@@ -221,7 +220,7 @@ pub struct HpetDevice {}
 unsafe impl Send for HpetDevice { }
 unsafe impl Sync for HpetDevice { }
 impl driver::Device for HpetDevice {
-    fn read(&self, offset: u64, size: u64) -> Result<*const u8, ()> {
+    fn read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()> {
 	panic!("Shouldn't have attempted to read from the HPET. That makes no sense.");
     }
 }

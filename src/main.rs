@@ -25,6 +25,7 @@ mod drivers;
 mod driver;
 mod printk;
 mod fs;
+mod scheduler;
 
 const CONFIG: bootloader_api::BootloaderConfig = {
     let mut config = bootloader_api::BootloaderConfig::new_default();
@@ -58,7 +59,6 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
     log::info!("Initialising CPU0...");
     log::info!("Memory map:");
 
-    /*
     {
 	let mut current_start: u64 = 0;
 	for region_idx in 0 .. boot_info.memory_regions.len() {
@@ -85,11 +85,12 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
 	    }
 	}
     }
-*/
+
     gdt::init();
     interrupts::init_idt();
     memory::init(boot_info.recursive_index, &boot_info.memory_regions);
     allocator::init();
+    scheduler::init();
 
     memory::init_full_mode();
     let usable_ram = memory::get_usable_ram();
@@ -107,21 +108,21 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
     driver::configure_drivers();
 
     sys::syscall::init();
+    scheduler::start_new_process();
+    // match sys::vfs::read(String::from("/init/init.txt")) {
+    // 	Ok((file_contents, file_size)) => {
+    //         let contents_ascii_char = unsafe {
+    // 		slice::from_raw_parts(file_contents as *const ascii::Char, file_size)
+    //         };
 
-    match sys::vfs::read(String::from("/init/init.txt")) {
-	Ok((file_contents, file_size)) => {
-            let contents_ascii_char = unsafe {
-		slice::from_raw_parts(file_contents as *const ascii::Char, file_size)
-            };
+    //         let contents = contents_ascii_char.iter()
+    // 		.map(|c| c.to_char())
+    // 		.collect::<String>();
 
-            let contents = contents_ascii_char.iter()
-		.map(|c| c.to_char())
-		.collect::<String>();
-
-            log::info!("{}", contents);
-	},
-	Err(_) => panic!("Couldn't read /init/init.txt"),
-    }
+    //         log::info!("{}", contents);
+    // 	},
+    // 	Err(_) => panic!("Couldn't read /init/init.txt"),
+    // }
 }
 
 fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {

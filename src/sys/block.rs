@@ -3,12 +3,12 @@ use alloc::vec::Vec;
 use alloc::sync::Arc;
 use alloc::string::String;
 use core::ptr;
-use core::slice;
 use core::ascii;
 use uuid::Uuid;
 
 use crate::driver;
 use crate::fs::fat;
+use crate::memory;
 
 #[repr(C, packed(1))]
 #[derive(Copy, Clone)]
@@ -78,7 +78,7 @@ pub struct GptDevice {
 
 impl GptDevice {
     fn new(dev: Arc<dyn driver::Device + Send + Sync>) -> Option<Arc<GptDevice>> {
-	let mbr_buf_ptr = match dev.read(0, 1) {
+	let mbr_buf_ptr = match dev.read(0, 1, memory::MemoryAccessRestriction::Kernel) {
 	    Ok(a) => a,
 	    Err(()) => {
 		log::info!("Read went wrong");
@@ -93,7 +93,7 @@ impl GptDevice {
 	    return None;
 	}
 
-	let pth_buf_ptr = dev.read(1, 1).expect("Read went wrong");
+	let pth_buf_ptr = dev.read(1, 1, memory::MemoryAccessRestriction::Kernel).expect("Read went wrong");
 	let pth = unsafe {
 	    ptr::read(pth_buf_ptr as *const PartitionTableHeader)
 	};
@@ -107,7 +107,7 @@ impl GptDevice {
 
 	let pt_size_in_sector_bytes = pth.partition_entry_array_size + (512 - (pth.partition_entry_array_size % 512));  // Total amount, aligned to page boundaries
 	let pt_size_in_sectors = pt_size_in_sector_bytes / 512;
-	let pt_buf = dev.read(2, pt_size_in_sectors as u64).expect("Could not read Partition Entry table");
+	let pt_buf = dev.read(2, pt_size_in_sectors as u64, memory::MemoryAccessRestriction::Kernel).expect("Could not read Partition Entry table");
 
 	let mut partition_entries: Vec<PartitionEntry> = Vec::new();
 
@@ -148,7 +148,7 @@ impl GptDevice {
 	Some(device_arc)
     }
 
-    pub fn read(&self, partition: u32, starting_block: u64, size: u64) -> Result<*const u8, ()> {
+    pub fn read(&self, partition: u32, starting_block: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()> {
 	if partition as usize >= self.pt.len() {
 	    return Err(());
 	}
@@ -163,7 +163,7 @@ impl GptDevice {
 	    return Err(());
 	}
 
-	self.dev.read(adjusted_start, size)
+	self.dev.read(adjusted_start, size, access_restriction)
     }
 }
 

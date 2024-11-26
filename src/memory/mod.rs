@@ -1,14 +1,29 @@
 use spin::RwLock;
 use x86_64::{PhysAddr, VirtAddr};
 use x86_64::structures::paging::{
-    frame::PhysFrame, mapper::MapToError, FrameAllocator, Mapper, Size4KiB, Page, PageTable, PageTableFlags, RecursivePageTable, PageTableIndex};
-use x86_64::registers::control::{Cr4, Cr4Flags};
+    frame::PhysFrame,
+    mapper::MapToError,
+    FrameAllocator,
+    Mapper,
+    Size4KiB,
+    Page,
+    PageTable,
+    PageTableFlags,
+    RecursivePageTable,
+    PageTableIndex,
+};
+use x86_64::registers::control::{Cr4, Cr4Flags, Cr3, Cr3Flags};
 use alloc::vec::Vec;
+
+use crate::scheduler;
 
 mod frame_allocator;
 mod page_allocator;
+pub mod user_address_space;
 
+static KERNEL_PAGE_TABLE_IDX: RwLock<u64> = RwLock::new(0);
 static KERNEL_PAGE_TABLE: RwLock<Option<RecursivePageTable>> = RwLock::new(None);
+static KERNEL_PAGE_FRAME: RwLock<Option<PhysFrame>> = RwLock::new(None);
 static VENIX_FRAME_ALLOCATOR: RwLock<Option<frame_allocator::VenixFrameAllocator>> = RwLock::new(None);
 static VENIX_PAGE_ALLOCATOR: RwLock<Option<page_allocator::VenixPageAllocator>> = RwLock::new(None);
 
@@ -24,6 +39,12 @@ pub enum MemoryAllocationOptions {
     Arbitrary,
     Contiguous,
     ContiguousByStart(PhysAddr),
+}
+
+#[derive(PartialEq, Eq)]
+pub enum MemoryAccessRestriction {
+    Kernel,
+    User,
 }
 
 unsafe fn recursively_make_pages_global(
@@ -48,8 +69,8 @@ unsafe fn recursively_make_pages_global(
 
 fn make_all_pages_global(recursive_index: PageTableIndex) {
     unsafe {
-	Cr4::update(|flags| *flags |= Cr4Flags::PAGE_GLOBAL);
 	recursively_make_pages_global(4, (recursive_index, recursive_index, recursive_index, recursive_index));
+	Cr4::update(|flags| *flags |= Cr4Flags::PAGE_GLOBAL);
     }
 }
 
@@ -70,6 +91,11 @@ pub fn init(recursive_index: bootloader_api::info::Optional<u16>, memory_map: &'
 	})
     }
 
+    {
+	let mut w = KERNEL_PAGE_FRAME.write();
+	*w = Some(Cr3::read().0)
+    }
+
     make_all_pages_global(PageTableIndex::new(idx));
 
     {
@@ -84,6 +110,11 @@ pub fn init(recursive_index: bootloader_api::info::Optional<u16>, memory_map: &'
 	let r = KERNEL_PAGE_TABLE.read();
 	let level_4_table = r.as_ref().expect("Attempted to read missing Kernel page table").level_4_table().clone();
 	*w = Some(page_allocator::VenixPageAllocator::new(level_4_table));
+    }
+
+    {
+	let mut w = KERNEL_PAGE_TABLE_IDX.write();
+	*w = idx_64;
     }
 }
 
@@ -136,11 +167,34 @@ pub fn kernel_allocate_early(size: u64) -> Result<VirtAddr, MapToError<Size4KiB>
     Ok(page_range.start.start_address())
 }
 
-pub fn kernel_allocate(size: u64, alloc_type: MemoryAllocationType, alloc_options: MemoryAllocationOptions) -> Result<(VirtAddr, Vec<PhysAddr>), MapToError<Size4KiB>> {
+pub fn kernel_allocate(
+    size: u64,
+    alloc_type: MemoryAllocationType,
+    alloc_options: MemoryAllocationOptions,
+    access_restriction: MemoryAccessRestriction) -> Result<(VirtAddr, Vec<PhysAddr>), MapToError<Size4KiB>> {
+    let maybe_pid = if access_restriction == MemoryAccessRestriction::Kernel {
+	unsafe {
+	    switch_to_kernel()
+	}
+    } else { None };
+
     let page_range = {
-	let start = {
-	    let mut w = VENIX_PAGE_ALLOCATOR.write();
-	    w.as_mut().expect("Attempted to read missing Kernel page allocator").get_page_range(size)
+	let start = match access_restriction {
+	    MemoryAccessRestriction::Kernel => {
+		let mut w = VENIX_PAGE_ALLOCATOR.write();
+		w.as_mut().expect("Attempted to read missing Kernel page allocator").get_page_range(size)
+	    },
+	    MemoryAccessRestriction::User => {
+		let mut process_tbl = scheduler::PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+		let running_process = scheduler::RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+		match *running_process {
+		    Some(pid) => process_tbl[pid].address_space.get_page_range(size),
+		    None => {
+			panic!("Attempted to allocate userspace memory while not in a process address space");
+		    },
+		}
+	    },
 	};
 	let end = start + (size - 1);
 
@@ -150,7 +204,7 @@ pub fn kernel_allocate(size: u64, alloc_type: MemoryAllocationType, alloc_option
 	Page::range_inclusive(start_page, end_page)
     };
 
-    let mut frame_range: Vec<PhysFrame> = match alloc_options {
+    let frame_range: Vec<PhysFrame> = match alloc_options {
 	MemoryAllocationOptions::Arbitrary => {
 	    let mut range = Vec::new();	    
 	    let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
@@ -176,12 +230,20 @@ pub fn kernel_allocate(size: u64, alloc_type: MemoryAllocationType, alloc_option
 
     for (page, &frame) in page_range.zip(frame_range.iter()) {
 	let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
-	let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
+	let flags = match access_restriction {
+	    MemoryAccessRestriction::Kernel => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL,
+	    MemoryAccessRestriction::User => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+	};
+
 	unsafe {
 	    let mut mapper = KERNEL_PAGE_TABLE.write();
 	    mapper.as_mut().expect("Attempted to use missing kernel page table")
 		.map_to(page, frame, flags, frame_allocator.as_mut().expect("Attempted to use missing frame allocator"))?.flush();
 	};
+    }
+
+    if let Some(pid) = maybe_pid {
+	scheduler::switch_to(pid);
     }
 
     Ok((page_range.start.start_address(), frame_range.iter().map(|frame| frame.start_address()).collect()))
@@ -192,10 +254,23 @@ pub fn allocate_arbitrary_contiguous_region_kernel(
     let start_phys_addr = phys_addr - (phys_addr % 4096);  // Page align
     let total_size = size + (phys_addr % 4096) + (4096 - (size % 4096));  // Total amount, aligned to page boundaries
 
-    let allocated_region = kernel_allocate(total_size as u64, alloc_type, MemoryAllocationOptions::ContiguousByStart(PhysAddr::new(start_phys_addr as u64)))?.0;
+    let allocated_region = kernel_allocate(
+	total_size as u64,
+	alloc_type,
+	MemoryAllocationOptions::ContiguousByStart(PhysAddr::new(start_phys_addr as u64)),
+	MemoryAccessRestriction::Kernel,
+    )?.0;
 
     let offset_from_start = phys_addr - start_phys_addr;
     let virt_addr = allocated_region + offset_from_start as u64;
 
     Ok((virt_addr, total_size as usize))
+}
+
+pub unsafe fn switch_to_kernel() -> Option<usize> {
+    let r = KERNEL_PAGE_FRAME.read();
+    let frame = r.as_ref().expect("Attempted to read missing Kernel page frame");
+    Cr3::write(*frame, Cr3Flags::empty());
+
+    scheduler::deschedule()
 }

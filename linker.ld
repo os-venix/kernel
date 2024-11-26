@@ -5,17 +5,17 @@ SECTIONS {
     . = KERNEL_OFFSET;
     . += SIZEOF_HEADERS;
 
-    .bootloader-config ALIGN(4K) : AT(ADDR(.bootloader-config) - KERNEL_OFFSET) {
+    .bootloader-config ALIGN(4K) : {
         *(.bootloader-config*)
     }
-    .text ALIGN(4K) : AT(ADDR(.text) - KERNEL_OFFSET) {
+    .text : {
         __text_start = .;
         *(.text*)
         __usercopy_start = .;
         *(.usercopy-fns)
         __usercopy_end = .;
     }
-    .rodata ALIGN(4K) : AT(ADDR(.rodata) - KERNEL_OFFSET) {
+    .rodata ALIGN(4K) : {
         __text_end = .;
         __rodata_start = .;
         *(.rodata*)
@@ -30,10 +30,10 @@ SECTIONS {
         KEEP(*(.altfeatures*))
         __altfeatures_end = .;
     }
-    .dynamic ALIGN(4K) : AT(ADDR(.dynamic) - KERNEL_OFFSET) {
+    .dynamic ALIGN(4K) : {
 	*(.dynamic*);
     }
-    .data ALIGN(4K) : AT(ADDR(.data) - KERNEL_OFFSET) {
+    .data ALIGN(4K) : {
         __rodata_end = .;
         __data_start = .;
         *(.data*)
@@ -42,7 +42,7 @@ SECTIONS {
         __bss_start = .;
         *(.bss*)
     }
-    .stack ALIGN(4K) : AT(ADDR(.stack) - KERNEL_OFFSET) {
+    .stack ALIGN(4K) : {
         *.(stack*)
     }
     __end = .;

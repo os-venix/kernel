@@ -308,7 +308,7 @@ unsafe impl Send for IdeDrive { }
 unsafe impl Sync for IdeDrive { }
 
 impl driver::Device for IdeDrive {
-    fn read(&self, offset: u64, size: u64) -> Result<*const u8, ()> {
+    fn read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()> {
 	if self.drive_type != DriveType::ATA {
 	    return Err(());
 	}
@@ -316,7 +316,7 @@ impl driver::Device for IdeDrive {
 
 	match mode {
 	    Mode::PIO => self.pio_read(offset, size),
-	    _ => self.dma_read(offset, size),
+	    _ => self.dma_read(offset, size, access_restriction),
 	}
     }
 }
@@ -351,7 +351,7 @@ impl IdeDrive {
 	    let mut drive_head_reg = Port::<u8>::new(ctl.io_base + IDE_DRIVE_HEAD_REG);
 	    drive_head_reg.write(select_cmd);
 	}
-	for i in 0 .. 1000000 { unsafe { asm!("nop"); } }
+	for _ in 0 .. 1000000 { unsafe { asm!("nop"); } }
     }
 
     fn check_exists_and_set_type(&mut self) -> bool {
@@ -361,7 +361,7 @@ impl IdeDrive {
 	    let mut cmd_reg = Port::<u8>::new(ctl.io_base + IDE_CMD_REG);
 	    cmd_reg.write(IDE_CMD_IDENTIFY);
 	}
-	for i in 0 .. 1000000 { unsafe { asm!("nop"); } }
+	for _ in 0 .. 1000000 { unsafe { asm!("nop"); } }
 
 	unsafe {
 	    let mut status_reg = Port::<u8>::new(ctl.io_base + IDE_STATUS_REG);
@@ -477,7 +477,10 @@ impl IdeDrive {
 
 	unsafe {
 	    let mut buf_ptr = memory::kernel_allocate(
-		size, memory::MemoryAllocationType::RAM, memory::MemoryAllocationOptions::Arbitrary)
+		size,
+		memory::MemoryAllocationType::RAM,
+		memory::MemoryAllocationOptions::Arbitrary,
+		memory::MemoryAccessRestriction::User)
 		.expect("Unable to allocate heap").0.as_mut_ptr::<u16>();
 
 	    let buf_u16 = slice::from_raw_parts_mut(buf_ptr, (size / 2) as usize);
@@ -491,11 +494,11 @@ impl IdeDrive {
 	}
     }
 
-    fn dma_read(&self, offset: u64, size: u64) -> Result<*const u8, ()> {
+    fn dma_read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()> {
 	let ctl = self.controller.write();
 
 	let (prdt_virt, prdt_phys) = memory::kernel_allocate(
-	    4096, memory::MemoryAllocationType::DMA, memory::MemoryAllocationOptions::Arbitrary)
+	    4096, memory::MemoryAllocationType::DMA, memory::MemoryAllocationOptions::Arbitrary, memory::MemoryAccessRestriction::Kernel)
 	    .expect("Unable to allocate a PDRT memory region");
 	let prdt_phys_addr = prdt_phys[0].as_u64();
 	if prdt_phys_addr >= 1 << 32 {
@@ -512,7 +515,7 @@ impl IdeDrive {
 	}
 
 	let (buf_virt, buf_phys) = memory::kernel_allocate(
-	    size * 512, memory::MemoryAllocationType::DMA, memory::MemoryAllocationOptions::Arbitrary)
+	    size * 512, memory::MemoryAllocationType::DMA, memory::MemoryAllocationOptions::Arbitrary, access_restriction)
 	    .expect("Unable to allocate a PDRT memory region");
 
 	// Ensure the region  is contiguous. There are two ways to solve this better:
@@ -569,7 +572,7 @@ impl IdeDrive {
 
 	// TODO: we wait for the transfer here. We should be using interrupts to do other work, and let
 	// the transfer complete asynchronously.
-	for i in 0 .. 1000000 { unsafe { asm!("nop"); } }
+	for _ in 0 .. 1000000 { unsafe { asm!("nop"); } }
 	unsafe {
 	    let mut status_reg = Port::<u8>::new(ctl.io_base + IDE_STATUS_REG);
 

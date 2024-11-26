@@ -10,6 +10,7 @@ use alloc::format;
 use aml::{AmlName, LevelType, value::{AmlValue, Args}};
 
 use crate::sys::acpi;
+use crate::memory;
 
 pub trait Driver {
     fn init(&self, info: &Box<dyn DeviceTypeIdentifier>);
@@ -46,7 +47,7 @@ pub trait Bus {
 }
 
 pub trait Device {
-    fn read(&self, offset: u64, size: u64) -> Result<*const u8, ()>;
+    fn read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()>;
 }
 
 static DRIVER_TABLE: Once<RwLock<Vec<Box<dyn Driver + Send + Sync>>>> = Once::new();
@@ -161,9 +162,9 @@ pub fn register_bus_and_enumerate(bus: Box<dyn Bus + Send + Sync>) {
     bus_tbl.push(bus);
 }
 
-pub fn read(device_id: u64, offset: u64, size: u64) -> Result<*const u8, ()> {
+pub fn read(device_id: u64, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()> {
     let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
     let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist");
 
-    device.read(offset, size)
+    device.read(offset, size, access_restriction)
 }

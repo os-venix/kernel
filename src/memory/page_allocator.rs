@@ -5,6 +5,7 @@ use x86_64::{
 use alloc::vec::Vec;
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 
+#[derive(Debug)]
 pub struct VenixPageAllocator {
     // Runt mode
     p4_first_completely_free: VirtAddr,
@@ -17,6 +18,7 @@ impl VenixPageAllocator {
     pub fn new(p4: PageTable) -> Self {
 	let p4_size = 1 << 39;
 	let first_free_p4_entry = p4.iter().enumerate()
+	    .filter(|(i, _)| *i >= 256)
 	    .map(|(i, p)| (i * p4_size, p))
 	    .filter(|(_, p)| p.is_unused())
 	    .map(|(i, _)| i)
@@ -24,7 +26,7 @@ impl VenixPageAllocator {
 	    .expect("Could not find an appropriate p4 entry to initialise") as u64;
 
 	VenixPageAllocator {
-	    p4_first_completely_free: VirtAddr::new(first_free_p4_entry),
+	    p4_first_completely_free: VirtAddr::new_truncate(first_free_p4_entry),
 	    free_regions: None,
 	}
     }
@@ -47,6 +49,7 @@ impl VenixPageAllocator {
 	    let entries: Vec<MemoryRegion> = (*page_table).iter()
 		.enumerate()
 		.filter(|(_, entry)| !(entry.flags().contains(PageTableFlags::PRESENT)))
+		.filter(|(index, _)| level != 4 || *index >= 256 as usize)  // Make sure all kernel allocs are in the HH
 		.map(|(index, _)| match level {
 		    4 => index as u64 * p4_size,
 		    3 => offset_above + (index as u64 * p3_size),
@@ -102,6 +105,7 @@ impl VenixPageAllocator {
 			.filter(|(idx, entry)| entry
 				.flags()
 				.contains(PageTableFlags::PRESENT) && PageTableIndex::new(*idx as u16) != indices.0) // indices.0 will always be the recursive index
+			.filter(|(idx, _)| *idx >= 256)
 			.flat_map(|(idx, _)| Self::gather_unused_regions_from_page(
 			    3, idx as u64 * p4_size, (indices.1, indices.2, indices.3, PageTableIndex::new(idx as u16))))),
 		3 => uncompacted_entries.extend(
@@ -170,15 +174,11 @@ impl VenixPageAllocator {
 		}
 		if free_regions[idx].end - free_regions[idx].start == size_in_pages*4096 {
 		    let region = free_regions.remove(idx);
-
-		    let sign_extended = ((region.start << 16) as i64) >> 16;
-		    return VirtAddr::new(sign_extended as u64);
+		    return VirtAddr::new_truncate(region.start as u64);
 		} else if free_regions[idx].end - free_regions[idx].start > size_in_pages * 4096 {
 		    let start = free_regions[idx].start;
 		    free_regions[idx].start += size_in_pages * 4096;
-
-		    let sign_extended = ((start << 16) as i64) >> 16;
-		    return VirtAddr::new(sign_extended as u64);
+		    return VirtAddr::new_truncate(start as u64);
 		}
 	    }
 	    panic!("Kernel OOM");
