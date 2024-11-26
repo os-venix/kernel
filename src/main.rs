@@ -8,14 +8,23 @@
 
 extern crate alloc;
 
-use bootloader_api;
 use core::panic::PanicInfo;
 use conquer_once::spin::OnceCell;
 use fixed::{types::extra::U3, FixedU64};
 use alloc::string::ToString;
 
-use limine::request::{FramebufferRequest, RequestsEndMarker, RequestsStartMarker};
+use limine::request::{
+    EntryPointRequest,
+    FramebufferRequest,
+    MemoryMapRequest,
+    HhdmRequest,
+    RsdpRequest,
+    StackSizeRequest,
+    RequestsEndMarker,
+    RequestsStartMarker
+};
 use limine::BaseRevision;
+use limine::memory_map::EntryType;
 
 mod interrupts;
 mod gdt;
@@ -37,6 +46,26 @@ static BASE_REVISION: BaseRevision = BaseRevision::new();
 static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
 
 #[used]
+#[link_section = ".requests"]
+static MEMORY_MAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
+
+#[used]
+#[link_section = ".requests"]
+static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
+
+#[used]
+#[link_section = ".requests"]
+static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
+
+#[used]
+#[link_section = ".requests"]
+static ENTRY_POINT_REQUEST: EntryPointRequest = EntryPointRequest::new().with_entry_point(kmain);
+
+#[used]
+#[link_section = ".requests"]
+static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new().with_size(200 * 1024);
+
+#[used]
 #[link_section = ".requests_start_marker"]
 static _START_MARKER: RequestsStartMarker = RequestsStartMarker::new();
 
@@ -44,23 +73,18 @@ static _START_MARKER: RequestsStartMarker = RequestsStartMarker::new();
 #[link_section = ".requests_end_marker"]
 static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 
-const CONFIG: bootloader_api::BootloaderConfig = {
-    let mut config = bootloader_api::BootloaderConfig::new_default();
-    config.kernel_stack_size = 200 * 1024; // 100 KiB
-    config.mappings.page_table_recursive = Some(bootloader_api::config::Mapping::Dynamic);
-    config
-};
-bootloader_api::entry_point!(kernel_main, config = &CONFIG);
-
 pub static PRINTK: OnceCell<printk::LockedPrintk> = OnceCell::uninit();
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+//    if let Some(printk) = PRINTK.get() {
+//	printk.clear();
+//    }
     log::error!("{}", info);
     loop {}
 }
 
-fn init(boot_info: &'static mut bootloader_api::BootInfo) {
+fn init() {
     assert!(BASE_REVISION.is_supported());
 
     if let Some(framebuffer_response) = FRAMEBUFFER_REQUEST.get_response() {
@@ -75,49 +99,39 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
 	panic!();
     }
 
-    log::info!("Venix 0.0.1 - by Venos the Sergal :3");
+    log::info!("Venix 0.2.0 - by Venos the Sergal :3");
     log::info!("Initialising CPU0...");
+
+    let memory_map = MEMORY_MAP_REQUEST.get_response().expect("Limine did not return a memory map.");
     log::info!("Memory map:");
 
-    loop {}
-    {
-	let mut current_start: u64 = 0;
-	for region_idx in 0 .. boot_info.memory_regions.len() {
-	    if region_idx == 0 {
-		current_start = boot_info.memory_regions[region_idx].start;
-	    } else if boot_info.memory_regions[region_idx].start != boot_info.memory_regions[region_idx - 1].end {
-		current_start = boot_info.memory_regions[region_idx].start;
-	    } else if boot_info.memory_regions[region_idx].kind != boot_info.memory_regions[region_idx - 1].kind {
-		current_start = boot_info.memory_regions[region_idx].start;
-	    }
-
-	    if region_idx == boot_info.memory_regions.len() - 1 {
-		log::info!(
-		    "    {:X} - {:X}: {:?}", current_start,
-		    boot_info.memory_regions[region_idx].end, boot_info.memory_regions[region_idx].kind);
-	    } else if boot_info.memory_regions[region_idx].end != boot_info.memory_regions[region_idx + 1].start {
-		log::info!(
-		    "    {:X} - {:X}: {:?}", current_start,
-		    boot_info.memory_regions[region_idx].end, boot_info.memory_regions[region_idx].kind);
-	    } else if boot_info.memory_regions[region_idx].kind != boot_info.memory_regions[region_idx + 1].kind {
-		log::info!(
-		    "    {:X} - {:X}: {:?}", current_start,
-		    boot_info.memory_regions[region_idx].end, boot_info.memory_regions[region_idx].kind);
-	    }
-	}
+    for entry in memory_map.entries() {
+	log::info!("   {:X} - {:X}: {:?}", entry.base, entry.base + entry.length, match entry.entry_type {
+	    EntryType::USABLE => "Usable",
+	    EntryType::RESERVED => "Reserved",
+	    EntryType::ACPI_RECLAIMABLE => "ACPI Reclaimable",
+	    EntryType::ACPI_NVS => "ACPI NVS",
+	    EntryType::BAD_MEMORY => "Bad Memory",
+	    EntryType::BOOTLOADER_RECLAIMABLE => "Bootloader reclamiable",
+	    EntryType::KERNEL_AND_MODULES => "Kernel (and modules)",
+	    EntryType::FRAMEBUFFER => "Framebuffer",
+	    _ => "Unknown",
+	});
     }
 
     gdt::init();
     interrupts::init_idt();
-    memory::init(boot_info.recursive_index, &boot_info.memory_regions);
+
+    let direct_map_offset = HHDM_REQUEST.get_response().expect("Limine did not direct-map the higher half.").offset();
+    memory::init(direct_map_offset, memory_map.entries());
     allocator::init();
     scheduler::init();
 
     memory::init_full_mode();
     let usable_ram = memory::get_usable_ram();
     log::info!("Total usable RAM: {} MiB", (FixedU64::<U3>::from_num(usable_ram) / FixedU64::<U3>::from_num(1024 * 1024)).to_string());
-
-    sys::acpi::init(boot_info.rsdp_addr);
+    let rsdp_addr = RSDP_REQUEST.get_response().expect("Limine did not return RDSP pointer.").address() as u64;
+    sys::acpi::init(rsdp_addr - direct_map_offset);
     interrupts::init_handler_funcs();
     interrupts::init_bsp_apic();
 
@@ -129,6 +143,7 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
     driver::configure_drivers();
 
     sys::syscall::init();
+    loop {}
     scheduler::start_new_process();
     // match sys::vfs::read(String::from("/init/init.txt")) {
     // 	Ok((file_contents, file_size)) => {
@@ -146,7 +161,7 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
     // }
 }
 
-fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
-    init(boot_info);
+extern "C" fn kmain() -> ! {
+    init();
     loop {}
 }

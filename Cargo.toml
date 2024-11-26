@@ -5,7 +5,6 @@ edition = "2021"
 authors = ["Connor Wood"]
 
 [dependencies]
-bootloader_api = "0.11"
 log = "0.4"
 x86_64 = "0.15"
 spin = "0.9"

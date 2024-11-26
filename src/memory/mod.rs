@@ -9,11 +9,11 @@ use x86_64::structures::paging::{
     Page,
     PageTable,
     PageTableFlags,
-    RecursivePageTable,
-    PageTableIndex,
+    OffsetPageTable,
 };
-use x86_64::registers::control::{Cr4, Cr4Flags, Cr3, Cr3Flags};
+use x86_64::registers::control::{Cr3, Cr3Flags};
 use alloc::vec::Vec;
+use limine::memory_map::Entry;
 
 use crate::scheduler;
 
@@ -22,7 +22,7 @@ mod page_allocator;
 pub mod user_address_space;
 
 static KERNEL_PAGE_TABLE_IDX: RwLock<u64> = RwLock::new(0);
-static KERNEL_PAGE_TABLE: RwLock<Option<RecursivePageTable>> = RwLock::new(None);
+static KERNEL_PAGE_TABLE: RwLock<Option<OffsetPageTable>> = RwLock::new(None);
 static KERNEL_PAGE_FRAME: RwLock<Option<PhysFrame>> = RwLock::new(None);
 static VENIX_FRAME_ALLOCATOR: RwLock<Option<frame_allocator::VenixFrameAllocator>> = RwLock::new(None);
 static VENIX_PAGE_ALLOCATOR: RwLock<Option<page_allocator::VenixPageAllocator>> = RwLock::new(None);
@@ -47,47 +47,15 @@ pub enum MemoryAccessRestriction {
     User,
 }
 
-unsafe fn recursively_make_pages_global(
-    level: u8,
-    indices: (PageTableIndex, PageTableIndex, PageTableIndex, PageTableIndex)) {
-    let page_table: *mut PageTable = Page::from_page_table_indices(
-	indices.0, indices.1, indices.2, indices.3)
-	.start_address()
-	.as_mut_ptr();
-
-    (*page_table).iter_mut()
-	.enumerate()
-	.filter(|(_, entry)| entry.flags().contains(PageTableFlags::PRESENT))  // Only mark entries that are actually in use
-	.filter(|(_, entry)| level == 1 || entry.flags().contains(PageTableFlags::WRITABLE))  // If the parent table isn't writable, we can't (and probably don't want to) update
-	.for_each(|(index, entry)| match level {
-	    4 => recursively_make_pages_global(3, (indices.1, indices.2, indices.3, PageTableIndex::new(index as u16))),
-	    3 => recursively_make_pages_global(2, (indices.1, indices.2, indices.3, PageTableIndex::new(index as u16))),
-	    2 => entry.set_flags(entry.flags() | PageTableFlags::GLOBAL),
-	    _ => panic!("Invalid page level while marking kernel table as global")
-	});
-}
-
-fn make_all_pages_global(recursive_index: PageTableIndex) {
-    unsafe {
-	recursively_make_pages_global(4, (recursive_index, recursive_index, recursive_index, recursive_index));
-	Cr4::update(|flags| *flags |= Cr4Flags::PAGE_GLOBAL);
-    }
-}
-
-pub fn init(recursive_index: bootloader_api::info::Optional<u16>, memory_map: &'static bootloader_api::info::MemoryRegions) {
-    let idx = recursive_index.into_option().expect("No recursive page table index found.");
-
-    let idx_64 = idx as u64;
-    let sign_extended = ((idx_64 << (64 - 9)) as i64) >> (64 - 9);
-    let pt4_addr = ((sign_extended as u64) << 39) | (idx_64 << 30) | (idx_64 << 21) | (idx_64 << 12);
-
+pub fn init(direct_map_offset: u64, memory_map: &'static [&'static Entry]) {
+    let pt4_addr = Cr3::read().0.start_address().as_u64() + direct_map_offset;
     let pt4_ptr = pt4_addr as *mut PageTable;
 
     {
 	let mut w = KERNEL_PAGE_TABLE.write();
 	*w = Some(unsafe {
 	    let pt4 = &mut *pt4_ptr;
-	    RecursivePageTable::new(pt4).unwrap()
+	    OffsetPageTable::new(pt4, VirtAddr::new(direct_map_offset))
 	})
     }
 
@@ -95,8 +63,6 @@ pub fn init(recursive_index: bootloader_api::info::Optional<u16>, memory_map: &'
 	let mut w = KERNEL_PAGE_FRAME.write();
 	*w = Some(Cr3::read().0)
     }
-
-    make_all_pages_global(PageTableIndex::new(idx));
 
     {
 	let mut w = VENIX_FRAME_ALLOCATOR.write();
@@ -109,12 +75,12 @@ pub fn init(recursive_index: bootloader_api::info::Optional<u16>, memory_map: &'
 	let mut w = VENIX_PAGE_ALLOCATOR.write();
 	let r = KERNEL_PAGE_TABLE.read();
 	let level_4_table = r.as_ref().expect("Attempted to read missing Kernel page table").level_4_table().clone();
-	*w = Some(page_allocator::VenixPageAllocator::new(level_4_table));
+	*w = Some(page_allocator::VenixPageAllocator::new(level_4_table, direct_map_offset));
     }
 
     {
 	let mut w = KERNEL_PAGE_TABLE_IDX.write();
-	*w = idx_64;
+	*w = 0;
     }
 }
 
@@ -252,7 +218,9 @@ pub fn kernel_allocate(
 pub fn allocate_arbitrary_contiguous_region_kernel(
     phys_addr: usize, size: usize, alloc_type: MemoryAllocationType) -> Result<(VirtAddr, usize), MapToError<Size4KiB>> {
     let start_phys_addr = phys_addr - (phys_addr % 4096);  // Page align
-    let total_size = size + (phys_addr % 4096) + (4096 - (size % 4096));  // Total amount, aligned to page boundaries
+    let end_phys_addr = phys_addr + size + (4096 - ((phys_addr + size) % 4096));  // Page align
+
+    let total_size = end_phys_addr - start_phys_addr;
 
     let allocated_region = kernel_allocate(
 	total_size as u64,

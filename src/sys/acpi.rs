@@ -1,6 +1,5 @@
 use core::ptr::NonNull;
 use core::ops::Deref;
-use bootloader_api::info::Optional;
 use acpi::{AcpiTables, AcpiHandler, PhysicalMapping, AmlTable};
 pub use acpi::platform::interrupt::InterruptModel;
 use aml::{AmlContext, Handler, DebugVerbosity};
@@ -31,7 +30,6 @@ impl AcpiHandler for VenixAcpiHandler {
 	    Ok((ptr_to_t, total_size)) => (ptr_to_t, total_size),
 	    Err(e) => panic!("{:#?}", e),
 	};
-
 	PhysicalMapping::new(
 	    phys_addr, NonNull::new(ptr_to_t.as_mut_ptr()).expect("Allocation was unsuccessful"), size, total_size, Self)
     }
@@ -168,11 +166,9 @@ fn map_aml_table(tbl: AmlTable, aml: &mut AmlContext) {
     aml.parse_table(tbl_slice).expect("Failed to parse DSDT.");
 }
 
-pub fn init(rdsp_addr: Optional<u64>) {
-    let rdsp = rdsp_addr.into_option().expect("Unable to find ACPI tables.");
-
+pub fn init(rdsp_addr: u64) {
     let acpi = unsafe {
-	AcpiTables::from_rsdp(VenixAcpiHandler, rdsp as usize)
+	AcpiTables::from_rsdp(VenixAcpiHandler, rdsp_addr as usize)
     };
 
     match acpi {

@@ -42,6 +42,12 @@ impl LockedPrintk {
         LockedPrintk(RwLock::new(Printk::new(i)))
     }
 
+    pub fn clear(&self) {
+	without_interrupts(|| {
+            let mut printk = self.0.write();
+	    printk.clear();
+	});
+    }
 }
 
 impl log::Log for LockedPrintk {

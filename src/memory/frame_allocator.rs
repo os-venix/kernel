@@ -1,9 +1,14 @@
 use alloc::vec::Vec;
-use bootloader_api::info::{MemoryRegion, MemoryRegions, MemoryRegionKind};
+use limine::memory_map::{Entry, EntryType};
 
 use x86_64::{
     PhysAddr,
     structures::paging::{PhysFrame, FrameAllocator, Size4KiB}};
+
+struct MemoryRegion {
+    pub start: u64,
+    pub end: u64,
+}
 
 // Theory of operation:
 // Initially, VenixFrameAllocator will start in "runt mode". This, in effect, means that it will behave like a bump allocator, allocating the next frame
@@ -13,7 +18,7 @@ use x86_64::{
 // it will create a vector of from-tos. The first element in the vector entry is the starting frame number, inclusive. The second elementis the ending
 // frame number, non-inclusive.
 pub struct VenixFrameAllocator {
-    memory_map: &'static [MemoryRegion],
+    memory_map: &'static [&'static Entry],
 
     // Runt mode
     next: usize,
@@ -23,7 +28,7 @@ pub struct VenixFrameAllocator {
 }
 
 impl VenixFrameAllocator {
-    pub unsafe fn new(memory_map: &'static MemoryRegions) -> Self {
+    pub unsafe fn new(memory_map: &'static [&'static Entry]) -> Self {
 	VenixFrameAllocator {
 	    memory_map,
 	    next: 0,
@@ -33,8 +38,8 @@ impl VenixFrameAllocator {
 
     fn usable_frames(&self) -> impl Iterator<Item = PhysFrame> {
 	self.memory_map.iter()
-	    .filter(|r| r.kind == MemoryRegionKind::Usable)
-	    .map(|r| r.start .. r.end)
+	    .filter(|r| r.entry_type == EntryType::USABLE)
+	    .map(|r| r.base .. r.base + r.length)
 	    .flat_map(|r| r.step_by(4096))
 	    .map(|addr| PhysFrame::containing_address(PhysAddr::new(addr)))
     }
@@ -42,8 +47,8 @@ impl VenixFrameAllocator {
     // Used for reporting, how much RAM is present in the system?
     pub fn get_usable_memory(&self) -> u64 {
 	self.memory_map.iter()
-	    .filter(|r| r.kind == MemoryRegionKind::Usable)
-	    .map(|r| r.end - r.start)
+	    .filter(|r| r.entry_type == EntryType::USABLE)
+	    .map(|r| r.length)
 	    .sum()
     }
 
@@ -51,16 +56,19 @@ impl VenixFrameAllocator {
 	let mut free_regions: Vec<MemoryRegion> = Vec::new();
 
 	for region in self.memory_map.iter() {
-	    if region.kind != MemoryRegionKind::Usable {
+	    if region.entry_type != EntryType::USABLE {
 		continue;
 	    }
 	    
 	    if self.next == 0 {
-		free_regions.push(region.clone());
+		free_regions.push(MemoryRegion {
+		    start: region.base,
+		    end: region.base + region.length,
+		});
 		continue;
 	    }
 
-	    let size = region.end - region.start;
+	    let size = region.length;
 	    let size_in_pages = size / 4096;
 
 	    if size_in_pages as usize <= self.next {
@@ -68,9 +76,10 @@ impl VenixFrameAllocator {
 		continue;
 	    }
 
-	    let mut shrunken_region = region.clone();
-	    shrunken_region.start += self.next as u64 * 4096;
-	    free_regions.push(shrunken_region);
+	    free_regions.push(MemoryRegion {
+		start: region.base + (self.next as u64 * 4096),
+		end: region.base + region.length - (self.next as u64 * 4096),
+	    });
 
 	    self.next = 0;
 	}

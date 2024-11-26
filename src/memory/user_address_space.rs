@@ -7,9 +7,14 @@ use x86_64::structures::paging::{
 };
 use x86_64::registers::control::{Cr3, Cr3Flags};
 use alloc::vec::Vec;
-use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 
 use crate::memory;
+
+#[derive(Debug)]
+struct MemoryRegion {
+    pub start: u64,
+    pub end: u64,
+}
 
 pub struct AddressSpace {
     pt4: PhysFrame,
@@ -71,7 +76,6 @@ impl AddressSpace {
 	    free_regions: Vec::from([MemoryRegion {
 		start: 0x100000,
 		end: (p4_size as u64) * 255,  // Anywhere in the lower half
-		kind: MemoryRegionKind::Usable,
 	    }]),
 	}
     }

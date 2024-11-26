@@ -12,10 +12,7 @@ SECTIONS {
     . = KERNEL_OFFSET;
     . += SIZEOF_HEADERS;
 
-    .bootloader-config ALIGN(4K) : {
-        *(.bootloader-config*)
-    }
-    .text : {
+    .text ALIGN(4K) : {
         __text_start = .;
         *(.text*)
         __usercopy_start = .;
