@@ -12,9 +12,10 @@ use bootloader_api;
 use core::panic::PanicInfo;
 use conquer_once::spin::OnceCell;
 use fixed::{types::extra::U3, FixedU64};
-use alloc::string::{String, ToString};
-use core::slice;
-use core::ascii;
+use alloc::string::ToString;
+
+use limine::request::{FramebufferRequest, RequestsEndMarker, RequestsStartMarker};
+use limine::BaseRevision;
 
 mod interrupts;
 mod gdt;
@@ -26,6 +27,22 @@ mod driver;
 mod printk;
 mod fs;
 mod scheduler;
+
+#[used]
+#[link_section = ".requests"]
+static BASE_REVISION: BaseRevision = BaseRevision::new();
+
+#[used]
+#[link_section = ".requests"]
+static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
+
+#[used]
+#[link_section = ".requests_start_marker"]
+static _START_MARKER: RequestsStartMarker = RequestsStartMarker::new();
+
+#[used]
+#[link_section = ".requests_end_marker"]
+static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 
 const CONFIG: bootloader_api::BootloaderConfig = {
     let mut config = bootloader_api::BootloaderConfig::new_default();
@@ -44,13 +61,16 @@ fn panic(info: &PanicInfo) -> ! {
 }
 
 fn init(boot_info: &'static mut bootloader_api::BootInfo) {
-    if let Some(framebuffer) = boot_info.framebuffer.as_mut() {
-	let info = framebuffer.info();
-	let buffer = framebuffer.buffer_mut();
+    assert!(BASE_REVISION.is_supported());
 
-	let kernel_logger = PRINTK.get_or_init(move || printk::LockedPrintk::new(buffer, info));
-	log::set_logger(kernel_logger).expect("Logger already set");
-	log::set_max_level(log::LevelFilter::Trace);
+    if let Some(framebuffer_response) = FRAMEBUFFER_REQUEST.get_response() {
+	if let Some(framebuffer) = framebuffer_response.framebuffers().next() {
+	    let kernel_logger = PRINTK.get_or_init(move || printk::LockedPrintk::new(framebuffer));
+	    log::set_logger(kernel_logger).expect("Logger already set");
+	    log::set_max_level(log::LevelFilter::Trace);
+	} else {
+	    panic!();
+	}
     } else {
 	panic!();
     }
@@ -59,6 +79,7 @@ fn init(boot_info: &'static mut bootloader_api::BootInfo) {
     log::info!("Initialising CPU0...");
     log::info!("Memory map:");
 
+    loop {}
     {
 	let mut current_start: u64 = 0;
 	for region_idx in 0 .. boot_info.memory_regions.len() {

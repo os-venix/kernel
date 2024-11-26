@@ -48,6 +48,10 @@ SECTIONS {
         __data_end = .;
         __bss_start = .;
         *(.bss*)
+
+	KEEP(*(.requests_start_marker))
+	KEEP(*(.requests))
+	KEEP(*(.requests_end_marker))
     }
     .stack ALIGN(4K) : {
         *.(stack*)

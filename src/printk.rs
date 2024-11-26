@@ -4,11 +4,9 @@ use x86_64::instructions::interrupts::without_interrupts;
 
 #[allow(unused_imports)]
 use {
-    bootloader_api::{
-        info::{
-            FrameBufferInfo,
-            PixelFormat,
-        }
+    limine::framebuffer::{
+	Framebuffer,
+	MemoryModel,
     },
     conquer_once::{
         spin::{
@@ -22,6 +20,7 @@ use {
             Write,
         },
         ptr,
+	slice,
     },
     noto_sans_mono_bitmap::{
         get_raster,
@@ -39,8 +38,8 @@ impl LockedPrintk {
     
     // Constructor
     #[allow(dead_code)]
-    pub fn new(buf: &'static mut [u8], i: FrameBufferInfo) -> Self {
-        LockedPrintk(RwLock::new(Printk::new(buf, i)))
+    pub fn new(i: Framebuffer<'static>) -> Self {
+        LockedPrintk(RwLock::new(Printk::new(i)))
     }
 
 }
@@ -66,8 +65,7 @@ impl log::Log for LockedPrintk {
 
 /// Structure to render characters to the framebuffer
 pub struct Printk {
-    buffer: &'static mut [u8],
-    info: FrameBufferInfo,
+    fb: Framebuffer<'static>,
     x: usize,
     y: usize,
 }
@@ -75,10 +73,9 @@ pub struct Printk {
 impl Printk {
     /// Creates a new empty logging interface
     #[allow(dead_code)]
-    pub fn new(buffer: &'static mut [u8], info: FrameBufferInfo) -> Self {
+    pub fn new(fb: Framebuffer<'static>) -> Self {
         let mut printk = Self {
-            buffer,
-            info,
+            fb,
             x: 0,
             y: 0,
         };
@@ -89,46 +86,25 @@ impl Printk {
     /// Draws black-and-white pixels on the screen
     pub fn draw_grayscale(&mut self, x: usize, y: usize, intensity: u8) {
 
+        // Number of bytes in a pixel (4 on my machine)
+        let bpp = self.fb.bpp() as usize / 8;
+
         // Pixel offset
-        let poff = y * self.info.stride + x;
+        let poff = y * self.fb.pitch() as usize + (x * bpp);
 
-        let u8_intensity = {
-            if intensity > 200 {
-                0xf
-            } else {
-                0
-            }
-        };
-
-        let color = match self.info.pixel_format {
-
-            PixelFormat::Rgb => { 
+        let color = match self.fb.memory_model() {
+	    MemoryModel::RGB => { 
                 [intensity, intensity, intensity/2, 0]
             },
 
-            PixelFormat::Bgr => {
-                [intensity/2, intensity, intensity, 0]
-            },
-
-            PixelFormat::U8 => {
-                [u8_intensity, 0, 0, 0]
-            },
-
-            //TODO: use embedded-graphics to solve this problem
             _ => panic!("Unknown pixel format")
         };
 
-        // Number of bytes in a pixel (4 on my machine)
-        let bpp = self.info.bytes_per_pixel;
-
-        // Byte offset: multiply bytes-per-pixel by pixel offset to obtain
-        let boff = poff*bpp;
-
         // Copy bytes
-        self.buffer[boff..(boff+bpp)].copy_from_slice(&color[..bpp]);
-
-        // Raw pointer to buffer start ― that's why this is unsafe
-        let _ = unsafe { ptr::read_volatile(&self.buffer[boff]) };
+	unsafe {
+            slice::from_raw_parts_mut(self.fb.addr(), self.fb.height() as usize * self.fb.pitch() as usize)
+		[poff .. poff+bpp].copy_from_slice(&color[..bpp]);
+	}
 
     }
 
@@ -175,17 +151,20 @@ impl Printk {
     pub fn clear(&mut self) {
         self.home();
         self.page_up();
-        self.buffer.fill(0);
+
+	unsafe {
+            slice::from_raw_parts_mut(self.fb.addr(), self.fb.height() as usize * self.fb.pitch() as usize).fill(0);
+	}
     }
 
     /// Gets the width of the framebuffer
     pub fn width(&self) -> usize {
-        self.info.width
+        self.fb.width() as usize
     }
 
     /// Gets the height of the framebuffer
     pub fn height(&self) -> usize {
-        self.info.height
+        self.fb.height() as usize
     }
 
 
