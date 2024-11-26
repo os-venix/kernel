@@ -1,6 +1,13 @@
 ENTRY(_start)
 OUTPUT_FORMAT(elf64-x86-64)
 KERNEL_OFFSET = 0xFFFFFFFF80000000;
+
+PHDRS {
+    text PT_LOAD;
+    rodata PT_LOAD;
+    data PT_LOAD;
+}
+
 SECTIONS {
     . = KERNEL_OFFSET;
     . += SIZEOF_HEADERS;
