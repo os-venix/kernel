@@ -11,7 +11,7 @@ extern crate alloc;
 use core::panic::PanicInfo;
 use conquer_once::spin::OnceCell;
 use fixed::{types::extra::U3, FixedU64};
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
 
 use limine::request::{
     EntryPointRequest,
@@ -77,9 +77,9 @@ pub static PRINTK: OnceCell<printk::LockedPrintk> = OnceCell::uninit();
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-//    if let Some(printk) = PRINTK.get() {
-//	printk.clear();
-//    }
+    if let Some(printk) = PRINTK.get() {
+	printk.clear();
+    }
     log::error!("{}", info);
     loop {}
 }
@@ -143,25 +143,20 @@ fn init() {
     driver::configure_drivers();
 
     sys::syscall::init();
-    loop {}
-    scheduler::start_new_process();
-    // match sys::vfs::read(String::from("/init/init.txt")) {
-    // 	Ok((file_contents, file_size)) => {
-    //         let contents_ascii_char = unsafe {
-    // 		slice::from_raw_parts(file_contents as *const ascii::Char, file_size)
-    //         };
-
-    //         let contents = contents_ascii_char.iter()
-    // 		.map(|c| c.to_char())
-    // 		.collect::<String>();
-
-    //         log::info!("{}", contents);
-    // 	},
-    // 	Err(_) => panic!("Couldn't read /init/init.txt"),
-    // }
 }
 
 extern "C" fn kmain() -> ! {
     init();
+
+    let pid = scheduler::start_new_process();
+    scheduler::switch_to(pid);
+    match sys::vfs::read(String::from("/init/init")) {
+	Ok((file_contents, file_size)) => {
+	    scheduler::set_process_rip(pid, file_contents as u64);
+	    scheduler::start_active_process();
+	},
+	Err(_) => panic!("Couldn't read /init/init.txt"),
+    }
+
     loop {}
 }

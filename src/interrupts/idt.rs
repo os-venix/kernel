@@ -142,27 +142,27 @@ extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame)
 }
 
 extern "x86-interrupt" fn debug_handler(stack_frame: InterruptStackFrame) {
-    log::warn!("EXCEPTION: #DB\n{:#?}", stack_frame);
+    panic!("EXCEPTION: #DB\n{:#?}", stack_frame);
 }
 
 extern "x86-interrupt" fn nmi_handler(stack_frame: InterruptStackFrame) {
-    log::warn!("EXCEPTION: #NMI\n{:#?}", stack_frame);
+//    log::warn!("EXCEPTION: #NMI\n{:#?}", stack_frame);
 }
 
 extern "x86-interrupt" fn overflow_handler(stack_frame: InterruptStackFrame) {
-    log::warn!("EXCEPTION: #OF\n{:#?}", stack_frame);
+//    log::warn!("EXCEPTION: #OF\n{:#?}", stack_frame);
 }
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    log::warn!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
+//    log::warn!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
 }
 
 extern "x86-interrupt" fn bound_range_exceeded_handler(stack_frame: InterruptStackFrame) {
-    log::warn!("EXCEPTION: #BR\n{:#?}", stack_frame);
+//    log::warn!("EXCEPTION: #BR\n{:#?}", stack_frame);
 }
 
 extern "x86-interrupt" fn device_not_available_handler(stack_frame: InterruptStackFrame) {
-    log::warn!("EXCEPTION: #NM\n{:#?}", stack_frame);
+//    log::warn!("EXCEPTION: #NM\n{:#?}", stack_frame);
 }
 
 extern "x86-interrupt" fn double_fault_handler(stack_frame: InterruptStackFrame, _error_code: u64) -> ! {
@@ -196,7 +196,7 @@ extern "x86-interrupt" fn invalid_tss_handler(stack_frame: InterruptStackFrame, 
 }
 
 extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
-    log::warn!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
+//    log::warn!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
 }
 
 // IRQs

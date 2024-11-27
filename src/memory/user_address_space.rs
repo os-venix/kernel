@@ -40,18 +40,8 @@ impl AddressSpace {
 	let mut page_table_entry = PageTableEntry::new();
 	page_table_entry.set_frame(frame, flags);
 
-	let idx_64: u64 = {
-	    *memory::KERNEL_PAGE_TABLE_IDX.read()
-	};
-
-	pt4[idx_64 as usize] = page_table_entry.clone();
-
 	// Map the kernel
 	for i in 256 .. 512 {
-	    if i == idx_64 {
-		continue;
-	    }
-
 	    let r = memory::KERNEL_PAGE_TABLE.read();
 	    let p4 = r.as_ref().expect("Unable to read kernel page table");
 
@@ -63,12 +53,7 @@ impl AddressSpace {
 	    let r = memory::KERNEL_PAGE_TABLE.read();
 	    let p4 = r.as_ref().expect("Unable to read kernel page table");
 	    let level_4_table = p4.level_4_table();
-
-	    if level_4_table[i as usize].flags().contains(PageTableFlags::PRESENT) {
-		log::info!("{} {:#?}", i, level_4_table[i as usize]);
-	    }
 	}
-	    
 
 	let p4_size: u64 = 1 << 39;
 	AddressSpace {
@@ -81,14 +66,11 @@ impl AddressSpace {
     }
 
     pub unsafe fn switch_to(&self) {
-	log::info!("{:#?}", self.pt4);
-	
-	let r = memory::KERNEL_PAGE_FRAME.read();
-	let frame = r.as_ref().expect("Attempted to read missing Kernel page frame");
-	log::info!("{:#?}", *frame);
-
 	Cr3::write(self.pt4, Cr3Flags::PAGE_LEVEL_CACHE_DISABLE);
-	log::info!("Test");
+    }
+
+    pub fn get_pt4(&self) -> u64 {
+	self.pt4.start_address().as_u64()
     }
 
     // Returns the first virtaddr in the range

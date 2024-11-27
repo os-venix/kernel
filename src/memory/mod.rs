@@ -1,4 +1,4 @@
-use spin::RwLock;
+use spin::{Once, RwLock};
 use x86_64::{PhysAddr, VirtAddr};
 use x86_64::structures::paging::{
     frame::PhysFrame,
@@ -10,6 +10,7 @@ use x86_64::structures::paging::{
     PageTable,
     PageTableFlags,
     OffsetPageTable,
+    page::PageRangeInclusive,
 };
 use x86_64::registers::control::{Cr3, Cr3Flags};
 use alloc::vec::Vec;
@@ -21,11 +22,12 @@ mod frame_allocator;
 mod page_allocator;
 pub mod user_address_space;
 
-static KERNEL_PAGE_TABLE_IDX: RwLock<u64> = RwLock::new(0);
 static KERNEL_PAGE_TABLE: RwLock<Option<OffsetPageTable>> = RwLock::new(None);
 static KERNEL_PAGE_FRAME: RwLock<Option<PhysFrame>> = RwLock::new(None);
 static VENIX_FRAME_ALLOCATOR: RwLock<Option<frame_allocator::VenixFrameAllocator>> = RwLock::new(None);
 static VENIX_PAGE_ALLOCATOR: RwLock<Option<page_allocator::VenixPageAllocator>> = RwLock::new(None);
+
+static DIRECT_MAP_OFFSET: Once<u64> = Once::new();
 
 #[derive(PartialEq, Eq)]
 pub enum MemoryAllocationType {
@@ -50,6 +52,8 @@ pub enum MemoryAccessRestriction {
 pub fn init(direct_map_offset: u64, memory_map: &'static [&'static Entry]) {
     let pt4_addr = Cr3::read().0.start_address().as_u64() + direct_map_offset;
     let pt4_ptr = pt4_addr as *mut PageTable;
+
+    DIRECT_MAP_OFFSET.call_once(|| direct_map_offset);
 
     {
 	let mut w = KERNEL_PAGE_TABLE.write();
@@ -76,11 +80,6 @@ pub fn init(direct_map_offset: u64, memory_map: &'static [&'static Entry]) {
 	let r = KERNEL_PAGE_TABLE.read();
 	let level_4_table = r.as_ref().expect("Attempted to read missing Kernel page table").level_4_table().clone();
 	*w = Some(page_allocator::VenixPageAllocator::new(level_4_table, direct_map_offset));
-    }
-
-    {
-	let mut w = KERNEL_PAGE_TABLE_IDX.write();
-	*w = 0;
     }
 }
 
@@ -194,18 +193,40 @@ pub fn kernel_allocate(
 	},
     };
 
-    for (page, &frame) in page_range.zip(frame_range.iter()) {
+    fn inner_map(mapper: &mut OffsetPageTable,
+		 page_range: PageRangeInclusive,
+		 frame_range: Vec<PhysFrame>,
+		 access_restriction: MemoryAccessRestriction) -> Result<(), MapToError<Size4KiB>> {
 	let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
-	let flags = match access_restriction {
-	    MemoryAccessRestriction::Kernel => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL,
-	    MemoryAccessRestriction::User => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+
+	for (page, &frame) in page_range.zip(frame_range.iter()) {
+	    let flags = match access_restriction {
+		MemoryAccessRestriction::Kernel => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL,
+		MemoryAccessRestriction::User => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+	    };
+
+	    unsafe {
+		mapper.map_to(page, frame, flags, frame_allocator.as_mut().expect("Attempted to use missing frame allocator"))?.flush();
+	    };
+	}
+
+	Ok(())
+    }
+
+    if access_restriction == MemoryAccessRestriction::Kernel {
+	let mut mapper = KERNEL_PAGE_TABLE.write();
+	inner_map(mapper.as_mut().expect("Attempted to use missing kernel page table"), page_range, frame_range.clone(), access_restriction)?;
+    } else {
+	let direct_map_offset = DIRECT_MAP_OFFSET.get().expect("No direct map offset");
+	let pt4_addr = scheduler::get_active_page_table() + direct_map_offset;
+	let pt4_ptr = pt4_addr as *mut PageTable;
+
+	let mut mapper = unsafe {
+	    let pt4 = &mut *pt4_ptr;
+	    OffsetPageTable::new(pt4, VirtAddr::new(*direct_map_offset))
 	};
 
-	unsafe {
-	    let mut mapper = KERNEL_PAGE_TABLE.write();
-	    mapper.as_mut().expect("Attempted to use missing kernel page table")
-		.map_to(page, frame, flags, frame_allocator.as_mut().expect("Attempted to use missing frame allocator"))?.flush();
-	};
+	inner_map(&mut mapper, page_range, frame_range.clone(), access_restriction)?;
     }
 
     if let Some(pid) = maybe_pid {

@@ -1,3 +1,4 @@
+use core::ffi::{c_char, CStr};
 use x86_64::registers::model_specific::Msr;
 
 use crate::gdt;
@@ -10,7 +11,7 @@ const EFER_SCE: u64 = 1;
 
 pub fn init() {
     let (kernel_code, user_code) = gdt::get_code_selectors();
-    let star: u64 = (((user_code.0 as u64) << 16) | kernel_code.0 as u64) << 32;
+    let star: u64 = (((user_code.0 as u64 | 3) << 16) | kernel_code.0 as u64) << 32;
 
     // Set the segment selectors
     let mut star_msr = Msr::new(IA32_STAR_MSR);
@@ -31,13 +32,14 @@ pub fn init() {
 }
 
 unsafe extern "C" fn syscall_enter() {
-    let mut ecx: u64 = 0;
+    let mut rax: u64 = 0;
+    let mut rdx: u64 = 0;
+    let mut rcx: u64 = 0;
+    let mut r11: u64 = 0;
+
     core::arch::asm!(
 	// TODO: load a kernel stack here
 
-	"push rax",
-	"push rbx",
-	"push rcx",
 	"push rdx",
 	"push rsi",
 	"push rdi",
@@ -45,37 +47,45 @@ unsafe extern "C" fn syscall_enter() {
 	"push r8",
 	"push r9",
 	"push r10",
-	"push r11",
 	"push r12",
 	"push r13",
 	"push r14",
 	"push r15",
 
-	out("ecx") ecx,
+	out("rax") rax,
+	out("rdx") rdx,
+	out("rcx") rcx,
+	out("r11") r11,
     );
 
     // TODO: do the actual syscall here
+    match rax {
+	0x01 => {
+	    let s = CStr::from_ptr(rdx as *const c_char);
+	    log::info!("{}", s.to_str().expect("Unable to decode CStr"));
+	},
+	_ => log::info!("Syscall! Ret = 0x{:X}, FLAGS = 0x{:X}", rcx, r11),
+    }
 
-    log::info!("Syscall! Ret = 0x{:X}", ecx);
+    core::arch::asm!(
+	"pop r15",
+	"pop r14",
+	"pop r13",
+	"pop r12",
+	"pop r10",
+	"pop r9",
+	"pop r8",
+	"pop rbp",
+	"pop rdi",
+	"pop rsi",
+	"pop rdx",
+	"sysretq",
 
-    core::arch::asm!(concat!(
-	"pop r15\n",
-	"pop r14\n",
-	"pop r13\n",
-	"pop r12\n",
-	"pop r11\n",
-	"pop r10\n",
-	"pop r9\n",
-	"pop r8\n",
-	"pop rbp\n",
-	"pop rdi\n",
-	"pop rsi\n",
-	"pop rdx\n",
-	"pop rcx\n",
-	"pop rbx\n",
-	"pop rax\n",
-	"sysretq\n",
-    ));
+	in("r11") r11,
+	in("rcx") rcx,
+	in("rax") rax,
+	in("rdx") rdx,
+    );
     
     panic!();
 }
