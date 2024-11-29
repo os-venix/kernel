@@ -2,6 +2,7 @@ use spin::{Once, RwLock};
 use alloc::string::{String, ToString};
 use alloc::boxed::Box;
 use alloc::collections::btree_map::BTreeMap;
+use anyhow::{anyhow, Result};
 
 pub trait FileSystem {
     fn read(&self, path: String) -> Result<(*const u8, usize), ()>;
@@ -18,16 +19,19 @@ pub fn mount(mount_point: String, fs: Box<dyn FileSystem + Send + Sync>) {
     mount_table.insert(mount_point, fs);
 }
 
-pub fn read(file: String) -> Result<(*const u8, usize), ()> {
+pub fn read(file: String) -> Result<(*const u8, usize)> {
     let mount_table = MOUNT_TABLE.get().expect("Attempted to access mount table before it is initialised").read();
     for (mount_point, fs) in mount_table.iter() {
 	if file.starts_with(mount_point) {
-	    return fs.read(
+	    return match fs.read(
 		file.strip_prefix(mount_point)
 		    .expect("Attempted to strip off mount point unsuccessfully")
-		    .to_string());
+		    .to_string()) {
+		Ok(f) => Ok(f),
+		Err(_) => Err(anyhow!("Unable to load {}", file)),
+	    };
 	}
     }
 
-    Err(())
+    Err(anyhow!("No mount point found for {}", file))
 }

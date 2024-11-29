@@ -19,6 +19,8 @@ noto-sans-mono-bitmap = "0.3"
 pci_types = "0.10"
 bit_field = "0.10"
 limine = "0.3"
+xmas-elf = "0.9"
+anyhow = { version = "1.0", default-features = false }
 
 [dependencies.itertools]
 version = "0.13"

@@ -1,11 +1,16 @@
 use alloc::vec::Vec;
 use spin::{Once, RwLock};
+use anyhow::{anyhow, Result};
+use x86_64::VirtAddr;
 
 use crate::memory;
+
+pub mod elf_loader;
 
 pub struct Process {
     pub address_space: memory::user_address_space::AddressSpace,
     rip: u64,
+    rsp: u64,
 }
 
 pub static PROCESS_TABLE: Once<RwLock<Vec<Process>>> = Once::new();
@@ -26,12 +31,37 @@ pub fn start_new_process() -> usize {
     process_tbl.push(Process {
 	address_space: address_space,
 	rip: 0,
+	rsp: 0,
     });
 
     let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
     *running_process = Some(process_tbl.len() - 1);
 
     process_tbl.len() - 1
+}
+
+pub fn create_stack(size: u64) -> Result<()> {
+    let (stack, _) = match memory::kernel_allocate(
+	size,
+	memory::MemoryAllocationType::RAM,
+	memory::MemoryAllocationOptions::Arbitrary,
+	memory::MemoryAccessRestriction::User) {
+	Ok(i) => i,
+	Err(e) => {
+	    return Err(anyhow!("Could not allocate stack memory for process"));
+	}
+    };
+
+    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+    if let Some(pid) = *running_process {
+	process_tbl[pid].rsp = stack.as_u64() + size;
+
+	Ok(())
+    } else {
+	panic!("Attempted to set stack on nonexistent process");
+    }
 }
 
 pub fn deschedule() -> Option<usize> {
@@ -83,13 +113,13 @@ pub fn set_process_rip(pid: usize, start: u64) {
     process_tbl[pid].rip = start;
 }
 
-pub fn start_active_process() {
-    let rip = {
+pub fn start_active_process() -> ! {
+    let (rip, rsp) = {
 	let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
 	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
 	if let Some(pid) = *running_process {
-	    process_tbl[pid].rip.clone()
+	    (process_tbl[pid].rip.clone(), process_tbl[pid].rsp.clone())
 	} else {
 	    panic!("Attempted to access user address space when no process is running");
 	}
@@ -97,10 +127,13 @@ pub fn start_active_process() {
 
     unsafe {
 	core::arch::asm!(
+	    "mov rsp, {stackptr}",
 	    "sysretq",
 
 	    in("rcx") rip,
+	    stackptr = in(reg) rsp,
 	    in("r11") 0x202,
+	    options(noreturn),
 	);
     }
 }

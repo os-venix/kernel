@@ -148,15 +148,12 @@ fn init() {
 extern "C" fn kmain() -> ! {
     init();
 
-    let pid = scheduler::start_new_process();
+    let pid = match scheduler::elf_loader::load_elf(String::from("/init/init")) {
+	Ok(pid) => pid,
+	Err(e) => panic!("{}", e),
+    };
     scheduler::switch_to(pid);
-    match sys::vfs::read(String::from("/init/init")) {
-	Ok((file_contents, file_size)) => {
-	    scheduler::set_process_rip(pid, file_contents as u64);
-	    scheduler::start_active_process();
-	},
-	Err(_) => panic!("Couldn't read /init/init.txt"),
-    }
+    scheduler::start_active_process();
 
     loop {}
 }

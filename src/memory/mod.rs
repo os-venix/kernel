@@ -47,6 +47,7 @@ pub enum MemoryAllocationOptions {
 pub enum MemoryAccessRestriction {
     Kernel,
     User,
+    UserByStart(VirtAddr),
 }
 
 pub fn init(direct_map_offset: u64, memory_map: &'static [&'static Entry]) {
@@ -160,6 +161,22 @@ pub fn kernel_allocate(
 		    },
 		}
 	    },
+	    MemoryAccessRestriction::UserByStart(addr) => {
+		let mut process_tbl = scheduler::PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+		let running_process = scheduler::RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+		match *running_process {
+		    Some(pid) => match process_tbl[pid].address_space.get_page_range_from_start(addr, size as usize) {
+			Ok(_) => (),
+			Err(_) => panic!("Couldn't get memory at 0x{:x}, already allocated", addr.as_u64()),
+		    },
+		    None => {
+			panic!("Attempted to allocate userspace memory while not in a process address space");
+		    },
+		}
+
+		addr
+	    },
 	};
 	let end = start + (size - 1);
 
@@ -203,6 +220,7 @@ pub fn kernel_allocate(
 	    let flags = match access_restriction {
 		MemoryAccessRestriction::Kernel => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL,
 		MemoryAccessRestriction::User => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+		MemoryAccessRestriction::UserByStart(_) => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
 	    };
 
 	    unsafe {

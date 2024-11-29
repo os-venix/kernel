@@ -399,7 +399,23 @@ impl vfs::FileSystem for Fat16Fs {
 		clusters_to_read.push(cluster);
 	    }
 
-	    if clusters_to_read.len() == 1 {
+	    let mut cluster_strings_to_read: Vec<(u16, u64)> = Vec::new();
+	    let mut current_start: u16 = 0;
+	    for (idx, entry) in clusters_to_read.iter().enumerate() {
+		if idx == 0 {
+		    current_start = *entry;
+		} else if *entry != (clusters_to_read[idx - 1] + 1) {
+		    current_start = *entry;
+		}
+
+		if idx == clusters_to_read.len() - 1 {
+		    cluster_strings_to_read.push((current_start, (*entry as u64 - current_start as u64) + 1));
+		} else if (*entry + 1) != clusters_to_read[idx + 1] {
+		    cluster_strings_to_read.push((current_start, (*entry as u64 - current_start as u64) + 1));
+		}
+	    }
+
+	    if cluster_strings_to_read.len() == 1 {
 		let sectors_per_lba = self.boot_record.bytes_per_sector as u64 / 512;
 
 		let root_directory_size_sectors: u64 = ((self.boot_record.root_directory_entries as u64 * 32) +
@@ -410,7 +426,7 @@ impl vfs::FileSystem for Fat16Fs {
 		    (self.boot_record.number_of_fats as u64 * self.boot_record.sectors_per_fat as u64) +
 		    root_directory_size_sectors as u64;
 
-		let cluster_sector: u64 = ((clusters_to_read[0] as u64 - 2) * self.boot_record.sectors_per_cluster as u64)
+		let cluster_sector: u64 = ((cluster_strings_to_read[0].0 as u64 - 2) * self.boot_record.sectors_per_cluster as u64)
 		    + first_data_sector;
 
 		let cluster_lba = cluster_sector * sectors_per_lba;
@@ -419,12 +435,14 @@ impl vfs::FileSystem for Fat16Fs {
 		let size_lba = size_sectors / sectors_per_lba;
 
 		current_buf_ptr = self.dev.read(
-		    self.partition, cluster_lba as u64, size_lba as u64, access).expect("Couldn't read file");
+		    self.partition, cluster_lba as u64,
+		    (size_lba as u64) * cluster_strings_to_read[0].1, access).expect("Couldn't read file");
 
 		file_size = inode.file_size as usize;
 	    } else {
 		// Not supported
-		return Err(());
+		panic!("More than one cluster string attempted to be loaded: {:?}", cluster_strings_to_read);
+//		return Err(());
 	    }
 	}
 	

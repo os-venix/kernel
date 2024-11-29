@@ -7,6 +7,7 @@ use x86_64::structures::paging::{
 };
 use x86_64::registers::control::{Cr3, Cr3Flags};
 use alloc::vec::Vec;
+use anyhow::{anyhow, Result};
 
 use crate::memory;
 
@@ -95,5 +96,47 @@ impl AddressSpace {
 	    }
 	}
 	panic!("OOM");
+    }
+
+    pub fn get_page_range_from_start(&mut self, virt_addr: VirtAddr, size: usize) -> Result<()> {
+	let addr = virt_addr.as_u64() - (virt_addr.as_u64() % 4096);
+	let end_addr = virt_addr.as_u64() + (size as u64) + (4096 - ((virt_addr.as_u64() + (size as u64)) % 4096));  // Page align
+	let total_size = end_addr - addr;
+	let size_in_pages = total_size/4096;
+
+	for idx in 0 .. self.free_regions.len() {
+	    if self.free_regions[idx].start == addr && (
+		self.free_regions[idx].end - self.free_regions[idx].start == (size_in_pages as u64) * 4096) {
+		// Remove the whole region
+		self.free_regions.remove(idx);
+		return Ok(());
+	    } else if self.free_regions[idx].start < addr && (
+		self.free_regions[idx].start < addr + (size_in_pages as u64) * 4096) && (
+		self.free_regions[idx].end == addr + (size_in_pages as u64) * 4096) {
+		// Resize region so that it ends where the alloc starts 
+		self.free_regions[idx].end = addr;
+
+		return Ok(());		    
+	    } else if self.free_regions[idx].start < addr && (
+		self.free_regions[idx].start < addr + (size_in_pages as u64) * 4096) && (
+		self.free_regions[idx].end > addr + (size_in_pages as u64) * 4096) {
+		// Resize the region so that it ends where the alloc starts, and add a new region from the alloc end to old region end
+		let old_end = self.free_regions[idx].end;
+		self.free_regions[idx].end = addr;
+		self.free_regions.push(MemoryRegion {
+		    start: addr + (size_in_pages as u64) * 4096,
+		    end: old_end,
+		});
+
+		return Ok(());
+	    } else if self.free_regions[idx].start == addr && (
+		self.free_regions[idx].end > addr + (size_in_pages as u64) * 4096) {
+		// Resize region so that it starts where the alloc ends
+		self.free_regions[idx].start = addr + (size_in_pages as u64) * 4096;
+		return Ok(());
+	    }
+	}
+
+	Err(anyhow!("Block {:x} is already used", addr))
     }
 }
