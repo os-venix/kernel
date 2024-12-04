@@ -1,7 +1,8 @@
-use core::ffi::{c_char, CStr};
 use x86_64::registers::model_specific::Msr;
 
 use crate::gdt;
+use crate::scheduler;
+use crate::sys::vfs;
 
 const IA32_STAR_MSR: u32 = 0xC0000081;
 const IA32_LSTAR_MSR: u32 = 0xC0000082;
@@ -31,18 +32,36 @@ pub fn init() {
     }
 }
 
-unsafe extern "C" fn syscall_enter() {
+fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64) -> (u64, u64) {
+    match rax {
+	0x00 => {
+	    let actual_fd = match scheduler::get_actual_fd(rdi) {
+		Ok(fd) => fd,
+		Err(_) => {
+		    return (0xFFFF_FFFF_FFFF_FFFF, 9);  // -1 error, EBADF
+		},
+	    };
+
+	    match vfs::write_by_fd(/* file descriptor= */ actual_fd, /* buf= */ rsi, /* count= */ rdx) {
+		Ok(len) => (len, 0),
+		Err(_) => (0xFFFF_FFFF_FFFF_FFFF, 5),  // -1 error, EIO
+	    }
+	},
+	_ => panic!("Invalid syscall 0x{:X}", rax),
+    }
+}
+
+unsafe extern "C" fn syscall_enter() -> ! {
     let mut rax: u64 = 0;
     let mut rdx: u64 = 0;
     let mut rcx: u64 = 0;
     let mut r11: u64 = 0;
+    let mut rsi: u64 = 0;
+    let mut rdi: u64 = 0;
 
     core::arch::asm!(
 	// TODO: load a kernel stack here
 
-	"push rdx",
-	"push rsi",
-	"push rdi",
 	"push rbp",
 	"push r8",
 	"push r9",
@@ -56,16 +75,11 @@ unsafe extern "C" fn syscall_enter() {
 	out("rdx") rdx,
 	out("rcx") rcx,
 	out("r11") r11,
+	out("rsi") rsi,
+	out("rdi") rdi,
     );
 
-    // TODO: do the actual syscall here
-    match rax {
-	0x01 => {
-	    let s = CStr::from_ptr(rdx as *const c_char);
-	    log::info!("{}", s.to_str().expect("Unable to decode CStr"));
-	},
-	_ => log::info!("Syscall! Ret = 0x{:X}, FLAGS = 0x{:X}", rcx, r11),
-    }
+    (rax, rdx) = do_syscall(rax, rdi, rsi, rdx);
 
     core::arch::asm!(
 	"pop r15",
@@ -76,15 +90,14 @@ unsafe extern "C" fn syscall_enter() {
 	"pop r9",
 	"pop r8",
 	"pop rbp",
-	"pop rdi",
-	"pop rsi",
-	"pop rdx",
 	"sysretq",
 
 	in("r11") r11,
 	in("rcx") rcx,
 	in("rax") rax,
 	in("rdx") rdx,
+	in("rsi") rsi,
+	in("rdi") rdi,
     );
     
     panic!();

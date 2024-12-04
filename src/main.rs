@@ -135,9 +135,9 @@ fn init() {
     interrupts::init_handler_funcs();
     interrupts::init_bsp_apic();
 
+    sys::vfs::init();
     driver::init();
     sys::block::init();
-    sys::vfs::init();
     drivers::init();
 
     driver::configure_drivers();
@@ -153,6 +153,9 @@ extern "C" fn kmain() -> ! {
 	Err(e) => panic!("{}", e),
     };
     scheduler::switch_to(pid);
+    scheduler::open_fd(String::from("/dev/console"));  // Stdin
+    scheduler::open_fd(String::from("/dev/console"));  // Stdout
+    scheduler::open_fd(String::from("/dev/console"));  // Stderr
     scheduler::start_active_process();
 
     loop {}

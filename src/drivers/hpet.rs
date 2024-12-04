@@ -223,6 +223,9 @@ impl driver::Device for HpetDevice {
     fn read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()> {
 	panic!("Shouldn't have attempted to read from the HPET. That makes no sense.");
     }
+    fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()> {
+	panic!("Shouldn't have attempted to write to the HPET. That makes no sense.");
+    }
 }
 
 pub struct HpetDriver {}

@@ -1,9 +1,9 @@
-use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ascii;
 use core::ptr;
+use spin::RwLock;
 
 use crate::sys::block;
 use crate::sys::vfs;
@@ -448,6 +448,10 @@ impl vfs::FileSystem for Fat16Fs {
 	
 	Ok((current_buf_ptr, file_size))
     }
+
+    fn write(&self, path: String, buf: *const u8, len: usize) -> Result<u64, ()> {
+	panic!("FAT write not yet implemented");
+    }
 }
 
 struct Fat32Fs {
@@ -496,7 +500,7 @@ pub fn register_fat_fs(dev: Arc<block::GptDevice>, partition: u32) {
 	    };
 
 	    if let Some(fs) = Fat16Fs::new(dev, partition, boot_record, extended_boot_record) {
-		vfs::mount("/".to_string(), Box::new(fs));
+		vfs::mount("/".to_string(), Arc::new(RwLock::new(fs)));
 	    }
 	},
 	_ => (),

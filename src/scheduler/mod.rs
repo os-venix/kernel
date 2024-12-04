@@ -1,14 +1,16 @@
 use alloc::vec::Vec;
 use spin::{Once, RwLock};
 use anyhow::{anyhow, Result};
-use x86_64::VirtAddr;
+use alloc::string::String;
 
 use crate::memory;
+use crate::sys::vfs;
 
 pub mod elf_loader;
 
 pub struct Process {
     pub address_space: memory::user_address_space::AddressSpace,
+    file_descriptors: Vec<u64>,
     rip: u64,
     rsp: u64,
 }
@@ -30,6 +32,7 @@ pub fn start_new_process() -> usize {
     let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
     process_tbl.push(Process {
 	address_space: address_space,
+	file_descriptors: Vec::new(),
 	rip: 0,
 	rsp: 0,
     });
@@ -38,6 +41,35 @@ pub fn start_new_process() -> usize {
     *running_process = Some(process_tbl.len() - 1);
 
     process_tbl.len() - 1
+}
+
+pub fn open_fd(file: String) -> u64 {
+    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+    if let Some(pid) = *running_process {
+	let fd = vfs::open_fd(file);
+	process_tbl[pid].file_descriptors.push(fd);
+
+	process_tbl[pid].file_descriptors.len() as u64 - 1
+    } else {
+	panic!("Attempted to open a file on a nonexistent process");
+    }
+}
+
+pub fn get_actual_fd(fd: u64) -> Result<u64> {
+    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
+    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+    if let Some(pid) = *running_process {
+	if let Some(actual_fd) = process_tbl[pid].file_descriptors.get(fd as usize) {
+	    Ok(*actual_fd)
+	} else {
+	    Err(anyhow!("Attempted to access nonexistent file descriptor"))
+	}
+    } else {
+	panic!("Attempted to read open FDs on nonexistent process");
+    }
 }
 
 pub fn create_stack(size: u64) -> Result<()> {
