@@ -9,8 +9,6 @@ struct Selectors {
     code_selector: SegmentSelector,
     data_selector: SegmentSelector,
     user_dummy_selector: SegmentSelector,
-    user_code_selector: SegmentSelector,
-    user_data_selector: SegmentSelector,
     tss_selector: SegmentSelector,
 }
 
@@ -41,10 +39,10 @@ lazy_static! {
 	let code_selector = gdt.append(Descriptor::kernel_code_segment());
 	let data_selector = gdt.append(Descriptor::kernel_data_segment());
 	let user_dummy_selector = gdt.append(Descriptor::kernel_code_segment());  // Dummy to make SYSREQ work
-	let user_data_selector = gdt.append(Descriptor::user_data_segment());
-	let user_code_selector = gdt.append(Descriptor::user_code_segment());
+	gdt.append(Descriptor::user_data_segment());
+	gdt.append(Descriptor::user_code_segment());
 	let tss_selector = gdt.append(Descriptor::tss_segment(&TSS));
-	(gdt, Selectors { code_selector, data_selector, user_dummy_selector, user_code_selector, user_data_selector, tss_selector })
+	(gdt, Selectors { code_selector, data_selector, user_dummy_selector, tss_selector })
     };
 }
 

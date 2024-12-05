@@ -50,12 +50,6 @@ impl AddressSpace {
 	    pt4[i as usize] = level_4_table[i as usize].clone();
 	}
 
-	for i in 0 .. 512 {
-	    let r = memory::KERNEL_PAGE_TABLE.read();
-	    let p4 = r.as_ref().expect("Unable to read kernel page table");
-	    let level_4_table = p4.level_4_table();
-	}
-
 	let p4_size: u64 = 1 << 39;
 	AddressSpace {
 	    pt4: frame,

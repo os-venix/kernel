@@ -3,7 +3,6 @@ use alloc::string::String;
 use alloc::boxed::Box;
 use alloc::fmt;
 use core::any::Any;
-use aml::AmlName;
 use pci_types::{ConfigRegionAccess, PciAddress, PciHeader, HeaderType, EndpointHeader, Bar, VendorId, DeviceId, BaseClass, SubClass, Interface};
 use x86_64::instructions::port::{PortGeneric, ReadWriteAccess, WriteOnlyAccess};
 

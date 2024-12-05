@@ -3,7 +3,7 @@ use core::arch::asm;
 use core::ascii;
 use core::slice;
 use alloc::sync::Arc;
-use spin::{RwLock, RwLockWriteGuard};
+use spin::{Mutex, MutexGuard};
 use x86_64::instructions::port::Port;
 use itertools::Itertools;
 use alloc::vec;
@@ -253,7 +253,7 @@ struct IdeController {
 
 impl IdeController {
     pub fn new(control_base: u16, io_base: u16, busmaster_base: Option<u32>) {
-	let mut ide_controller = IdeController {
+	let ide_controller = IdeController {
 	    control_base: control_base,
 	    io_base: io_base,
 	    busmaster_base: busmaster_base,
@@ -261,7 +261,7 @@ impl IdeController {
 
 	ide_controller.reset();
 
-	let locked = Arc::new(RwLock::new(ide_controller));
+	let locked = Arc::new(Mutex::new(ide_controller));
 	if let Some(ide_drive) = IdeDrive::new(locked.clone(), 0) {
 	    let model = ide_drive.ident.get_model();
 	    let size = ide_drive.ident.get_size_in_sectors();
@@ -288,17 +288,17 @@ impl IdeController {
 	    let mut ctl_reg = Port::<u8>::new(self.control_base + IDE_CTL_REG);
 	    ctl_reg.write(IDE_CTL_NIEN | IDE_CTL_SRST);
 	}
-	for i in 0 .. 1000000 { unsafe { asm!("nop"); } }
+	for _ in 0 .. 1000000 { unsafe { asm!("nop"); } }
 	unsafe {
 	    let mut ctl_reg = Port::<u8>::new(self.control_base + IDE_CTL_REG);
 	    ctl_reg.write(IDE_CTL_NIEN);
 	}
-	for i in 0 .. 1000000 { unsafe { asm!("nop"); } }
+	for _ in 0 .. 1000000 { unsafe { asm!("nop"); } }
     }
 }
 
 struct IdeDrive {
-    controller: Arc<RwLock<IdeController>>,
+    controller: Arc<Mutex<IdeController>>,
     drive_num: u8,
     ident: IdentifyStruct,
     drive_type: DriveType,
@@ -325,7 +325,7 @@ impl driver::Device for IdeDrive {
 }
     
 impl IdeDrive {
-    pub fn new(controller: Arc<RwLock<IdeController>>, drive_num: u8) -> Option<IdeDrive> {
+    pub fn new(controller: Arc<Mutex<IdeController>>, drive_num: u8) -> Option<IdeDrive> {
 	let mut ide_drive = IdeDrive {
 	    controller: controller,
 	    drive_num: drive_num,
@@ -343,7 +343,7 @@ impl IdeDrive {
 	Some(ide_drive)
     }
 
-    fn select(&self, ctl: &RwLockWriteGuard<'_, IdeController>) {
+    fn select(&self, ctl: &MutexGuard<'_, IdeController>) {
 	// TODO: make port a shared, locked resource
 	let select_cmd = IDE_DRIVE_HEAD_BASE | if self.drive_num == 0 {
 	    IDE_DRIVE_HEAD_DRIVE_SEL_PRIMARY
@@ -358,7 +358,7 @@ impl IdeDrive {
     }
 
     fn check_exists_and_set_type(&mut self) -> bool {
-	let ctl = self.controller.write();
+	let ctl = self.controller.lock();
 	self.select(&ctl);
 	unsafe {
 	    let mut cmd_reg = Port::<u8>::new(ctl.io_base + IDE_CMD_REG);
@@ -376,24 +376,23 @@ impl IdeDrive {
 	    loop {
 		let status = status_reg.read();
 		if status & IDE_STATUS_ERR == 1 {
-		    unsafe {
-			let mut reg_cyl_lo = Port::<u8>::new(ctl.io_base + IDE_REG_CYL_LO);
-			let mut reg_cyl_hi = Port::<u8>::new(ctl.io_base + IDE_REG_CYL_HI);
 
-			let cl = reg_cyl_lo.read();
-			let ch = reg_cyl_hi.read();
+		    let mut reg_cyl_lo = Port::<u8>::new(ctl.io_base + IDE_REG_CYL_LO);
+		    let mut reg_cyl_hi = Port::<u8>::new(ctl.io_base + IDE_REG_CYL_HI);
 
-			self.drive_type = match (cl, ch) {
-			    (0x14, 0xEB) => DriveType::ATAPI,
-			    (0x69, 0x96) => DriveType::SATAPI,
-			    (0x00, 0x00) => DriveType::ATA,
-			    (0x3C, 0xC3) => DriveType::SATA,
-			    _ => {
-				log::info!("Unrecognised drive type {}:{} for drive {}", cl, ch, self.drive_num);
-				return false;
-			    },
-			}
-		    }
+		    let cl = reg_cyl_lo.read();
+		    let ch = reg_cyl_hi.read();
+
+		    self.drive_type = match (cl, ch) {
+			(0x14, 0xEB) => DriveType::ATAPI,
+			(0x69, 0x96) => DriveType::SATAPI,
+			(0x00, 0x00) => DriveType::ATA,
+			(0x3C, 0xC3) => DriveType::SATA,
+			_ => {
+			    log::info!("Unrecognised drive type {}:{} for drive {}", cl, ch, self.drive_num);
+			    return false;
+			},
+		    };
 
 		    return true;
 		}
@@ -409,7 +408,7 @@ impl IdeDrive {
     }
 
     fn set_ident(&mut self) {
-	let ctl = self.controller.write();
+	let ctl = self.controller.lock();
 	self.select(&ctl);
 
 	let cmd = match self.drive_type {
@@ -445,7 +444,7 @@ impl IdeDrive {
     }
     
     fn pio_read(&self, offset: u64, size: u64) -> Result<*const u8, ()> {
-	let mut ctl = self.controller.write();
+	let ctl = self.controller.lock();
 	self.select_drive_and_set_xfer_params(&ctl, offset, size);
 
 	unsafe {
@@ -453,7 +452,7 @@ impl IdeDrive {
 	    cmd_reg.write(IDE_CMD_READ_PIO_EXT);
 	}
 
-	for i in 0 .. 1000000 { unsafe { asm!("nop"); } }
+	for _ in 0 .. 1000000 { unsafe { asm!("nop"); } }
 	unsafe {
 	    let mut status_reg = Port::<u8>::new(ctl.io_base + IDE_STATUS_REG);
 
@@ -479,7 +478,7 @@ impl IdeDrive {
 	}
 
 	unsafe {
-	    let mut buf_ptr = memory::kernel_allocate(
+	    let buf_ptr = memory::kernel_allocate(
 		size,
 		memory::MemoryAllocationType::RAM,
 		memory::MemoryAllocationOptions::Arbitrary,
@@ -498,7 +497,7 @@ impl IdeDrive {
     }
 
     fn dma_read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()> {
-	let ctl = self.controller.write();
+	let ctl = self.controller.lock();
 
 	let (prdt_virt, prdt_phys) = memory::kernel_allocate(
 	    4096, memory::MemoryAllocationType::DMA, memory::MemoryAllocationOptions::Arbitrary, memory::MemoryAccessRestriction::Kernel)
@@ -627,7 +626,7 @@ impl IdeDrive {
 	Ok(buf_virt.as_ptr::<u8>())
     }
 
-    fn select_drive_and_set_xfer_params(&self, ctl: &RwLockWriteGuard<'_, IdeController>, offset: u64, size: u64) {
+    fn select_drive_and_set_xfer_params(&self, ctl: &MutexGuard<'_, IdeController>, offset: u64, size: u64) {
 	self.select(&ctl);
 
 	if self.ident.is_lba48() {

@@ -74,7 +74,7 @@ pub fn load_elf(file_name: String) -> Result<usize> {
 	    Err(e) => return Err(anyhow!("Could not parse program header: {}", e)),
 	};
 
-	let mut data_to = unsafe {
+	let data_to = unsafe {
 	    slice::from_raw_parts_mut(virt_start_addr.as_mut_ptr::<u8>(), program_header.mem_size() as usize)
 	};
 

@@ -87,9 +87,9 @@ impl Hpet {
 	let mut possible_routings: u32 = 0xFFFF_FFFF;
 	// Disable all counters
 	for counter in 0..=num_counters {
-	    let (routing, size) = unsafe {
+	    let routing = unsafe {
 		let capabilities = read_volatile::<u64>(hpet.counters[counter as usize].configuration_capability_register);
-		(capabilities >> 32, ((capabilities & 0x20) >> 5) == 1)
+		capabilities >> 32
 	    };
 
 	    possible_routings &= routing as u32;
@@ -104,7 +104,7 @@ impl Hpet {
 
 	// Find the lowest possible IRQ
 	let mut gsi = 0;
-	for i in 0 .. 32 {
+	for _ in 0 .. 32 {
 	    if (possible_routings & 1) == 1 {
 		break;
 	    } else {
@@ -125,7 +125,7 @@ impl Hpet {
 
 	if gisr != 0 {
 	    let mut interrupting_counter = 0;
-	    for i in 0 .. 64 {
+	    for _ in 0 .. 64 {
 		if (gisr & 1) == 1 {
 		    break;
 		} else {

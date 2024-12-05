@@ -59,7 +59,7 @@ pub fn open_fd(file: String) -> u64 {
 }
 
 pub fn get_actual_fd(fd: u64) -> Result<Arc<vfs::FileDescriptor>> {
-    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
+    let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
@@ -81,7 +81,7 @@ pub fn create_stack(size: u64) -> Result<()> {
 	memory::MemoryAccessRestriction::User) {
 	Ok(i) => i,
 	Err(e) => {
-	    return Err(anyhow!("Could not allocate stack memory for process"));
+	    return Err(anyhow!("Could not allocate stack memory for process: {:?}", e));
 	}
     };
 

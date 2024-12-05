@@ -1,7 +1,7 @@
 //use alloc::vec::Vec;
 use x86_64::{
     VirtAddr,
-    structures::paging::{PageTable, page_table::PageTableEntry, page_table::PageTableFlags}};
+    structures::paging::{PageTable, page_table::PageTableFlags}};
 use alloc::vec::Vec;
 
 #[derive(Debug)]

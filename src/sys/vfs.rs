@@ -2,7 +2,6 @@ use spin::{Once, RwLock};
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::collections::btree_map::BTreeMap;
-use alloc::vec::Vec;
 use anyhow::{anyhow, Result};
 
 pub trait FileSystem {

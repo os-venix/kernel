@@ -52,12 +52,12 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64) -> (u64, u64) {
 }
 
 unsafe extern "C" fn syscall_enter() -> ! {
-    let mut rax: u64 = 0;
-    let mut rdx: u64 = 0;
-    let mut rcx: u64 = 0;
-    let mut r11: u64 = 0;
-    let mut rsi: u64 = 0;
-    let mut rdi: u64 = 0;
+    let mut rax: u64;
+    let mut rdx: u64;
+    let mut rcx: u64;
+    let mut r11: u64;
+    let mut rsi: u64;
+    let mut rdi: u64;
 
     core::arch::asm!(
 	// TODO: load a kernel stack here

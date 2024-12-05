@@ -157,6 +157,4 @@ extern "C" fn kmain() -> ! {
     scheduler::open_fd(String::from("/dev/console"));  // Stdout
     scheduler::open_fd(String::from("/dev/console"));  // Stderr
     scheduler::start_active_process();
-
-    loop {}
 }
