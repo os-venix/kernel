@@ -10,12 +10,26 @@ pub trait FileSystem {
     fn write(&self, path: String, buf: *const u8, len: usize) -> Result<u64, ()>;
 }
 
+pub struct FileDescriptor {
+    file_name: String,
+}
+
+impl FileDescriptor {
+    pub fn new(name: String) -> FileDescriptor {
+	FileDescriptor {
+	    file_name: name,
+	}
+    }
+
+    pub fn get_file_name(&self) -> String {
+	self.file_name.clone()
+    }
+}
+
 static MOUNT_TABLE: Once<RwLock<BTreeMap<String, Arc<RwLock<dyn FileSystem + Send + Sync>>>>> = Once::new();
-static FD_TABLE: Once<RwLock<Vec<String>>> = Once::new();
 
 pub fn init() {
     MOUNT_TABLE.call_once(|| RwLock::new(BTreeMap::new()));
-    FD_TABLE.call_once(|| RwLock::new(Vec::new()));
 }
 
 pub fn mount(mount_point: String, fs: Arc<RwLock<dyn FileSystem + Send + Sync>>) {
@@ -85,21 +99,7 @@ pub fn write(file: String, buf: *const u8, len: usize) -> Result<u64> {
     }
 }
 
-pub fn write_by_fd(fd: u64, buf: u64, len: u64) -> Result<u64> {
-    let file = {
-	let fd_table = FD_TABLE.get().expect("Attempted to access FD table before it is initialised").read();
-	match fd_table.get(fd as usize) {
-	    Some(file) => file.clone(),
-	    None => return Err(anyhow!("Couldn't find file descriptor")),
-	}
-    };
-
+pub fn write_by_fd(fd: Arc<FileDescriptor>, buf: u64, len: u64) -> Result<u64> {
+    let file = fd.get_file_name();
     write(file, buf as *const u8, len as usize)
-}
-
-pub fn open_fd(file: String) -> u64 {
-    let mut fd_table = FD_TABLE.get().expect("Attempted to access FD table before it is initialised").write();
-    fd_table.push(file);
-
-    fd_table.len() as u64 - 1
 }

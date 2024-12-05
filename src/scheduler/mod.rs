@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::{Once, RwLock};
 use anyhow::{anyhow, Result};
@@ -10,7 +11,7 @@ pub mod elf_loader;
 
 pub struct Process {
     pub address_space: memory::user_address_space::AddressSpace,
-    file_descriptors: Vec<u64>,
+    file_descriptors: Vec<Arc<vfs::FileDescriptor>>,
     rip: u64,
     rsp: u64,
 }
@@ -48,7 +49,7 @@ pub fn open_fd(file: String) -> u64 {
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
-	let fd = vfs::open_fd(file);
+	let fd = Arc::new(vfs::FileDescriptor::new(file));
 	process_tbl[pid].file_descriptors.push(fd);
 
 	process_tbl[pid].file_descriptors.len() as u64 - 1
@@ -57,13 +58,13 @@ pub fn open_fd(file: String) -> u64 {
     }
 }
 
-pub fn get_actual_fd(fd: u64) -> Result<u64> {
+pub fn get_actual_fd(fd: u64) -> Result<Arc<vfs::FileDescriptor>> {
     let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
 	if let Some(actual_fd) = process_tbl[pid].file_descriptors.get(fd as usize) {
-	    Ok(*actual_fd)
+	    Ok(actual_fd.clone())
 	} else {
 	    Err(anyhow!("Attempted to access nonexistent file descriptor"))
 	}
