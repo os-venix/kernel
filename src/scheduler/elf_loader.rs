@@ -88,5 +88,7 @@ pub fn load_elf(file_name: String) -> Result<usize> {
 
     scheduler::create_stack(8 * 1024 * 1024)?;  // 8MiB
     scheduler::set_process_rip(pid, elf.header.pt2.entry_point());
+
+    log::info!("0x{:x}", elf.header.pt2.entry_point());
     Ok(pid)
 }

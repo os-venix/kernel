@@ -520,26 +520,29 @@ impl IdeDrive {
 	    size * 512, memory::MemoryAllocationType::DMA, memory::MemoryAllocationOptions::Arbitrary, access_restriction)
 	    .expect("Unable to allocate a PDRT memory region");
 
-	// Ensure the region  is contiguous. There are two ways to solve this better:
-	// 1.) Allow multiple PRD entires, one per non-contiguous region
-	// 2.) Support asking the memory manager for a contiguous region
-	// Both should be implemented, as it's likely both will be needed in the long run
-	// For now, we'll just accept this limitation
+	let mut current_start = buf_phys[0].as_u64();
+	let mut prdt_entries = 0;
+	let mut sectors_remaining = size;
 	for (i, buf_page) in buf_phys.iter().enumerate() {
+	    if buf_page.as_u64() >= 1 << 32 {
+		panic!("DMA region is out of bounds, in higher half of physical memory");
+	    }
+
 	    if i != buf_phys.len() - 1 {
 		if buf_page.as_u64() + 4096 != buf_phys[i + 1].as_u64() {
-		    panic!("Attempted to transfer into more than one non-contiguous memory region");
+		    let phys_size_in_bytes = (((buf_page.as_u64() + 4096) - current_start) & 0xFFFF) as u32;
+		    prdt[prdt_entries * 2] = current_start as u32;
+		    prdt[(prdt_entries * 2) + 1] = phys_size_in_bytes;
+
+		    sectors_remaining -= (phys_size_in_bytes / 512) as u64;
+		    current_start = buf_phys[i + 1].as_u64();
+		    prdt_entries += 1;
 		}
+	    } else {
+		prdt[prdt_entries * 2] = current_start as u32;
+		prdt[(prdt_entries * 2) + 1] = (1 << 31) | ((sectors_remaining * 512) & 0xFFFF) as u32;
 	    }
 	}
-
-	let buf_start_phys = buf_phys[0].as_u64();
-	if buf_start_phys >= 1 << 32 {
-	    panic!("DMA region is out of bounds, in higher half of physical memory");
-	}
-
-	prdt[0] = buf_start_phys as u32;
-	prdt[1] = (1 << 31) | (((size as u32) * 512) & 0xFFFF);
 
 	let busmaster_base = ctl.busmaster_base.expect("Attempted to do DMA xfer to non-DMA controller") as u16;
 
