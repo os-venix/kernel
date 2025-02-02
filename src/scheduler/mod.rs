@@ -161,10 +161,12 @@ pub fn start_active_process() -> ! {
     unsafe {
 	core::arch::asm!(
 	    "mov rsp, {stackptr}",
+	    "push {argc}",
 	    "sysretq",
 
 	    in("rcx") rip,
 	    stackptr = in(reg) rsp,
+	    argc = const 0 as u64,
 	    in("r11") 0x202,
 	    options(noreturn),
 	);

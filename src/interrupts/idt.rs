@@ -172,7 +172,8 @@ extern "x86-interrupt" fn double_fault_handler(stack_frame: InterruptStackFrame,
 
 extern "x86-interrupt" fn page_fault_handler(stack_frame: InterruptStackFrame, error_code: PageFaultErrorCode) {
     x86_64::instructions::interrupts::disable();
-    panic!("EXCEPTION: PAGE FAULT {:#?}\n{:#?}", error_code, stack_frame);
+    let target_addr = x86_64::registers::control::Cr2::read_raw();
+    panic!("EXCEPTION: PAGE FAULT\nADDR 0x{:x}\n{:#?}\n{:#?}", target_addr, error_code, stack_frame);
 }
 
 extern "x86-interrupt" fn gpf_handler(stack_frame: InterruptStackFrame, error_code: u64) {
