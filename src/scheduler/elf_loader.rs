@@ -36,7 +36,61 @@ impl Elf {
 	}
 
 	let virtual_offset: u64 = match elf.header.pt2.type_().as_type() {
-	    header::Type::Executable => 0,// Todo,
+	    header::Type::Executable => 0,  // Todo,
+	    header::Type::SharedObject => 0,  // TODO: We need a way here to ensure we have enough space free at the location
+	    _ => unimplemented!(),
+	};
+
+	let mut lowest_virt_addr: Option<u64> = None;
+	let mut highest_virt_addr: Option<u64> = None;
+	for program_header in elf.program_iter() {
+	    // Not sure what's going on here, but these exist, and should be skipped
+	    if program_header.virtual_addr() == 0 && program_header.mem_size() == 0 {
+		continue;
+	    }
+
+	    if lowest_virt_addr == None {
+		lowest_virt_addr = Some(program_header.virtual_addr());
+	    } else if program_header.virtual_addr() < lowest_virt_addr.expect("Eh") {
+		lowest_virt_addr = Some(program_header.virtual_addr());
+	    }
+
+	    if highest_virt_addr == None {
+		highest_virt_addr = Some(program_header.virtual_addr() + program_header.mem_size());
+	    } else if program_header.virtual_addr() + program_header.mem_size() > highest_virt_addr.expect("Eh") {
+		highest_virt_addr = Some(program_header.virtual_addr() + program_header.mem_size());
+	    }
+	}
+
+	let virt_start_addr = match elf.header.pt2.type_().as_type() {
+	    header::Type::Executable => {
+		let virt_start_addr = VirtAddr::new(lowest_virt_addr.expect("No loadable sections were found"));
+
+		match memory::kernel_allocate(
+		    highest_virt_addr.expect("No loadable sections were found") - lowest_virt_addr.expect("No loadable sections were found"),
+		    memory::MemoryAllocationType::RAM,
+		    memory::MemoryAllocationOptions::Arbitrary,
+		    memory::MemoryAccessRestriction::UserByStart(virt_start_addr)) {
+		    Ok(_) => (),
+		    Err(e) => {
+			return Err(anyhow!("Could not allocate memory for {}: {:?}", file_name, e));
+		    }
+		}
+
+		virt_start_addr
+	    },
+	    header::Type::SharedObject => {
+		let (start, _) = match memory::kernel_allocate(
+		    highest_virt_addr.expect("No loadable sections were found") - lowest_virt_addr.expect("No loadable sections were found"),
+		    memory::MemoryAllocationType::RAM,
+		    memory::MemoryAllocationOptions::Arbitrary,
+		    memory::MemoryAccessRestriction::User) {
+		    Ok(i) => i,
+		    Err(e) => panic!("Could not allocate memory for {}: {:?}", file_name, e),
+		};
+
+		start
+	    },
 	    _ => unimplemented!(),
 	};
 
@@ -56,18 +110,11 @@ impl Elf {
 		continue;
 	    }
 
-	    let virt_start_addr = VirtAddr::new(virtual_offset + program_header.virtual_addr());
-
-	    match memory::kernel_allocate(
-		program_header.mem_size(),
-		memory::MemoryAllocationType::RAM,
-		memory::MemoryAllocationOptions::Arbitrary,
-		memory::MemoryAccessRestriction::UserByStart(virt_start_addr)) {
-		Ok(_) => (),
-		Err(e) => {
-		    return Err(anyhow!("Could not allocate memory for {}: {:?}", file_name, e));
-		}
-	    }
+	    let virt_header_start_addr = match elf.header.pt2.type_().as_type() {
+		header::Type::Executable => VirtAddr::new(program_header.virtual_addr()),
+		header::Type::SharedObject => virt_start_addr + program_header.virtual_addr(),
+		_ => unimplemented!(),
+	    };
 
 	    let data = match program_header.get_data(&elf) {
 		Ok(SegmentData::Undefined(data)) => data,
@@ -76,7 +123,7 @@ impl Elf {
 	    };
 
 	    let data_to = unsafe {
-		slice::from_raw_parts_mut(virt_start_addr.as_mut_ptr::<u8>(), program_header.mem_size() as usize)
+		slice::from_raw_parts_mut(virt_header_start_addr.as_mut_ptr::<u8>(), program_header.mem_size() as usize)
 	    };
 
 	    if program_header.mem_size() == program_header.file_size() {

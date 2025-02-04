@@ -77,10 +77,10 @@ pub static PRINTK: OnceCell<printk::LockedPrintk> = OnceCell::uninit();
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    if let Some(printk) = PRINTK.get() {
-	printk.clear();
-    }
-    log::error!("{}", info);
+    // if let Some(printk) = PRINTK.get() {
+    // 	printk.clear();
+    // }
+    // log::error!("{}", info);
     loop {}
 }
 

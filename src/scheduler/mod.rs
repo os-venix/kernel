@@ -129,7 +129,6 @@ impl Process {
 
 	ptrs_to[7 + args_p.len() + envvar_p.len()] = 0;  // AT_NULL	
 
-	log::info!("RSP 0x{:x}", self.rsp);
 	unsafe {
 	    core::arch::asm!(
 		"mov rsp, {stackptr}",
@@ -164,6 +163,7 @@ pub fn start_new_process(filename: String) -> usize {
 	pid
     };
     let elf = elf_loader::Elf::new(filename).expect("Failed to load ELF");
+    let ld = elf_loader::Elf::new(String::from("/lib/ld.so")).expect("Failed to load ld.so");
     {
 	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
 	process_tbl[pid].attach_loaded_elf(elf);
