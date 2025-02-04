@@ -319,6 +319,7 @@ impl driver::Device for IdeDrive {
 	    _ => self.dma_read(offset, size, access_restriction),
 	}
     }
+
     fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()> {
 	panic!("Attempted to write to IDE drive. Not yet implemented");
     }
