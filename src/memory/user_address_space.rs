@@ -11,12 +11,13 @@ use anyhow::{anyhow, Result};
 
 use crate::memory;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct MemoryRegion {
     pub start: u64,
     pub end: u64,
 }
 
+#[derive(PartialEq, Eq)]
 pub struct AddressSpace {
     pt4: PhysFrame,
     free_regions: Vec<MemoryRegion>,

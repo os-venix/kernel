@@ -148,11 +148,7 @@ fn init() {
 extern "C" fn kmain() -> ! {
     init();
 
-    let pid = match scheduler::elf_loader::load_elf(String::from("/init/init")) {
-	Ok(pid) => pid,
-	Err(e) => panic!("{}", e),
-    };
-    scheduler::switch_to(pid);
+    let pid = scheduler::start_new_process(String::from("/init/init"));
     scheduler::open_fd(String::from("/dev/console"));  // Stdin
     scheduler::open_fd(String::from("/dev/console"));  // Stdout
     scheduler::open_fd(String::from("/dev/console"));  // Stderr

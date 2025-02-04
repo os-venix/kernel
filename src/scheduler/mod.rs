@@ -11,7 +11,7 @@ use alloc::vec;
 use crate::memory;
 use crate::sys::vfs;
 
-pub mod elf_loader;
+mod elf_loader;
 
 pub struct Process {
     pub address_space: memory::user_address_space::AddressSpace,
@@ -25,7 +25,12 @@ pub struct Process {
 }
 
 impl Process {
-    pub fn new(address_space: memory::user_address_space::AddressSpace) -> Self {
+    pub fn new() -> Self {
+	let mut address_space = memory::user_address_space::AddressSpace::new();
+	unsafe {
+	    address_space.switch_to();
+	}
+
 	Process {
 	    address_space: address_space,
 	    file_descriptors: Vec::new(),
@@ -36,6 +41,24 @@ impl Process {
 	    rip: 0,
 	    rsp: 0,
 	}
+    }
+
+    pub fn init_stack(&mut self) {
+	let (rsp, _) = match memory::kernel_allocate(
+	    8 * 1024 * 1024,  // 8MiB
+	    memory::MemoryAllocationType::RAM,
+	    memory::MemoryAllocationOptions::Arbitrary,
+	    memory::MemoryAccessRestriction::UserByAddressSpace(&mut self.address_space)) {
+	    Ok(i) => i,
+	    Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
+	};
+
+	self.rsp = rsp.as_u64();
+    }
+
+    pub fn attach_loaded_elf(&mut self, elf: elf_loader::Elf) {
+	self.at_entry = VirtAddr::new(elf.entry);
+	self.rip = elf.entry;
     }
 
     pub fn init_stack_and_start(&mut self) -> ! {
@@ -110,12 +133,10 @@ impl Process {
 	unsafe {
 	    core::arch::asm!(
 		"mov rsp, {stackptr}",
-		"push {argc}",
 		"sysretq",
 
 		in("rcx") self.rip,
 		stackptr = in(reg) self.rsp,
-		argc = const 0 as u64,
 		in("r11") 0x202,
 		options(noreturn),
 	    );
@@ -131,19 +152,25 @@ pub fn init() {
     RUNNING_PROCESS.call_once(|| RwLock::new(None));
 }
 
-pub fn start_new_process() -> usize {
-    let address_space = memory::user_address_space::AddressSpace::new();
-    unsafe {
-	address_space.switch_to();
+pub fn start_new_process(filename: String) -> usize {
+    let pid = {
+	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+	process_tbl.push(Process::new());
+
+	let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
+
+	let pid = process_tbl.len() - 1;
+	*running_process = Some(pid);
+	pid
+    };
+    let elf = elf_loader::Elf::new(filename).expect("Failed to load ELF");
+    {
+	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+	process_tbl[pid].attach_loaded_elf(elf);
+	process_tbl[pid].init_stack();
     }
 
-    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-    process_tbl.push(Process::new(address_space));
-
-    let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
-    *running_process = Some(process_tbl.len() - 1);
-
-    process_tbl.len() - 1
+    pid
 }
 
 pub fn open_fd(file: String) -> u64 {
@@ -172,30 +199,6 @@ pub fn get_actual_fd(fd: u64) -> Result<Arc<vfs::FileDescriptor>> {
 	}
     } else {
 	panic!("Attempted to read open FDs on nonexistent process");
-    }
-}
-
-pub fn create_stack(size: u64) -> Result<()> {
-    let (stack, _) = match memory::kernel_allocate(
-	size,
-	memory::MemoryAllocationType::RAM,
-	memory::MemoryAllocationOptions::Arbitrary,
-	memory::MemoryAccessRestriction::User) {
-	Ok(i) => i,
-	Err(e) => {
-	    return Err(anyhow!("Could not allocate stack memory for process: {:?}", e));
-	}
-    };
-
-    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-    if let Some(pid) = *running_process {
-	process_tbl[pid].rsp = stack.as_u64() + size;
-
-	Ok(())
-    } else {
-	panic!("Attempted to set stack on nonexistent process");
     }
 }
 
@@ -236,16 +239,6 @@ pub fn get_active_page_table() -> u64 {
 pub fn is_process_running() -> bool {
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
     running_process.is_some()
-}
-
-pub fn set_process_rip(pid: usize, start: u64) {
-    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-
-    if pid >= process_tbl.len() {
-	panic!("Attempted to switch to a nonexistent process");
-    }
-
-    process_tbl[pid].rip = start;
 }
 
 pub fn start_active_process() -> ! {

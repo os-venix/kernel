@@ -44,10 +44,11 @@ pub enum MemoryAllocationOptions {
 }
 
 #[derive(PartialEq, Eq)]
-pub enum MemoryAccessRestriction {
+pub enum MemoryAccessRestriction<'a> {
     Kernel,
     User,
     UserByStart(VirtAddr),
+    UserByAddressSpace(&'a mut user_address_space::AddressSpace),
 }
 
 pub fn init(direct_map_offset: u64, memory_map: &'static [&'static Entry]) {
@@ -137,7 +138,7 @@ pub fn kernel_allocate(
     size: u64,
     alloc_type: MemoryAllocationType,
     alloc_options: MemoryAllocationOptions,
-    access_restriction: MemoryAccessRestriction) -> Result<(VirtAddr, Vec<PhysAddr>), MapToError<Size4KiB>> {
+    mut access_restriction: MemoryAccessRestriction) -> Result<(VirtAddr, Vec<PhysAddr>), MapToError<Size4KiB>> {
     let maybe_pid = if access_restriction == MemoryAccessRestriction::Kernel {
 	unsafe {
 	    switch_to_kernel()
@@ -177,6 +178,7 @@ pub fn kernel_allocate(
 
 		addr
 	    },
+	    MemoryAccessRestriction::UserByAddressSpace(ref mut address_space) => address_space.get_page_range(size),
 	};
 	let end = start + (size - 1);
 
@@ -221,6 +223,7 @@ pub fn kernel_allocate(
 		MemoryAccessRestriction::Kernel => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL,
 		MemoryAccessRestriction::User => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
 		MemoryAccessRestriction::UserByStart(_) => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+		MemoryAccessRestriction::UserByAddressSpace(_) => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
 	    };
 
 	    unsafe {
@@ -236,7 +239,12 @@ pub fn kernel_allocate(
 	inner_map(mapper.as_mut().expect("Attempted to use missing kernel page table"), page_range, frame_range.clone(), access_restriction)?;
     } else {
 	let direct_map_offset = DIRECT_MAP_OFFSET.get().expect("No direct map offset");
-	let pt4_addr = scheduler::get_active_page_table() + direct_map_offset;
+	let pt4_addr = match access_restriction {
+	    MemoryAccessRestriction::Kernel => unreachable!(),
+	    MemoryAccessRestriction::User => scheduler::get_active_page_table() + direct_map_offset,
+	    MemoryAccessRestriction::UserByStart(_) => scheduler::get_active_page_table() + direct_map_offset,
+	    MemoryAccessRestriction::UserByAddressSpace(ref address_space) => address_space.get_pt4() + direct_map_offset,
+	};
 	let pt4_ptr = pt4_addr as *mut PageTable;
 
 	let mut mapper = unsafe {
