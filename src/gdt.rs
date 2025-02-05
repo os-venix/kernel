@@ -51,11 +51,17 @@ pub fn init() {
     use x86_64::instructions::segmentation::{CS, DS, Segment};
 
     GDT.0.load();
+    TSS.privilege_stack_table[1] = memory::kernel_allocate_early(KERNEL_HEAP_SIZE as u64)
+	.expect("Unable to allocate kernel stack").as_u64();
     unsafe {
 	CS::set_reg(GDT.1.code_selector);
 	DS::set_reg(GDT.1.data_selector);
 	load_tss(GDT.1.tss_selector);
     }
+}
+
+pub fn init_full_mode() {
+    TSS.privilege_stack_table[1] = 
 }
 
 pub fn get_code_selectors() -> (SegmentSelector, SegmentSelector) {

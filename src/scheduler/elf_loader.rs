@@ -9,6 +9,7 @@ use crate::memory;
 
 pub struct Elf {
     pub entry: u64,
+    pub base: u64,
 }
 
 impl Elf {
@@ -94,6 +95,15 @@ impl Elf {
 	    _ => unimplemented!(),
 	};
 
+	{
+	    let mut size_to_zero = highest_virt_addr.expect("No loadable sections were found") - lowest_virt_addr.expect("No loadable sections were found");
+
+	    let data_to_z = unsafe {
+		slice::from_raw_parts_mut(virt_start_addr.as_mut_ptr::<u8>(), size_to_zero as usize)
+	    };
+	    data_to_z.fill_with(Default::default);
+	}
+
 	for program_header in elf.program_iter() {
 	    // PT_LOAD is a loadable segment that needs to be in the address space.
 	    // All else can be skipped.
@@ -122,20 +132,23 @@ impl Elf {
 		Err(e) => return Err(anyhow!("Could not parse program header: {}", e)),
 	    };
 
-	    let data_to = unsafe {
-		slice::from_raw_parts_mut(virt_header_start_addr.as_mut_ptr::<u8>(), program_header.mem_size() as usize)
-	    };
-
-	    if program_header.mem_size() == program_header.file_size() {
+	    if program_header.file_size() != 0 {
+		let data_to = unsafe {
+		    slice::from_raw_parts_mut(virt_header_start_addr.as_mut_ptr::<u8>(), program_header.file_size() as usize)
+		};
 		data_to.copy_from_slice(data);
-	    } else if program_header.file_size() == 0 {
-		// BSS segment
-		data_to.fill_with(Default::default);
 	    }
 	}
 
+	let entry = match elf.header.pt2.type_().as_type() {
+	    header::Type::Executable => elf.header.pt2.entry_point(),
+	    header::Type::SharedObject => virt_start_addr.as_u64() + elf.header.pt2.entry_point(),
+	    _ => unimplemented!(),
+	};
+
 	Ok(Elf {
-	    entry: elf.header.pt2.entry_point()
+	    entry: entry,
+	    base: virt_start_addr.as_u64(),
 	})
     }
 }

@@ -5,6 +5,7 @@
 #![feature(ascii_char)]
 #![feature(ascii_char_variants)]
 #![feature(extract_if)]
+#![feature(naked_functions)]
 
 extern crate alloc;
 
@@ -80,7 +81,7 @@ fn panic(info: &PanicInfo) -> ! {
     // if let Some(printk) = PRINTK.get() {
     // 	printk.clear();
     // }
-    // log::error!("{}", info);
+    log::error!("{}", info);
     loop {}
 }
 
@@ -101,6 +102,7 @@ fn init() {
 
     log::info!("Venix 0.2.0 - by Venos the Sergal :3");
     log::info!("Initialising CPU0...");
+    sys::init();
 
     let memory_map = MEMORY_MAP_REQUEST.get_response().expect("Limine did not return a memory map.");
     log::info!("Memory map:");

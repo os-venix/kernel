@@ -56,12 +56,13 @@ impl Process {
 	self.rsp = rsp.as_u64();
     }
 
-    pub fn attach_loaded_elf(&mut self, elf: elf_loader::Elf) {
+    pub fn attach_loaded_elf(&mut self, elf: elf_loader::Elf, ld_so: elf_loader::Elf) {
 	self.at_entry = VirtAddr::new(elf.entry);
-	self.rip = elf.entry;
+	self.at_base = VirtAddr::new(ld_so.base);
+	self.rip = ld_so.entry;
     }
 
-    pub fn init_stack_and_start(&mut self) -> ! {
+    pub fn init_stack_and_start(&mut self) -> (u64, u64) {
 	let envvars_buf_size: usize = self.envvars.iter()
 	    .map(|env_var| env_var.len() + 1)
 	    .sum();
@@ -127,19 +128,9 @@ impl Process {
 	ptrs_to[5 + args_p.len() + envvar_p.len()] = 9;  // AT_ENTRY
 	ptrs_to[6 + args_p.len() + envvar_p.len()] = self.at_entry.as_u64();
 
-	ptrs_to[7 + args_p.len() + envvar_p.len()] = 0;  // AT_NULL	
+	ptrs_to[7 + args_p.len() + envvar_p.len()] = 0;  // AT_NULL
 
-	unsafe {
-	    core::arch::asm!(
-		"mov rsp, {stackptr}",
-		"sysretq",
-
-		in("rcx") self.rip,
-		stackptr = in(reg) self.rsp,
-		in("r11") 0x202,
-		options(noreturn),
-	    );
-	}
+	(self.rsp, self.rip)
     }
 }
 
@@ -166,7 +157,7 @@ pub fn start_new_process(filename: String) -> usize {
     let ld = elf_loader::Elf::new(String::from("/lib/ld.so")).expect("Failed to load ld.so");
     {
 	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-	process_tbl[pid].attach_loaded_elf(elf);
+	process_tbl[pid].attach_loaded_elf(elf, ld);
 	process_tbl[pid].init_stack();
     }
 
@@ -242,12 +233,26 @@ pub fn is_process_running() -> bool {
 }
 
 pub fn start_active_process() -> ! {
-    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+    let (rsp, rip) = {
+	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
-    if let Some(pid) = *running_process {
-	process_tbl[pid].init_stack_and_start();
-    } else {
-	panic!("Attempted to access user address space when no process is running");
+	if let Some(pid) = *running_process {
+	    process_tbl[pid].init_stack_and_start()
+	} else {
+	    panic!("Attempted to access user address space when no process is running");
+	}
+    };
+    
+    unsafe {
+	core::arch::asm!(
+	    "mov rsp, {stackptr}",
+	    "sysretq",
+
+	    in("rcx") rip,
+	    stackptr = in(reg) rsp,
+	    in("r11") 0x202,
+	    options(noreturn),
+	);
     }
 }
