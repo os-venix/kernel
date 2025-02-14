@@ -13,13 +13,24 @@ use crate::sys::vfs;
 
 mod elf_loader;
 
+const AT_NUL: u64 = 0;
+const AT_PHDR: u64 = 3;
+const AT_PHENT: u64 = 4;
+const AT_PHNUM: u64 = 5;
+const AT_BASE: u64 = 7;
+const AT_ENTRY: u64 = 9;
+
+struct AuxVector {
+    auxv_type: u64,
+    value: u64,
+}
+
 pub struct Process {
     pub address_space: memory::user_address_space::AddressSpace,
     file_descriptors: Vec<Arc<vfs::FileDescriptor>>,
-    at_entry: VirtAddr,
-    at_base: VirtAddr,
     args: Vec<String>,
     envvars: Vec<String>,
+    auxvs: Vec<AuxVector>,
     rip: u64,
     rsp: u64,
 }
@@ -34,10 +45,9 @@ impl Process {
 	Process {
 	    address_space: address_space,
 	    file_descriptors: Vec::new(),
-	    at_entry: VirtAddr::new(0),
-	    at_base: VirtAddr::new(0),
 	    args: vec!(String::from("init")),
 	    envvars: vec!(String::from("PATH=/bin:/usr/bin")),
+	    auxvs: Vec::new(),
 	    rip: 0,
 	    rsp: 0,
 	}
@@ -57,8 +67,32 @@ impl Process {
     }
 
     pub fn attach_loaded_elf(&mut self, elf: elf_loader::Elf, ld_so: elf_loader::Elf) {
-	self.at_entry = VirtAddr::new(elf.entry);
-	self.at_base = VirtAddr::new(ld_so.base);
+	self.auxvs.push(AuxVector {
+	    auxv_type: AT_BASE,
+	    value: ld_so.base
+	});
+	self.auxvs.push(AuxVector {
+	    auxv_type: AT_ENTRY,
+	    value: elf.entry
+	});
+	self.auxvs.push(AuxVector {
+	    auxv_type: AT_PHDR,
+	    value: elf.program_header
+	});
+	self.auxvs.push(AuxVector {
+	    auxv_type: AT_PHENT,
+	    value: elf.program_header_entry_size
+	});
+	self.auxvs.push(AuxVector {
+	    auxv_type: AT_PHNUM,
+	    value: elf.program_header_entry_count
+	});
+	self.auxvs.push(AuxVector {
+	    auxv_type: AT_NUL,
+	    value: 0
+	});
+
+	log::info!("PHDR: 0x{:x}", elf.program_header);
 	self.rip = ld_so.entry;
     }
 
@@ -98,17 +132,16 @@ impl Process {
 	    args_p.push(self.rsp + current_offs as u64);
 	}
 
-
-	self.rsp -= /* auxv = */(2 * 16) +
+	self.rsp -= /* auxv = */(self.auxvs.len() as u64 * 16) +
 	    (self.envvars.len() as u64 * 8) +
 	    (self.args.len() as u64 * 8) +
-	/* padding = */(4 * 8);
+	/* padding = */(3 * 8);
 	let stack_ptr = VirtAddr::new(self.rsp);
 
 	let ptrs_to = unsafe {
 	    slice::from_raw_parts_mut(
 		stack_ptr.as_mut_ptr::<u64>(),
-		/* auxv = */(2 * 2) + self.envvars.len() + self.args.len() + 4,
+		/* auxv = */(self.auxvs.len() * 2) + self.envvars.len() + self.args.len() + 3,
 	    )
 	};
 
@@ -121,14 +154,10 @@ impl Process {
 	    ptrs_to[2 + args_p.len() + i] = *envvar;
 	}
 	ptrs_to[2 + args_p.len() + envvar_p.len()] = 0;
-
-	ptrs_to[3 + args_p.len() + envvar_p.len()] = 7;  // AT_BASE
-	ptrs_to[4 + args_p.len() + envvar_p.len()] = self.at_base.as_u64();
-
-	ptrs_to[5 + args_p.len() + envvar_p.len()] = 9;  // AT_ENTRY
-	ptrs_to[6 + args_p.len() + envvar_p.len()] = self.at_entry.as_u64();
-
-	ptrs_to[7 + args_p.len() + envvar_p.len()] = 0;  // AT_NULL
+	for (i, auxv) in self.auxvs.iter().enumerate() {
+	    ptrs_to[3 + args_p.len() + envvar_p.len() + (i * 2)] = auxv.auxv_type;
+	    ptrs_to[4 + args_p.len() + envvar_p.len() + (i * 2)] = auxv.value;
+	}
 
 	(self.rsp, self.rip)
     }
