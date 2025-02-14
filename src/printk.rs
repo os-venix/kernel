@@ -48,6 +48,10 @@ impl LockedPrintk {
 	    printk.clear();
 	});
     }
+
+    pub unsafe fn force_unlock(&self) {
+	self.0.force_write_unlock()
+    }
 }
 
 impl log::Log for LockedPrintk {
@@ -57,6 +61,7 @@ impl log::Log for LockedPrintk {
     }
 
     fn log(&self, record: &log::Record) {
+	unsafe { self.force_unlock(); }
 	without_interrupts(|| {
             let mut printk = self.0.write();
             writeln!(printk, "{}", record.args()).unwrap();

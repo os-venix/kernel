@@ -1,4 +1,6 @@
+use core::mem::offset_of;
 use x86_64::registers::model_specific::Msr;
+use x86_64::structures::tss::TaskStateSegment;
 
 use crate::gdt;
 use crate::scheduler;
@@ -65,9 +67,8 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, r10: u64, r8: u64, r9: u64
 		Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),
 	    };
 
-	    log::info!("0x{}", start.as_u64());
-
 	    (start.as_u64(), 0)
+
 	},
 	_ => panic!("Invalid syscall 0x{:X}", rax),
     }
@@ -118,10 +119,14 @@ unsafe extern "C" fn syscall_inner() {
     );
 }
 
+// TODO - load kernel stack; may need to use swapgs for that
 #[naked]
 #[allow(named_asm_labels)]
 unsafe extern "C" fn syscall_enter () -> ! {
     core::arch::asm!(
+	"swapgs",
+	"mov gs:[{sp}], rsp",
+	"mov rsp, gs:[{ksp}]",
 	
 	"push r12",
 	"push r13",
@@ -135,8 +140,12 @@ unsafe extern "C" fn syscall_enter () -> ! {
 	"pop r13",
 	"pop r12",
 
-
+	"mov rsp, gs:[{sp}]",
+	"swapgs",
 	"sysretq",
-	options(noreturn)
+
+	options(noreturn),
+	sp = const(offset_of!(gdt::ProcessorControlBlock, tmp_user_stack_ptr)),
+	ksp = const(offset_of!(gdt::ProcessorControlBlock, tss) + offset_of!(TaskStateSegment, privilege_stack_table)),
     );
 }

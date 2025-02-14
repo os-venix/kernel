@@ -9,6 +9,7 @@ use itertools::Itertools;
 use alloc::vec;
 use core::ptr;
 use bit_field::BitField;
+use x86_64::PhysAddr;
 
 use crate::driver;
 use crate::memory;
@@ -245,18 +246,34 @@ enum DriveType {
     SATAPI,
 }
 
-struct IdeController {
+struct IdeController<'a> {
     control_base: u16,
     io_base: u16,
     busmaster_base: Option<u32>,
+    prdt: &'a mut [u32],
+    prdt_phys: u32,
 }
 
-impl IdeController {
-    pub fn new(control_base: u16, io_base: u16, busmaster_base: Option<u32>) {
+impl IdeController<'_> {
+    pub fn new(control_base: u16, io_base: u16, busmaster_base: Option<u32>) {	
+	let (prdt_virt, prdt_phys) = memory::kernel_allocate(
+	    4096, memory::MemoryAllocationType::DMA, memory::MemoryAllocationOptions::Arbitrary, memory::MemoryAccessRestriction::Kernel)
+	    .expect("Unable to allocate a PDRT memory region");
+	let prdt_phys_addr = prdt_phys[0].as_u64();
+	if prdt_phys_addr >= 1 << 32 {
+	    panic!("PRDT region is out of bounds, in higher half of physical memory");
+	}
+
+	let prdt = unsafe {
+	    slice::from_raw_parts_mut (prdt_virt.as_mut_ptr::<u32>(), 1024)
+	};
+
 	let ide_controller = IdeController {
 	    control_base: control_base,
 	    io_base: io_base,
 	    busmaster_base: busmaster_base,
+	    prdt: prdt,
+	    prdt_phys: prdt_phys[0].as_u64() as u32,
 	};
 
 	ide_controller.reset();
@@ -297,17 +314,17 @@ impl IdeController {
     }
 }
 
-struct IdeDrive {
-    controller: Arc<Mutex<IdeController>>,
+struct IdeDrive<'a> {
+    controller: Arc<Mutex<IdeController<'a>>>,
     drive_num: u8,
     ident: IdentifyStruct,
     drive_type: DriveType,
 }
 
-unsafe impl Send for IdeDrive { }
-unsafe impl Sync for IdeDrive { }
+unsafe impl Send for IdeDrive<'_> { }
+unsafe impl Sync for IdeDrive<'_> { }
 
-impl driver::Device for IdeDrive {
+impl driver::Device for IdeDrive<'_> {
     fn read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()> {
 	if self.drive_type != DriveType::ATA {
 	    return Err(());
@@ -325,7 +342,7 @@ impl driver::Device for IdeDrive {
     }
 }
     
-impl IdeDrive {
+impl IdeDrive<'_> {
     pub fn new(controller: Arc<Mutex<IdeController>>, drive_num: u8) -> Option<IdeDrive> {
 	let mut ide_drive = IdeDrive {
 	    controller: controller,
@@ -498,19 +515,7 @@ impl IdeDrive {
     }
 
     fn dma_read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()> {
-	let ctl = self.controller.lock();
-
-	let (prdt_virt, prdt_phys) = memory::kernel_allocate(
-	    4096, memory::MemoryAllocationType::DMA, memory::MemoryAllocationOptions::Arbitrary, memory::MemoryAccessRestriction::Kernel)
-	    .expect("Unable to allocate a PDRT memory region");
-	let prdt_phys_addr = prdt_phys[0].as_u64();
-	if prdt_phys_addr >= 1 << 32 {
-	    panic!("PRDT region is out of bounds, in higher half of physical memory");
-	}
-
-	let prdt = unsafe {
-	    slice::from_raw_parts_mut (prdt_virt.as_mut_ptr::<u32>(), 1024)
-	};
+	let mut ctl = self.controller.lock();
 
 	// We don't (yet) support multiple PRDs per transfer
 	if size > 65536 {
@@ -533,8 +538,8 @@ impl IdeDrive {
 	    if i != buf_phys.len() - 1 {
 		if buf_page.as_u64() + 4096 != buf_phys[i + 1].as_u64() {
 		    while (buf_page.as_u64() + 4096) - current_start > 0x10000 {
-			prdt[prdt_entries * 2] = current_start as u32;
-			prdt[(prdt_entries * 2) + 1] = 0;
+			ctl.prdt[prdt_entries * 2] = current_start as u32;
+			ctl.prdt[(prdt_entries * 2) + 1] = 0;
 
 			current_start += 0x10000;
 			bytes_remaining -= 0x10000;
@@ -542,8 +547,8 @@ impl IdeDrive {
 		    }
 
 		    let phys_size_in_bytes = (((buf_page.as_u64() + 4096) - current_start) & 0xFFFF) as u32;
-		    prdt[prdt_entries * 2] = current_start as u32;
-		    prdt[(prdt_entries * 2) + 1] = phys_size_in_bytes;
+		    ctl.prdt[prdt_entries * 2] = current_start as u32;
+		    ctl.prdt[(prdt_entries * 2) + 1] = phys_size_in_bytes;
 
 		    bytes_remaining -= phys_size_in_bytes as u64;
 		    current_start = buf_phys[i + 1].as_u64();
@@ -551,16 +556,16 @@ impl IdeDrive {
 		}
 	    } else {
 		while bytes_remaining > 0x10000 {
-		    prdt[prdt_entries * 2] = current_start as u32;
-		    prdt[(prdt_entries * 2) + 1] = 0;
+		    ctl.prdt[prdt_entries * 2] = current_start as u32;
+		    ctl.prdt[(prdt_entries * 2) + 1] = 0;
 
 		    current_start += 0x10000;
 		    bytes_remaining -= 0x10000;
 		    prdt_entries += 1;
 		}
 
-		prdt[prdt_entries * 2] = current_start as u32;
-		prdt[(prdt_entries * 2) + 1] = (1 << 31) | (bytes_remaining & 0xFFFF) as u32;
+		ctl.prdt[prdt_entries * 2] = current_start as u32;
+		ctl.prdt[(prdt_entries * 2) + 1] = (1 << 31) | (bytes_remaining & 0xFFFF) as u32;
 	    }
 	}
 
@@ -568,7 +573,7 @@ impl IdeDrive {
 
 	unsafe {
 	    let mut prdt_addr_reg = Port::<u32>::new(busmaster_base + 0x04);
-	    prdt_addr_reg.write(prdt_phys_addr as u32);
+	    prdt_addr_reg.write(ctl.prdt_phys);
 	}
 
 	unsafe {

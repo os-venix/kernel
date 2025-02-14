@@ -37,6 +37,10 @@ impl VenixPageAllocator {
 	}
     }
 
+    pub fn get_hhdm_offset(&self) -> u64 {
+	self.hhdm_offset
+    }
+
     unsafe fn gather_unused_regions_from_page(
 	&self,
 	level: u8,
@@ -152,8 +156,7 @@ impl VenixPageAllocator {
 	    entries.extend(compacted_entries)
 	}
 
-	entries
-	
+	entries	
     }
 
     pub unsafe fn move_to_full_mode(&mut self, p4: *const PageTable) {

@@ -78,10 +78,18 @@ pub static PRINTK: OnceCell<printk::LockedPrintk> = OnceCell::uninit();
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+    // unsafe {
+    // 	let kernel_logger = match PRINTK.try_get() {
+    // 	    Ok(logger) => logger,
+    // 	    Err(_) => loop {}  // Give up at this point
+    // 	};
+    // 	kernel_logger.force_unlock();
+    // }
+
     // if let Some(printk) = PRINTK.get() {
     // 	printk.clear();
     // }
-    log::error!("{}", info);
+    // log::error!("{}", info);
     loop {}
 }
 
@@ -121,15 +129,16 @@ fn init() {
 	});
     }
 
-    gdt::init();
-    interrupts::init_idt();
-
     let direct_map_offset = HHDM_REQUEST.get_response().expect("Limine did not direct-map the higher half.").offset();
     memory::init(direct_map_offset, memory_map.entries());
     allocator::init();
     scheduler::init();
-
     memory::init_full_mode();
+
+    log::info!("Bringing up BSP");
+    gdt::init();
+    interrupts::init_idt();
+
     let usable_ram = memory::get_usable_ram();
     log::info!("Total usable RAM: {} MiB", (FixedU64::<U3>::from_num(usable_ram) / FixedU64::<U3>::from_num(1024 * 1024)).to_string());
     let rsdp_addr = RSDP_REQUEST.get_response().expect("Limine did not return RDSP pointer.").address() as u64;

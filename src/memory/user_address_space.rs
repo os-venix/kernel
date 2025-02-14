@@ -8,6 +8,7 @@ use x86_64::structures::paging::{
 use x86_64::registers::control::{Cr3, Cr3Flags};
 use alloc::vec::Vec;
 use anyhow::{anyhow, Result};
+use alloc::slice;
 
 use crate::memory;
 
@@ -32,6 +33,12 @@ impl AddressSpace {
 	let (virt, phys) = memory::kernel_allocate(
 	    4096, memory::MemoryAllocationType::RAM,
 	    memory::MemoryAllocationOptions::Arbitrary, memory::MemoryAccessRestriction::Kernel).expect("Allocation failed");
+	
+	let data_to_z = unsafe {
+	    slice::from_raw_parts_mut(virt.as_mut_ptr::<u8>(), 4096 as usize)
+	};
+	data_to_z.fill_with(Default::default);
+
 	let pt4: &mut PageTable = unsafe {
 	    &mut *virt.as_mut_ptr::<PageTable>()
 	};
@@ -42,11 +49,11 @@ impl AddressSpace {
 	let mut page_table_entry = PageTableEntry::new();
 	page_table_entry.set_frame(frame, flags);
 
+	let r = memory::KERNEL_PAGE_TABLE.read();
+	let p4 = r.as_ref().expect("Unable to read kernel page table");
+
 	// Map the kernel
 	for i in 256 .. 512 {
-	    let r = memory::KERNEL_PAGE_TABLE.read();
-	    let p4 = r.as_ref().expect("Unable to read kernel page table");
-
 	    let level_4_table = p4.level_4_table();
 	    pt4[i as usize] = level_4_table[i as usize].clone();
 	}
@@ -57,7 +64,7 @@ impl AddressSpace {
 	    free_regions: Vec::from([MemoryRegion {
 		start: 0x100000,
 		end: (p4_size as u64) * 255,  // Anywhere in the lower half
-	    }]),
+            }]),
 	}
     }
 

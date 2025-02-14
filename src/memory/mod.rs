@@ -180,6 +180,7 @@ pub fn kernel_allocate(
 	    },
 	    MemoryAccessRestriction::UserByAddressSpace(ref mut address_space) => address_space.get_page_range(size),
 	};
+
 	let end = start + (size - 1);
 
 	let start_page = Page::containing_address(start);

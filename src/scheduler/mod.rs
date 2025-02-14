@@ -53,7 +53,7 @@ impl Process {
 	    Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
 	};
 
-	self.rsp = rsp.as_u64();
+	self.rsp = rsp.as_u64() + 8 * 1024 * 1024;  // Start at the end of the stack and grow down
     }
 
     pub fn attach_loaded_elf(&mut self, elf: elf_loader::Elf, ld_so: elf_loader::Elf) {
@@ -243,9 +243,10 @@ pub fn start_active_process() -> ! {
 	    panic!("Attempted to access user address space when no process is running");
 	}
     };
-    
+
     unsafe {
 	core::arch::asm!(
+	    "swapgs",
 	    "mov rsp, {stackptr}",
 	    "sysretq",
 
