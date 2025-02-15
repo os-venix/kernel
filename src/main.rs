@@ -108,7 +108,7 @@ fn init() {
 	panic!();
     }
 
-    log::info!("Venix 0.2.0 - by Venos the Sergal :3");
+    log::info!("Venix 0.3.0 - by Venos the Sergal :3");
     log::info!("Initialising CPU0...");
     sys::init();
 
