@@ -5,7 +5,7 @@ use alloc::collections::btree_map::BTreeMap;
 use anyhow::{anyhow, Result};
 use alloc::slice;
 
-const SEEK_SET: u64 = 0;
+const SEEK_SET: u64 = 3;
 const SEEK_CUR: u64 = 1;
 const SEEK_END: u64 = 2;
 

@@ -3,6 +3,7 @@ use x86_64::registers::model_specific::Msr;
 use x86_64::structures::tss::TaskStateSegment;
 use core::ffi::CStr;
 use alloc::string::String;
+use x86_64::VirtAddr;
 
 use crate::gdt;
 use crate::scheduler;
@@ -12,6 +13,7 @@ use crate::memory;
 const IA32_STAR_MSR: u32 = 0xC0000081;
 const IA32_LSTAR_MSR: u32 = 0xC0000082;
 const IA32_EFER_MSR: u32 = 0xC0000080;
+const IA32_FSBASE_MSR: u32 = 0xC0000100;
 
 const EFER_SCE: u64 = 1;
 
@@ -107,7 +109,7 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, r10: u64, r8: u64, r9: u64
 	    };
 
 	    // Valid values are SEEK_SET, SEEK_CUR, or SEEK_END
-	    if rdx > 2 {
+	    if rdx > 3 || rdx == 0 {
 		return (0xFFFF_FFFF_FFFF_FFFF, 22);  // -1 error, EINVAL
 	    }
 
@@ -117,23 +119,39 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, r10: u64, r8: u64, r9: u64
 	    }
 	},
 	0x09 => {  // mmap
-	    if rdi != 0 {
-		unimplemented!();
-	    }
 	    if r8 != 0xFFFF_FFFF_FFFF_FFFF {
 		unimplemented!();
 	    }
 
-	    let (start, _) = match memory::kernel_allocate(
-		rsi,
-		memory::MemoryAllocationType::RAM,
-		memory::MemoryAllocationOptions::Arbitrary,
-		memory::MemoryAccessRestriction::User) {
-		Ok(i) => i,
-		Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),
+	    let (start, _) = if rdi == 0 {
+		match memory::kernel_allocate(
+		    rsi,
+		    memory::MemoryAllocationType::RAM,
+		    memory::MemoryAllocationOptions::Arbitrary,
+		    memory::MemoryAccessRestriction::User) {
+		    Ok(i) => i,
+		    Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),
+		}
+	    } else {
+		match memory::kernel_allocate(
+		    rsi,
+		    memory::MemoryAllocationType::RAM,
+		    memory::MemoryAllocationOptions::Arbitrary,
+		    memory::MemoryAccessRestriction::UserByStart(VirtAddr::new(rdi))) {
+		    Ok(i) => i,
+		    Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),
+		}		
 	    };
 
 	    (start.as_u64(), 0)
+	},
+	0x12c => {  // tcb_set	    
+	    let mut fsbase_msr = Msr::new(IA32_FSBASE_MSR);
+	    unsafe {
+		fsbase_msr.write(rdi);
+	    }
+
+	    (0, 0)
 	},
 	_ => panic!("Invalid syscall 0x{:X}", rax),
     }
