@@ -1,6 +1,8 @@
 use core::mem::offset_of;
 use x86_64::registers::model_specific::Msr;
 use x86_64::structures::tss::TaskStateSegment;
+use core::ffi::CStr;
+use alloc::string::String;
 
 use crate::gdt;
 use crate::scheduler;
@@ -37,7 +39,7 @@ pub fn init() {
 
 fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, r10: u64, r8: u64, r9: u64) -> (u64, u64) {
     match rax {
-	0x00 => {
+	0x00 => {  // write
 	    let actual_fd = match scheduler::get_actual_fd(rdi) {
 		Ok(fd) => fd,
 		Err(_) => {
@@ -50,7 +52,71 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, r10: u64, r8: u64, r9: u64
 		Err(_) => (0xFFFF_FFFF_FFFF_FFFF, 5),  // -1 error, EIO
 	    }
 	},
-	0x09 => {
+	0x01 => {  // read
+	    let actual_fd = match scheduler::get_actual_fd(rdi) {
+		Ok(fd) => fd,
+		Err(_) => {
+		    return (0xFFFF_FFFF_FFFF_FFFF, 9);  // -1 error, EBADF
+		},
+	    };
+
+	    match vfs::read_by_fd(/* file descriptor= */ actual_fd, /* buf= */ rsi, /* count= */ rdx) {
+		Ok(len) => (len, 0),
+		Err(_) => (0xFFFF_FFFF_FFFF_FFFF, 5),  // -1 error, EIO
+	    }
+	},
+	0x02 => {  // open
+	    // TODO - this does not check that the file actually exists
+	    let path = unsafe {
+		match CStr::from_ptr(rdi as *const i8).to_str() {
+		    Ok(path) => String::from(path),
+		    Err(_) => {
+			return (0xFFFF_FFFF_FFFF_FFFF, 22)  // -1 error, EINVAL
+		    },
+		}
+	    };
+
+	    // Bottom 3 bits are mode. We don't currently enforce mode, but in order to progress, let's strip it out
+	    // TODO - support read/write/exec/etc modes
+	    if rsi & 0xFFFF_FFFF_FFFF_FFF8 != 0 {
+		log::info!("Open flags are 0x{:x}", rsi);
+		unimplemented!();
+	    }
+
+	    if let Err(e) = vfs::stat(path.clone()) {
+		// File does not exist
+		log::info!("Could not stat {}", path);
+		return (0xFFFF_FFFF_FFFF_FFFF, 13)  // -1 error, EACCESS
+	    }
+
+	    let fd = scheduler::open_fd(path);
+	    (fd, 0)
+	},
+	0x03 => {  // close
+	    return match scheduler::close_fd(rdi) {
+		Ok(_) => (0, 0),
+		Err(_) => (0xFFFF_FFFF_FFFF_FFFF, 9),  // -1 error, EBADF
+	    }
+	},
+	0x08 => {  // seek
+	    let actual_fd = match scheduler::get_actual_fd(rdi) {
+		Ok(fd) => fd,
+		Err(_) => {
+		    return (0xFFFF_FFFF_FFFF_FFFF, 9);  // -1 error, EBADF
+		},
+	    };
+
+	    // Valid values are SEEK_SET, SEEK_CUR, or SEEK_END
+	    if rdx > 2 {
+		return (0xFFFF_FFFF_FFFF_FFFF, 22);  // -1 error, EINVAL
+	    }
+
+	    match vfs::seek_fd(/* file descriptor= */ actual_fd, /* offset= */ rsi, /* whence= */ rdx) {
+		Ok(offs) => (offs, 0),
+		Err(_) => (0xFFFF_FFFF_FFFF_FFFF, 22)  // -1 error, EINVAL
+	    }
+	},
+	0x09 => {  // mmap
 	    if rdi != 0 {
 		unimplemented!();
 	    }
@@ -68,7 +134,6 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, r10: u64, r8: u64, r9: u64
 	    };
 
 	    (start.as_u64(), 0)
-
 	},
 	_ => panic!("Invalid syscall 0x{:X}", rax),
     }

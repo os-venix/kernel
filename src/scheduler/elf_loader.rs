@@ -152,7 +152,7 @@ impl Elf {
 	Ok(Elf {
 	    entry: entry,
 	    base: virt_start_addr.as_u64(),
-	    program_header: (file_contents as u64) + elf.header.pt2.ph_offset(),
+	    program_header: virt_start_addr.as_u64() + elf.header.pt2.ph_offset(),
 	    program_header_entry_size: elf.header.pt2.ph_entry_size() as u64,
 	    program_header_entry_count: elf.header.pt2.ph_count() as u64,
 	})

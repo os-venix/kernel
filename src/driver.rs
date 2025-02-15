@@ -99,6 +99,26 @@ impl vfs::FileSystem for DevFS {
 
 	device.write(buf, len as u64)
     }
+    fn stat(&self, path: String) -> Result<vfs::Stat, ()> {
+	let parts = path.split("/")
+	    .filter(|s| s.len() != 0)
+	    .collect::<Vec<&str>>();
+	if parts.len() != 1 {
+	    return Err(());
+	}
+
+	let device_id = match self.file_table.get(parts[0]) {
+	    Some(id) => id.clone(),
+	    None => return Err(()),
+	};
+	let device_tbl = DEVICE_TABLE.get().ok_or(())?.write();
+	let device = device_tbl.get(device_id as usize).ok_or(())?;
+
+	Ok(vfs::Stat {
+	    file_name: path,
+	    size: 0,
+	})
+    }
 }
 
 

@@ -7,6 +7,7 @@ use x86_64::VirtAddr;
 use alloc::ffi::CString;
 use alloc::slice;
 use alloc::vec;
+use alloc::collections::BTreeMap;
 
 use crate::memory;
 use crate::sys::vfs;
@@ -27,7 +28,8 @@ struct AuxVector {
 
 pub struct Process {
     pub address_space: memory::user_address_space::AddressSpace,
-    file_descriptors: Vec<Arc<vfs::FileDescriptor>>,
+    file_descriptors: BTreeMap<u64, Arc<RwLock<vfs::FileDescriptor>>>,
+    next_fd: u64,
     args: Vec<String>,
     envvars: Vec<String>,
     auxvs: Vec<AuxVector>,
@@ -44,7 +46,8 @@ impl Process {
 
 	Process {
 	    address_space: address_space,
-	    file_descriptors: Vec::new(),
+	    file_descriptors: BTreeMap::new(),
+	    next_fd: 0,
 	    args: vec!(String::from("init")),
 	    envvars: vec!(String::from("PATH=/bin:/usr/bin")),
 	    auxvs: Vec::new(),
@@ -92,7 +95,6 @@ impl Process {
 	    value: 0
 	});
 
-	log::info!("PHDR: 0x{:x}", elf.program_header);
 	self.rip = ld_so.entry;
     }
 
@@ -198,27 +200,43 @@ pub fn open_fd(file: String) -> u64 {
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
-	let fd = Arc::new(vfs::FileDescriptor::new(file));
-	process_tbl[pid].file_descriptors.push(fd);
+	let fd = Arc::new(RwLock::new(vfs::FileDescriptor::new(file)));
+	let fd_number = process_tbl[pid].next_fd;
+	process_tbl[pid].next_fd += 1;
 
-	process_tbl[pid].file_descriptors.len() as u64 - 1
+	process_tbl[pid].file_descriptors.insert(fd_number, fd);
+	fd_number
     } else {
 	panic!("Attempted to open a file on a nonexistent process");
     }
 }
 
-pub fn get_actual_fd(fd: u64) -> Result<Arc<vfs::FileDescriptor>> {
+pub fn get_actual_fd(fd: u64) -> Result<Arc<RwLock<vfs::FileDescriptor>>> {
     let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
-	if let Some(actual_fd) = process_tbl[pid].file_descriptors.get(fd as usize) {
+	if let Some(actual_fd) = process_tbl[pid].file_descriptors.get(&fd) {
 	    Ok(actual_fd.clone())
 	} else {
 	    Err(anyhow!("Attempted to access nonexistent file descriptor"))
 	}
     } else {
 	panic!("Attempted to read open FDs on nonexistent process");
+    }
+}
+
+pub fn close_fd(fd: u64) -> Result<()> {
+    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+    if let Some(pid) = *running_process {
+	return match process_tbl[pid].file_descriptors.remove(&fd) {
+	    Some(_) => Ok(()),
+	    None => Err(anyhow!("No open FD found")),
+	}
+    } else {
+	panic!("Attempted to open a file on a nonexistent process");
     }
 }
 

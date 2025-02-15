@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use core::ascii;
 use core::ptr;
 use spin::RwLock;
+use alloc::format;
 
 use crate::sys::block;
 use crate::sys::vfs;
@@ -377,7 +378,8 @@ impl vfs::FileSystem for Fat16Fs {
 	let mut file_size: usize = 0 as usize;
 
 	for path_part in parts {
-	    let (inode, access) = match self.find_dir_entry(path_part.to_string(), current_buf_ptr).expect("Could not find file") {
+	    let (inode, access) = match self.find_dir_entry(path_part.to_string(), current_buf_ptr)
+		.expect(&format!("Could not find file {}", path)) {
 		Entry::DIRECTORY(i) => (i, memory::MemoryAccessRestriction::Kernel),
 		Entry::FILE(i) => (i, memory::MemoryAccessRestriction::User),
 	    };
@@ -451,6 +453,92 @@ impl vfs::FileSystem for Fat16Fs {
 
     fn write(&self, path: String, buf: *const u8, len: usize) -> Result<u64, ()> {
 	panic!("FAT write not yet implemented");
+    }
+
+    fn stat(&self, path: String) -> Result<vfs::Stat, ()> {
+	let parts = path.split("/")
+	    .filter(|s| s.len() != 0)
+	    .collect::<Vec<&str>>();
+
+	let mut current_buf_ptr = self.get_root_directory();
+	let mut file_size: usize = 0 as usize;
+
+	for path_part in parts {
+	    let inode = match self.find_dir_entry(path_part.to_string(), current_buf_ptr).ok_or(())? {
+		Entry::DIRECTORY(i) => i,
+		Entry::FILE(i) => {
+		    file_size = i.file_size as usize;
+		    break;
+		},
+	    };
+
+	    // This is FAT16, no high cluster
+	    let mut cluster = inode.start_cluster as u16;
+	    let fat = self.get_allocation_table();
+
+	    let mut clusters_to_read: Vec<u16> = Vec::new();
+	    clusters_to_read.push(cluster);
+
+	    loop {
+		cluster = fat[cluster as usize];
+
+		if cluster >= 0xFFF8 {
+		    break;
+		}
+
+		clusters_to_read.push(cluster);
+	    }
+
+	    let mut cluster_strings_to_read: Vec<(u16, u64)> = Vec::new();
+	    let mut current_start: u16 = 0;
+	    for (idx, entry) in clusters_to_read.iter().enumerate() {
+		if idx == 0 {
+		    current_start = *entry;
+		} else if *entry != (clusters_to_read[idx - 1] + 1) {
+		    current_start = *entry;
+		}
+
+		if idx == clusters_to_read.len() - 1 {
+		    cluster_strings_to_read.push((current_start, (*entry as u64 - current_start as u64) + 1));
+		} else if (*entry + 1) != clusters_to_read[idx + 1] {
+		    cluster_strings_to_read.push((current_start, (*entry as u64 - current_start as u64) + 1));
+		}
+	    }
+
+	    if cluster_strings_to_read.len() == 1 {
+		let sectors_per_lba = self.boot_record.bytes_per_sector as u64 / 512;
+
+		let root_directory_size_sectors: u64 = ((self.boot_record.root_directory_entries as u64 * 32) +
+							(self.boot_record.bytes_per_sector as u64 - 1))
+		    / self.boot_record.bytes_per_sector as u64;
+
+		let first_data_sector: u64 = self.boot_record.reserved_sectors as u64 +
+		    (self.boot_record.number_of_fats as u64 * self.boot_record.sectors_per_fat as u64) +
+		    root_directory_size_sectors as u64;
+
+		let cluster_sector: u64 = ((cluster_strings_to_read[0].0 as u64 - 2) * self.boot_record.sectors_per_cluster as u64)
+		    + first_data_sector;
+
+		let cluster_lba = cluster_sector * sectors_per_lba;
+
+		let size_sectors = 1 * self.boot_record.sectors_per_cluster as u64;
+		let size_lba = size_sectors / sectors_per_lba;
+
+		current_buf_ptr = self.dev.read(
+		    self.partition, cluster_lba as u64,
+		    (size_lba as u64) * cluster_strings_to_read[0].1,
+		    memory::MemoryAccessRestriction::Kernel).expect("Couldn't read file");
+	    } else {
+		// Not supported
+		panic!("More than one cluster string attempted to be loaded: {:?}", cluster_strings_to_read);
+//		return Err(());
+	    }
+	}
+
+	Ok(vfs::Stat {
+	    file_name: path,
+	    size: file_size as u64,
+	})
     }
 }
 
