@@ -15,7 +15,8 @@ const IA32_KERNELGSBASE_MSR: u32 = 0xC0000102;
 struct Selectors {
     code_selector: SegmentSelector,
     data_selector: SegmentSelector,
-    user_dummy_selector: SegmentSelector,
+    user_code_selector: SegmentSelector,
+    user_data_selector: SegmentSelector,
     tss_selector: SegmentSelector,
 }
 
@@ -66,12 +67,12 @@ pub fn init() {
     pcb.gdt = GlobalDescriptorTable::new();
     let code_selector = pcb.gdt.append(Descriptor::kernel_code_segment());
     let data_selector = pcb.gdt.append(Descriptor::kernel_data_segment());
-    let user_dummy_selector = pcb.gdt.append(Descriptor::kernel_code_segment());  // Dummy to make SYSREQ work
-    pcb.gdt.append(Descriptor::user_data_segment());
-    pcb.gdt.append(Descriptor::user_code_segment());
+    pcb.gdt.append(Descriptor::kernel_code_segment());  // Dummy to make SYSREQ work
+    let user_data_selector = pcb.gdt.append(Descriptor::user_data_segment());
+    let user_code_selector = pcb.gdt.append(Descriptor::user_code_segment());
     let tss_selector = pcb.gdt.append(Descriptor::tss_segment(&pcb.tss));
 
-    pcb.gdt_selectors = Selectors { code_selector, data_selector, user_dummy_selector, tss_selector };
+    pcb.gdt_selectors = Selectors { code_selector, data_selector, user_code_selector, user_data_selector, tss_selector };
     
     pcb.gdt.load();
     unsafe {
@@ -105,9 +106,10 @@ pub fn get_pcb() -> *mut ProcessorControlBlock {
     ret
 }
 
-pub fn get_code_selectors() -> (SegmentSelector, SegmentSelector) {
+pub fn get_code_selectors() -> (SegmentSelector, SegmentSelector, SegmentSelector, SegmentSelector) {
     let pcb = get_pcb();
     unsafe {
-	((*pcb).gdt_selectors.code_selector, (*pcb).gdt_selectors.user_dummy_selector)
+	((*pcb).gdt_selectors.code_selector, (*pcb).gdt_selectors.data_selector,
+	 (*pcb).gdt_selectors.user_code_selector, (*pcb).gdt_selectors.user_data_selector)
     }
 }

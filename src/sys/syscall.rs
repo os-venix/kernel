@@ -4,39 +4,28 @@ use x86_64::structures::tss::TaskStateSegment;
 use core::ffi::CStr;
 use alloc::string::String;
 use x86_64::VirtAddr;
+use x86_64::registers::model_specific::{FsBase, Efer, EferFlags, SFMask, Star, LStar};
+use x86_64::registers::rflags::RFlags;
 
 use crate::gdt;
 use crate::scheduler;
 use crate::sys::vfs;
 use crate::memory;
 
-const IA32_STAR_MSR: u32 = 0xC0000081;
-const IA32_LSTAR_MSR: u32 = 0xC0000082;
-const IA32_EFER_MSR: u32 = 0xC0000080;
-const IA32_FSBASE_MSR: u32 = 0xC0000100;
-
-const EFER_SCE: u64 = 1;
-
 pub fn init() {
-    let (kernel_code, user_code) = gdt::get_code_selectors();
-    let star: u64 = (((user_code.0 as u64 | 3) << 16) | kernel_code.0 as u64) << 32;
+    let (kernel_code, kernel_data, user_code, user_data) = gdt::get_code_selectors();
 
-    // Set the segment selectors
-    let mut star_msr = Msr::new(IA32_STAR_MSR);
+    Star::write(user_code, user_data, kernel_code, kernel_data);
+    LStar::write(VirtAddr::new(syscall_enter as u64));
+
     unsafe {
-	star_msr.write(star);
+	Efer::update(|old_flags| *old_flags |= EferFlags::SYSTEM_CALL_EXTENSIONS);
     }
 
-    let mut lstar_msr = Msr::new(IA32_LSTAR_MSR);
-    unsafe {
-	lstar_msr.write(syscall_enter as u64);
-    }
-
-    let mut efer_msr = Msr::new(IA32_EFER_MSR);
-    unsafe {
-	let efer = efer_msr.read();
-	efer_msr.write(efer | EFER_SCE);
-    }
+    SFMask::write(RFlags::INTERRUPT_FLAG |
+		  RFlags::DIRECTION_FLAG |
+		  RFlags::TRAP_FLAG |
+		  RFlags::ALIGNMENT_CHECK);
 }
 
 fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, r10: u64, r8: u64, r9: u64) -> (u64, u64) {
@@ -145,12 +134,8 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, r10: u64, r8: u64, r9: u64
 
 	    (start.as_u64(), 0)
 	},
-	0x12c => {  // tcb_set	    
-	    let mut fsbase_msr = Msr::new(IA32_FSBASE_MSR);
-	    unsafe {
-		fsbase_msr.write(rdi);
-	    }
-
+	0x12c => {  // tcb_set
+	    FsBase::write(VirtAddr::new(rdi));
 	    (0, 0)
 	},
 	_ => panic!("Invalid syscall 0x{:X}", rax),
