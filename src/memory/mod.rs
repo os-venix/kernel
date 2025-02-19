@@ -156,7 +156,10 @@ pub fn kernel_allocate(
 		let running_process = scheduler::RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
 		match *running_process {
-		    Some(pid) => process_tbl[pid].address_space.get_page_range(size),
+		    Some(pid) => {
+			let mut address_space = process_tbl.get_mut(&pid).unwrap().address_space.write();
+			address_space.get_page_range(size)
+		    },
 		    None => {
 			panic!("Attempted to allocate userspace memory while not in a process address space");
 		    },
@@ -167,9 +170,12 @@ pub fn kernel_allocate(
 		let running_process = scheduler::RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
 		match *running_process {
-		    Some(pid) => match process_tbl[pid].address_space.get_page_range_from_start(addr, size as usize) {
-			Ok(_) => (),
-			Err(_) => panic!("Couldn't get memory at 0x{:x}, already allocated", addr.as_u64()),
+		    Some(pid) => {
+			let mut address_space = process_tbl.get_mut(&pid).unwrap().address_space.write();
+			match address_space.get_page_range_from_start(addr, size as usize) {
+			    Ok(_) => (),
+			    Err(_) => panic!("Couldn't get memory at 0x{:x}, already allocated", addr.as_u64()),
+			}
 		    },
 		    None => {
 			panic!("Attempted to allocate userspace memory while not in a process address space");
@@ -283,7 +289,7 @@ pub fn allocate_arbitrary_contiguous_region_kernel(
     Ok((virt_addr, total_size as usize))
 }
 
-pub unsafe fn switch_to_kernel() -> Option<usize> {
+pub unsafe fn switch_to_kernel() -> Option<u64> {
     let r = KERNEL_PAGE_FRAME.read();
     let frame = r.as_ref().expect("Attempted to read missing Kernel page frame");
     Cr3::write(*frame, Cr3Flags::empty());

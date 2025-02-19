@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::{Once, RwLock};
+use spin::{Once, RwLock, Mutex};
 use anyhow::{anyhow, Result};
 use alloc::string::String;
 use x86_64::VirtAddr;
@@ -21,13 +21,15 @@ const AT_PHNUM: u64 = 5;
 const AT_BASE: u64 = 7;
 const AT_ENTRY: u64 = 9;
 
+#[derive(Clone)]
 struct AuxVector {
     auxv_type: u64,
     value: u64,
 }
 
+#[derive(Clone)]
 pub struct Process {
-    pub address_space: memory::user_address_space::AddressSpace,
+    pub address_space: Arc<RwLock<memory::user_address_space::AddressSpace>>,
     file_descriptors: BTreeMap<u64, Arc<RwLock<vfs::FileDescriptor>>>,
     next_fd: u64,
     args: Vec<String>,
@@ -39,13 +41,13 @@ pub struct Process {
 
 impl Process {
     pub fn new() -> Self {
-	let mut address_space = memory::user_address_space::AddressSpace::new();
+	let address_space = memory::user_address_space::AddressSpace::new();
 	unsafe {
 	    address_space.switch_to();
 	}
 
 	Process {
-	    address_space: address_space,
+	    address_space: Arc::new(RwLock::new(address_space)),
 	    file_descriptors: BTreeMap::new(),
 	    next_fd: 0,
 	    args: vec!(String::from("init")),
@@ -56,12 +58,26 @@ impl Process {
 	}
     }
 
+    pub fn from_existing(existing: &Self, rip: u64) -> Self {
+	Process {
+	    address_space: existing.address_space.clone(),
+	    file_descriptors: existing.file_descriptors.clone(),
+	    next_fd: existing.next_fd,
+	    args: existing.args.clone(),
+	    envvars: existing.envvars.clone(),
+	    auxvs: existing.auxvs.clone(),
+	    rip: rip,
+	    rsp: 0,
+	}
+    }
+
     pub fn init_stack(&mut self) {
+	let mut address_space = self.address_space.write();
 	let (rsp, _) = match memory::kernel_allocate(
 	    8 * 1024 * 1024,  // 8MiB
 	    memory::MemoryAllocationType::RAM,
 	    memory::MemoryAllocationOptions::Arbitrary,
-	    memory::MemoryAccessRestriction::UserByAddressSpace(&mut self.address_space)) {
+	    memory::MemoryAccessRestriction::UserByAddressSpace(&mut address_space)) {
 	    Ok(i) => i,
 	    Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
 	};
@@ -165,34 +181,66 @@ impl Process {
     }
 }
 
-pub static PROCESS_TABLE: Once<RwLock<Vec<Process>>> = Once::new();
-pub static RUNNING_PROCESS: Once<RwLock<Option<usize>>> = Once::new();
+pub static PROCESS_TABLE: Once<RwLock<BTreeMap<u64, Process>>> = Once::new();
+pub static RUNNING_PROCESS: Once<RwLock<Option<u64>>> = Once::new();
+pub static NEXT_PID: Once<Mutex<u64>> = Once::new();
 
 pub fn init() {
-    PROCESS_TABLE.call_once(|| RwLock::new(Vec::new()));
+    PROCESS_TABLE.call_once(|| RwLock::new(BTreeMap::new()));
     RUNNING_PROCESS.call_once(|| RwLock::new(None));
+    NEXT_PID.call_once(|| Mutex::new(1));  // Don't use PID 0
 }
 
-pub fn start_new_process(filename: String) -> usize {
+pub fn start_new_process(parent: u64, filename: String) -> u64 {
     let pid = {
+	let mut next_pid = NEXT_PID.get().expect("Attempted to access next PID before it is initialised").lock();
+	let pid = *next_pid;
+	*next_pid += 1;
+	pid
+    };
+
+    {
 	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-	process_tbl.push(Process::new());
+	process_tbl.insert(pid, Process::new());
 
 	let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
-
-	let pid = process_tbl.len() - 1;
 	*running_process = Some(pid);
-	pid
     };
     let elf = elf_loader::Elf::new(filename).expect("Failed to load ELF");
     let ld = elf_loader::Elf::new(String::from("/lib/ld.so")).expect("Failed to load ld.so");
     {
 	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-	process_tbl[pid].attach_loaded_elf(elf, ld);
-	process_tbl[pid].init_stack();
+	process_tbl.get_mut(&pid).unwrap().attach_loaded_elf(elf, ld);
+	process_tbl.get_mut(&pid).unwrap().init_stack();
     }
 
     pid
+}
+
+pub fn fork_current_process(rip: u64) -> u64 {
+    let pid = {
+	let mut next_pid = NEXT_PID.get().expect("Attempted to access next PID before it is initialised").lock();
+	let pid = *next_pid;
+	*next_pid += 1;
+	pid
+    };
+
+    {
+	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+
+	let existing_process = process_tbl[&running_process.expect("No running process")].clone();
+
+	process_tbl.insert(pid, Process::from_existing(&existing_process, rip));
+	process_tbl.get_mut(&pid).unwrap().init_stack();
+    };
+
+    pid
+}
+
+pub fn switch_to_process(pid: u64) {
+    let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
+    *running_process = Some(pid);
 }
 
 pub fn open_fd(file: String) -> u64 {
@@ -201,10 +249,10 @@ pub fn open_fd(file: String) -> u64 {
 
     if let Some(pid) = *running_process {
 	let fd = Arc::new(RwLock::new(vfs::FileDescriptor::new(file)));
-	let fd_number = process_tbl[pid].next_fd;
-	process_tbl[pid].next_fd += 1;
+	let fd_number = process_tbl[&pid].next_fd;
+	process_tbl.get_mut(&pid).unwrap().next_fd += 1;
 
-	process_tbl[pid].file_descriptors.insert(fd_number, fd);
+	process_tbl.get_mut(&pid).unwrap().file_descriptors.insert(fd_number, fd);
 	fd_number
     } else {
 	panic!("Attempted to open a file on a nonexistent process");
@@ -216,7 +264,7 @@ pub fn get_actual_fd(fd: u64) -> Result<Arc<RwLock<vfs::FileDescriptor>>> {
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
-	if let Some(actual_fd) = process_tbl[pid].file_descriptors.get(&fd) {
+	if let Some(actual_fd) = process_tbl[&pid].file_descriptors.get(&fd) {
 	    Ok(actual_fd.clone())
 	} else {
 	    Err(anyhow!("Attempted to access nonexistent file descriptor"))
@@ -231,7 +279,7 @@ pub fn close_fd(fd: u64) -> Result<()> {
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
-	return match process_tbl[pid].file_descriptors.remove(&fd) {
+	return match process_tbl.get_mut(&pid).unwrap().file_descriptors.remove(&fd) {
 	    Some(_) => Ok(()),
 	    None => Err(anyhow!("No open FD found")),
 	}
@@ -240,7 +288,7 @@ pub fn close_fd(fd: u64) -> Result<()> {
     }
 }
 
-pub fn deschedule() -> Option<usize> {
+pub fn deschedule() -> Option<u64> {
     let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
     let current_pid = *running_process;
     *running_process = None;
@@ -248,15 +296,16 @@ pub fn deschedule() -> Option<usize> {
     current_pid
 }
 
-pub fn switch_to(pid: usize) {
+pub fn switch_to(pid: u64) {
     let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
 
-    if pid >= process_tbl.len() {
+    if !process_tbl.contains_key(&pid) {
 	panic!("Attempted to switch to a nonexistent process");
     }
 
     unsafe {
-	process_tbl[pid].address_space.switch_to();
+	let address_space = process_tbl[&pid].address_space.read();
+	address_space.switch_to();
     }
 
     let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
@@ -268,7 +317,8 @@ pub fn get_active_page_table() -> u64 {
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
-	process_tbl[pid].address_space.get_pt4()
+	let address_space = process_tbl[&pid].address_space.read();
+	address_space.get_pt4()
     } else {
 	panic!("Attempted to access user address space when no process is running");
     }
@@ -285,7 +335,7 @@ pub fn start_active_process() -> ! {
 	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
 	if let Some(pid) = *running_process {
-	    process_tbl[pid].init_stack_and_start()
+	    process_tbl.get_mut(&pid).unwrap().init_stack_and_start()
 	} else {
 	    panic!("Attempted to access user address space when no process is running");
 	}
