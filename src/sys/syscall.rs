@@ -1,5 +1,4 @@
 use core::mem::offset_of;
-use x86_64::registers::model_specific::Msr;
 use x86_64::structures::tss::TaskStateSegment;
 use core::ffi::CStr;
 use alloc::string::String;
@@ -15,7 +14,7 @@ use crate::memory;
 pub fn init() {
     let (kernel_code, kernel_data, user_code, user_data) = gdt::get_code_selectors();
 
-    Star::write(user_code, user_data, kernel_code, kernel_data);
+    Star::write(user_code, user_data, kernel_code, kernel_data).expect("Unable to set STAR");
     LStar::write(VirtAddr::new(syscall_enter as u64));
 
     unsafe {
@@ -28,7 +27,7 @@ pub fn init() {
 		  RFlags::ALIGNMENT_CHECK);
 }
 
-fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, r10: u64, r8: u64, r9: u64) -> (u64, u64) {
+fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, r10: u64, r8: u64, r9: u64, rcx: u64) -> (u64, u64) {
     match rax {
 	0x00 => {  // write
 	    let actual_fd = match scheduler::get_actual_fd(rdi) {
@@ -134,6 +133,10 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, r10: u64, r8: u64, r9: u64
 
 	    (start.as_u64(), 0)
 	},
+	0x39 => {  // fork
+	    let pid = scheduler::fork_current_process(rcx);
+	    (pid, 0)
+	},
 	0x12c => {  // tcb_set
 	    FsBase::write(VirtAddr::new(rdi));
 	    (0, 0)
@@ -143,48 +146,32 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, r10: u64, r8: u64, r9: u64
 }
 
 #[no_mangle]
-unsafe extern "C" fn syscall_inner() {
-    let mut rax: u64;
-    let mut rdx: u64;
-    let mut rcx: u64;
-    let mut r11: u64;
-    let mut rsi: u64;
-    let mut rdi: u64;
-    let mut r10: u64;
-    let mut r8: u64;
-    let mut r9: u64;
-
+unsafe extern "C" fn syscall_inner(mut stack_frame: scheduler::GeneralPurposeRegisters) {
+    let rsp: u64;
     core::arch::asm!(
-	// TODO: load a kernel stack here
-
-	"nop",
-
-	out("rax") rax,
-	out("rdx") rdx,
-	out("rcx") rcx,
-	out("r11") r11,
-	out("rsi") rsi,
-	out("rdi") rdi,
-	out("r10") r10,
-	out("r8") r8,
-	out("r9") r9,
+	"mov {rsp}, gs:[{sp}]",
+	rsp = out(reg) rsp,
+	sp = const(offset_of!(gdt::ProcessorControlBlock, tmp_user_stack_ptr)),
     );
 
-    (rax, rdx) = do_syscall(rax, rdi, rsi, rdx, r10,  r8, r9);
+    let rax = stack_frame.rax;
+    let rdx = stack_frame.rdx;
+    stack_frame.rax = 0;
+    stack_frame.rdx = 0;
 
-    core::arch::asm!(
-	"nop",
+    scheduler::set_registers_for_current_process(rsp, stack_frame.rcx, &mut stack_frame);
 
-	in("r11") r11,
-	in("rcx") rcx,
-	in("rax") rax,
-	in("rdx") rdx,
-	in("rsi") rsi,
-	in("rdi") rdi,
-	in("r10") r10,
-	in("r8") r8,
-	in("r9") r9,
-    );
+    let (rax, rdx) = do_syscall(
+	rax,
+	stack_frame.rdi,
+	stack_frame.rsi,
+	rdx,
+	stack_frame.r10,
+	stack_frame.r8,
+	stack_frame.r9,
+	stack_frame.rcx);
+    stack_frame.rax = rax;
+    stack_frame.rdx = rdx;
 }
 
 // TODO - load kernel stack; may need to use swapgs for that
@@ -195,18 +182,41 @@ unsafe extern "C" fn syscall_enter () -> ! {
 	"swapgs",
 	"mov gs:[{sp}], rsp",
 	"mov rsp, gs:[{ksp}]",
-	
+
+	"push rax",
+	"push rbx",
+	"push rcx",
+	"push rdx",
+	"push rsi",
+	"push rdi",
+	"push rbp",
+	"push r8",
+	"push r9",
+	"push r10",
+	"push r11",
 	"push r12",
 	"push r13",
 	"push r14",
 	"push r15",
-	"push rbx",
+
+	"mov rdi, rsp",
 	"call syscall_inner",
-	"pop rbx",
+
 	"pop r15",
 	"pop r14",
 	"pop r13",
 	"pop r12",
+	"pop r11",
+	"pop r10",
+	"pop r9",
+	"pop r8",
+	"pop rbp",
+	"pop rdi",
+	"pop rsi",
+	"pop rdx",
+	"pop rcx",
+	"pop rbx",
+	"pop rax",
 
 	"mov rsp, gs:[{sp}]",
 	"swapgs",

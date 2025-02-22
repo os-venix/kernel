@@ -8,6 +8,7 @@ use x86_64::registers::model_specific::Msr;
 use crate::memory;
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
+pub const KERNEL_IST_INDEX: u16 = 1;
 const IA32_FSBASE_MSR: u32 = 0xC0000100;
 const IA32_GSBASE_MSR: u32 = 0xC0000101;
 const IA32_KERNELGSBASE_MSR: u32 = 0xC0000102;
@@ -62,7 +63,10 @@ pub fn init() {
 	memory::MemoryAllocationType::RAM,
 	memory::MemoryAllocationOptions::Arbitrary,
 	memory::MemoryAccessRestriction::Kernel).expect("Unable to allocate kernel stack").0;
+
+    // Both syscalls and interrupts can use the same stack, as only one will ever be running at once - syscalls disable interrupts, and interrupt handlers do too
     pcb.tss.privilege_stack_table[0] = stack_start + (1024 * 1024 * 8);
+    pcb.tss.interrupt_stack_table[KERNEL_IST_INDEX as usize] = stack_start + (1024 * 1024 * 8);
 
     pcb.gdt = GlobalDescriptorTable::new();
     let code_selector = pcb.gdt.append(Descriptor::kernel_code_segment());

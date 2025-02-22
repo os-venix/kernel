@@ -4,64 +4,103 @@ use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
 use spin::{Once, RwLock};
 use alloc::boxed::Box;
+use x86_64::VirtAddr;
 
 use crate::interrupts::local_apic;
 use crate::gdt;
+use crate::scheduler;
+
+#[repr(C)]
+struct StackFrame {
+    registers: scheduler::GeneralPurposeRegisters,
+    stack_frame: InterruptStackFrame,
+}
 
 macro_rules! irq_handler_def {
     ($irq:literal) => {
 	paste::item! {
-	    extern "x86-interrupt" fn [<irq_ $irq >] (_stack_frame: InterruptStackFrame) {
-		unsafe {
-		    core::arch::asm!(concat!(
-			"push rax\n",
-			"push rbx\n",
-			"push rcx\n",
-			"push rdx\n",
-			"push rsi\n",
-			"push rdi\n",
-			"push rbp\n",
-			"push r8\n",
-			"push r9\n",
-			"push r10\n",
-			"push r11\n",
-			"push r12\n",
-			"push r13\n",
-			"push r14\n",
-			"push r15\n",
-		    ));
-		}
+	    #[naked]
+	    #[allow(named_asm_labels)]
+	    extern "x86-interrupt" fn [<irq_ $irq >] (stack_frame: InterruptStackFrame) {
+		extern "C" fn inner(mut stack_frame: StackFrame) {
+		    scheduler::set_registers_for_current_process(
+			stack_frame.stack_frame.stack_pointer.as_u64(), stack_frame.stack_frame.instruction_pointer.as_u64(), &stack_frame.registers);
+		    local_apic::ack_apic();
 
-		local_apic::ack_apic();
+		    {
+			let handler_funcs = HANDLER_FUNCS.get().expect("Handler funcs not initialised").read();
+			match handler_funcs.get(&$irq) {
+			    Some(h) => for func in h.iter() {
+				(func)();
+			    },
+			    None => (),
+			}
+		    }
+		    
+		    let (rsp, rip) = scheduler::get_registers_for_current_process(&mut stack_frame.registers);
 
-		{
-		    let handler_funcs = HANDLER_FUNCS.get().expect("Handler funcs not initialised").read();
-		    match handler_funcs.get(&$irq) {
-			Some(h) => for func in h.iter() {
-			    (func)();
-			},
-			None => (),
+		    unsafe {
+			stack_frame.stack_frame.as_mut().update(|frame| {
+			    frame.stack_pointer = VirtAddr::new(rsp);
+			    frame.instruction_pointer = VirtAddr::new(rip);
+			});
 		    }
 		}
-		
+
 		unsafe {
-		    core::arch::asm!(concat!(
-			"pop r15\n",
-			"pop r14\n",
-			"pop r13\n",
-			"pop r12\n",
-			"pop r11\n",
-			"pop r10\n",
-			"pop r9\n",
-			"pop r8\n",
-			"pop rbp\n",
-			"pop rdi\n",
-			"pop rsi\n",
-			"pop rdx\n",
-			"pop rcx\n",
-			"pop rbx\n",
-			"pop rax\n",
-		    ));
+		    core::arch::asm!(
+			"cli",
+
+			"test qword ptr [rsp + 0x08], 0x03",
+			"je 2f",
+			"swapgs",
+			"2:",
+
+			"push rax",
+			"push rbx",
+			"push rcx",
+			"push rdx",
+			"push rsi",
+			"push rdi",
+			"push rbp",
+			"push r8",
+			"push r9",
+			"push r10",
+			"push r11",
+			"push r12",
+			"push r13",
+			"push r14",
+			"push r15",
+
+			"mov rdi, rsp",
+			"call {inner}",
+
+			"pop r15",
+			"pop r14",
+			"pop r13",
+			"pop r12",
+			"pop r11",
+			"pop r10",
+			"pop r9",
+			"pop r8",
+			"pop rbp",
+			"pop rdi",
+			"pop rsi",
+			"pop rdx",
+			"pop rcx",
+			"pop rbx",
+			"pop rax",
+
+			"test qword ptr [rsp + 0x08], 0x03",
+			"je 3f",
+			"swapgs",
+			"3:",
+
+			"iretq",
+
+			inner = sym inner,
+			options(noreturn),
+		    );
 		}
 	    }
 	}
@@ -86,28 +125,29 @@ lazy_static! {
 	idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
 	idt.segment_not_present.set_handler_fn(segment_not_present_handler);
 	idt.stack_segment_fault.set_handler_fn(stack_segment_handler);
+
 	unsafe {
 	    idt.double_fault.set_handler_fn(double_fault_handler)
 		.set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
-	}
 
-	// IDT interrutps
-	idt[0x20].set_handler_fn(irq_32);
-	idt[0x21].set_handler_fn(irq_33);
-	idt[0x22].set_handler_fn(irq_34);
-	idt[0x23].set_handler_fn(irq_35);
-	idt[0x24].set_handler_fn(irq_36);
-	idt[0x25].set_handler_fn(irq_37);
-	idt[0x26].set_handler_fn(irq_38);
-	idt[0x27].set_handler_fn(irq_39);
-	idt[0x28].set_handler_fn(irq_40);
-	idt[0x29].set_handler_fn(irq_41);
-	idt[0x2A].set_handler_fn(unknown_handler);
-	idt[0x2B].set_handler_fn(unknown_handler);
-	idt[0x2C].set_handler_fn(mouse_handler);
-	idt[0x2D].set_handler_fn(fpu_handler);
-	idt[0x2E].set_handler_fn(primary_hdd_handler);
-	idt[0x2F].set_handler_fn(secondary_hdd_handler);
+	    // IDT interrutps
+	    idt[0x20].set_handler_fn(irq_32).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x21].set_handler_fn(irq_33).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x22].set_handler_fn(irq_34).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x23].set_handler_fn(irq_35).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x24].set_handler_fn(irq_36).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x25].set_handler_fn(irq_37).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x26].set_handler_fn(irq_38).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x27].set_handler_fn(irq_39).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x28].set_handler_fn(irq_40).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x29].set_handler_fn(irq_41).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x2A].set_handler_fn(unknown_handler).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x2B].set_handler_fn(unknown_handler).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x2C].set_handler_fn(mouse_handler).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x2D].set_handler_fn(fpu_handler).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x2E].set_handler_fn(primary_hdd_handler).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x2F].set_handler_fn(secondary_hdd_handler).set_stack_index(gdt::KERNEL_IST_INDEX);
+	}
 
 	// APIC Spurious Interrupts
 	idt[0xFF].set_handler_fn(spurious_interrupt_handler);

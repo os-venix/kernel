@@ -8,9 +8,11 @@ use alloc::ffi::CString;
 use alloc::slice;
 use alloc::vec;
 use alloc::collections::BTreeMap;
+use alloc::boxed::Box;
 
 use crate::memory;
 use crate::sys::vfs;
+use crate::drivers::hpet;
 
 mod elf_loader;
 
@@ -20,6 +22,26 @@ const AT_PHENT: u64 = 4;
 const AT_PHNUM: u64 = 5;
 const AT_BASE: u64 = 7;
 const AT_ENTRY: u64 = 9;
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct GeneralPurposeRegisters {
+    pub r15: u64,
+    pub r14: u64,
+    pub r13: u64,
+    pub r12: u64,
+    pub r11: u64,
+    pub r10: u64,
+    pub r9: u64,
+    pub r8: u64,
+    pub rbp: u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rdx: u64,
+    pub rcx: u64,
+    pub rbx: u64,
+    pub rax: u64,
+}
 
 #[derive(Clone)]
 struct AuxVector {
@@ -35,8 +57,10 @@ pub struct Process {
     args: Vec<String>,
     envvars: Vec<String>,
     auxvs: Vec<AuxVector>,
+    stack_bottom: VirtAddr,
     rip: u64,
     rsp: u64,
+    registers: GeneralPurposeRegisters,
 }
 
 impl Process {
@@ -53,12 +77,33 @@ impl Process {
 	    args: vec!(String::from("init")),
 	    envvars: vec!(String::from("PATH=/bin:/usr/bin")),
 	    auxvs: Vec::new(),
+	    stack_bottom: VirtAddr::new(0),
 	    rip: 0,
 	    rsp: 0,
+	    registers: GeneralPurposeRegisters::default(),
 	}
     }
 
     pub fn from_existing(existing: &Self, rip: u64) -> Self {
+	let mut address_space = existing.address_space.write();
+	let (rsp, _) = match memory::kernel_allocate(
+	    8 * 1024 * 1024,  // 8MiB
+	    memory::MemoryAllocationType::RAM,
+	    memory::MemoryAllocationOptions::Arbitrary,
+	    memory::MemoryAccessRestriction::UserByAddressSpace(&mut address_space)) {
+	    Ok(i) => i,
+	    Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
+	};
+
+	let stack_from = unsafe {
+	    slice::from_raw_parts_mut(existing.stack_bottom.as_mut_ptr::<u8>(), 8 * 1024 * 1024 as usize)
+	};
+	let stack_to = unsafe {
+	    slice::from_raw_parts_mut(rsp.as_mut_ptr::<u8>(), 8 * 1024 * 1024 as usize)
+	};
+
+	stack_to.copy_from_slice(stack_from);
+
 	Process {
 	    address_space: existing.address_space.clone(),
 	    file_descriptors: existing.file_descriptors.clone(),
@@ -66,8 +111,10 @@ impl Process {
 	    args: existing.args.clone(),
 	    envvars: existing.envvars.clone(),
 	    auxvs: existing.auxvs.clone(),
+	    stack_bottom: rsp,
 	    rip: rip,
-	    rsp: 0,
+	    rsp: rsp.as_u64() + (existing.rsp - existing.stack_bottom.as_u64()),
+	    registers: existing.registers.clone(),
 	}
     }
 
@@ -82,6 +129,7 @@ impl Process {
 	    Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
 	};
 
+	self.stack_bottom = rsp;
 	self.rsp = rsp.as_u64() + 8 * 1024 * 1024;  // Start at the end of the stack and grow down
     }
 
@@ -114,7 +162,7 @@ impl Process {
 	self.rip = ld_so.entry;
     }
 
-    pub fn init_stack_and_start(&mut self) -> (u64, u64) {
+    pub fn init_stack_and_start(&mut self) {
 	let envvars_buf_size: usize = self.envvars.iter()
 	    .map(|env_var| env_var.len() + 1)
 	    .sum();
@@ -176,8 +224,17 @@ impl Process {
 	    ptrs_to[3 + args_p.len() + envvar_p.len() + (i * 2)] = auxv.auxv_type;
 	    ptrs_to[4 + args_p.len() + envvar_p.len() + (i * 2)] = auxv.value;
 	}
+    }
 
+    pub fn get_registers(&self, registers: &mut GeneralPurposeRegisters) -> (u64, u64) {
+	*registers = self.registers;
 	(self.rsp, self.rip)
+    }
+
+    pub fn set_registers(&mut self, rsp: u64, rip: u64, registers: &GeneralPurposeRegisters) {
+	self.rsp = rsp;
+	self.rip = rip;
+	self.registers = *registers;
     }
 }
 
@@ -212,6 +269,7 @@ pub fn start_new_process(parent: u64, filename: String) -> u64 {
 	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
 	process_tbl.get_mut(&pid).unwrap().attach_loaded_elf(elf, ld);
 	process_tbl.get_mut(&pid).unwrap().init_stack();
+	process_tbl.get_mut(&pid).unwrap().init_stack_and_start();
     }
 
     pid
@@ -232,10 +290,57 @@ pub fn fork_current_process(rip: u64) -> u64 {
 	let existing_process = process_tbl[&running_process.expect("No running process")].clone();
 
 	process_tbl.insert(pid, Process::from_existing(&existing_process, rip));
-	process_tbl.get_mut(&pid).unwrap().init_stack();
     };
 
+    hpet::add_oneshot(25, Box::new(&schedule_next));
+
     pid
+}
+
+pub fn set_registers_for_current_process(rsp: u64, rip: u64, registers: &GeneralPurposeRegisters) {
+    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+    if let Some(pid) = *running_process {
+	process_tbl.get_mut(&pid).unwrap().set_registers(rsp, rip, registers)
+    } else {
+	panic!("Attempted to access user address space when no process is running");
+    }
+}
+
+pub fn get_registers_for_current_process(registers: &mut GeneralPurposeRegisters) -> (u64, u64) {
+    let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
+    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+    if let Some(pid) = *running_process {
+	process_tbl[&pid].get_registers(registers)
+    } else {
+	panic!("Attempted to access user address space when no process is running");
+    }
+}
+
+pub fn schedule_next() {
+    let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
+    let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
+
+    let mut running_pids = process_tbl.keys();
+    let next_pid = if let Some(pid) = *running_process {
+	let current_pid_idx = running_pids.clone().position(|tbl_pid| *tbl_pid == pid).unwrap();
+	if current_pid_idx + 1 != running_pids.len() {
+	    running_pids.nth(current_pid_idx + 1).unwrap()
+	} else {
+	    running_pids.nth(0).unwrap()
+	}
+    } else {
+	running_pids.nth(0).unwrap()
+    };
+
+    *running_process = Some(*next_pid);
+    
+    let address_space = process_tbl[&next_pid].address_space.read();
+    unsafe {
+	address_space.switch_to();
+    }
 }
 
 pub fn switch_to_process(pid: u64) {
@@ -330,12 +435,13 @@ pub fn is_process_running() -> bool {
 }
 
 pub fn start_active_process() -> ! {
+    let mut registers: GeneralPurposeRegisters = GeneralPurposeRegisters::default();
     let (rsp, rip) = {
-	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+	let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
 	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
 	if let Some(pid) = *running_process {
-	    process_tbl.get_mut(&pid).unwrap().init_stack_and_start()
+	    process_tbl[&pid].get_registers(&mut registers)
 	} else {
 	    panic!("Attempted to access user address space when no process is running");
 	}

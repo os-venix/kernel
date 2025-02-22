@@ -86,9 +86,9 @@ fn panic(info: &PanicInfo) -> ! {
     // 	kernel_logger.force_unlock();
     // }
 
-    // if let Some(printk) = PRINTK.get() {
-    // 	printk.clear();
-    // }
+    if let Some(printk) = PRINTK.get() {
+	printk.clear();
+    }
     log::error!("{}", info);
     loop {}
 }

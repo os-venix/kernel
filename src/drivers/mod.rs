@@ -1,4 +1,4 @@
-mod hpet;
+pub mod hpet;
 mod pcie;
 mod ide;
 mod console;
