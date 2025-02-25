@@ -85,35 +85,18 @@ impl Process {
     }
 
     pub fn from_existing(existing: &Self, rip: u64) -> Self {
-	let mut address_space = existing.address_space.write();
-	let (rsp, _) = match memory::kernel_allocate(
-	    8 * 1024 * 1024,  // 8MiB
-	    memory::MemoryAllocationType::RAM,
-	    memory::MemoryAllocationOptions::Arbitrary,
-	    memory::MemoryAccessRestriction::UserByAddressSpace(&mut address_space)) {
-	    Ok(i) => i,
-	    Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
-	};
-
-	let stack_from = unsafe {
-	    slice::from_raw_parts_mut(existing.stack_bottom.as_mut_ptr::<u8>(), 8 * 1024 * 1024 as usize)
-	};
-	let stack_to = unsafe {
-	    slice::from_raw_parts_mut(rsp.as_mut_ptr::<u8>(), 8 * 1024 * 1024 as usize)
-	};
-
-	stack_to.copy_from_slice(stack_from);
+	let address_space = existing.address_space.read();
 
 	Process {
-	    address_space: existing.address_space.clone(),
+	    address_space: Arc::new(RwLock::new(address_space.create_copy_of_address_space())),
 	    file_descriptors: existing.file_descriptors.clone(),
 	    next_fd: existing.next_fd,
 	    args: existing.args.clone(),
 	    envvars: existing.envvars.clone(),
 	    auxvs: existing.auxvs.clone(),
-	    stack_bottom: rsp,
+	    stack_bottom: existing.stack_bottom,
 	    rip: rip,
-	    rsp: rsp.as_u64() + (existing.rsp - existing.stack_bottom.as_u64()),
+	    rsp: existing.rsp,
 	    registers: existing.registers.clone(),
 	}
     }

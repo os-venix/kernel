@@ -1,4 +1,4 @@
-use x86_64::VirtAddr;
+use x86_64::{PhysAddr, VirtAddr};
 use x86_64::structures::paging::{
     frame::PhysFrame,
     page_table::PageTableEntry,
@@ -11,11 +11,18 @@ use anyhow::{anyhow, Result};
 use alloc::slice;
 
 use crate::memory;
+use crate::scheduler;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct MemoryRegion {
     pub start: u64,
     pub end: u64,
+}
+
+#[derive(Debug)]
+struct PageVirtPhys {
+    pub virt_start: VirtAddr,
+    pub phys_start: PhysAddr,
 }
 
 #[derive(PartialEq, Eq)]
@@ -27,8 +34,55 @@ pub struct AddressSpace {
 impl AddressSpace {
     pub fn new() -> Self {
 	unsafe {
-	    memory::switch_to_kernel();
+	    memory::switch_to_kernel()
+	};
+
+	let (virt, phys) = memory::kernel_allocate(
+	    4096, memory::MemoryAllocationType::RAM,
+	    memory::MemoryAllocationOptions::Arbitrary, memory::MemoryAccessRestriction::Kernel).expect("Allocation failed");
+	
+	let data_to_z = unsafe {
+	    slice::from_raw_parts_mut(virt.as_mut_ptr::<u8>(), 4096 as usize)
+	};
+	data_to_z.fill_with(Default::default);
+
+	let pt4: &mut PageTable = unsafe {
+	    &mut *virt.as_mut_ptr::<PageTable>()
+	};
+
+	let frame = PhysFrame::from_start_address(phys[0]).expect("Allocation failed");
+	let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+
+	let mut page_table_entry = PageTableEntry::new();
+	page_table_entry.set_frame(frame, flags);
+
+	let r = memory::KERNEL_PAGE_TABLE.read();
+	let p4 = r.as_ref().expect("Unable to read kernel page table");
+
+	// Map the kernel
+	for i in 256 .. 512 {
+	    let level_4_table = p4.level_4_table();
+	    pt4[i as usize] = level_4_table[i as usize].clone();
 	}
+
+	unsafe {
+	    memory::switch_to_user()
+	};
+
+	let p4_size: u64 = 1 << 39;
+	AddressSpace {
+	    pt4: frame,
+	    free_regions: Vec::from([MemoryRegion {
+		start: 0x100000,
+		end: (p4_size as u64) * 255,  // Anywhere in the lower half
+            }]),
+	}
+    }
+
+    pub fn create_copy_of_address_space(&self) -> Self {
+	unsafe {
+	    memory::switch_to_kernel()
+	};
 
 	let (virt, phys) = memory::kernel_allocate(
 	    4096, memory::MemoryAllocationType::RAM,
@@ -59,12 +113,91 @@ impl AddressSpace {
 	}
 
 	let p4_size: u64 = 1 << 39;
-	AddressSpace {
+	let mut new_address_space = AddressSpace {
 	    pt4: frame,
 	    free_regions: Vec::from([MemoryRegion {
 		start: 0x100000,
 		end: (p4_size as u64) * 255,  // Anywhere in the lower half
             }]),
+	};
+
+	unsafe {
+	    new_address_space.switch_to();
+	}
+
+	new_address_space.copy_from(self);
+
+	unsafe {
+	    memory::switch_to_user()
+	};
+
+	new_address_space
+    }
+
+    fn copy_from(&mut self, other: &Self) {
+	unsafe fn inner(level: u8,
+		 offset_above: u64,
+		 page_table: *const PageTable) -> Vec<PageVirtPhys> {
+	    let p4_size = 1 << 39;
+	    let p3_size = 1 << 30;
+	    let p2_size = 1 << 21;
+	    let p1_size = 1 << 12;
+
+	    if level != 1 {
+		let next_level = match level {
+		    4 => 3,
+		    3 => 2,
+		    2 => 1,
+		    _ => panic!("Invalid page level when copying userspace"),
+		};
+		let idx_size = match level {
+		    4 => p4_size,
+		    3 => p3_size,
+		    2 => p2_size,
+		    _ => panic!("Invalid page level when copying userspace"),
+		};
+		(*page_table).iter()
+		    .enumerate()
+		    .filter(|(_, entry)| entry.flags().contains(PageTableFlags::PRESENT))
+		    .filter(|(index, _)| level != 4 || *index < 256 as usize)  // Make sure all user allocs are in the LH
+		    .flat_map(|(idx, entry)| inner(
+			next_level, offset_above + (idx as u64 * idx_size),
+			(entry.addr().as_u64() + memory::DIRECT_MAP_OFFSET.get().unwrap()) as *const PageTable))
+		    .collect()
+	    } else {
+		
+		(*page_table).iter()
+		    .enumerate()
+		    .filter(|(_, entry)| entry.flags().contains(PageTableFlags::PRESENT))
+		    .map(|(index, entry)| PageVirtPhys {
+			virt_start: VirtAddr::new(offset_above + (index as u64 * p1_size)),
+			phys_start: entry.addr(),
+		    })
+		    .collect()
+	    }
+	}
+
+	let complete_map = unsafe {
+	    let pt4_virt = VirtAddr::new(other.pt4.start_address().as_u64() + memory::DIRECT_MAP_OFFSET.get().unwrap());
+	    let pt4 = &mut *pt4_virt.as_mut_ptr::<PageTable>();
+	    inner(4, 0, pt4)
+	};
+
+	for entry in complete_map {
+	    memory::kernel_allocate(
+		4096,
+		memory::MemoryAllocationType::RAM,
+		memory::MemoryAllocationOptions::Arbitrary,
+		memory::MemoryAccessRestriction::UserByAddressSpaceAndStart(self, entry.virt_start)).expect("Unable to allocate to copy userspace");
+	    
+	    let data_to = unsafe {
+		slice::from_raw_parts_mut(entry.virt_start.as_mut_ptr::<u8>(), 4096 as usize)
+	    };
+	    let data_from = unsafe {
+		slice::from_raw_parts_mut(VirtAddr::new(entry.phys_start.as_u64() + memory::DIRECT_MAP_OFFSET.get().unwrap()).as_mut_ptr::<u8>(), 4096)
+	    };
+	    
+	    data_to.copy_from_slice(data_from);
 	}
     }
 
