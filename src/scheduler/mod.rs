@@ -231,7 +231,7 @@ pub fn init() {
     NEXT_PID.call_once(|| Mutex::new(1));  // Don't use PID 0
 }
 
-pub fn start_new_process(parent: u64, filename: String) -> u64 {
+pub fn start_new_process(filename: String) -> u64 {
     let pid = {
 	let mut next_pid = NEXT_PID.get().expect("Attempted to access next PID before it is initialised").lock();
 	let pid = *next_pid;
@@ -376,30 +376,6 @@ pub fn close_fd(fd: u64) -> Result<()> {
     }
 }
 
-pub fn deschedule() -> Option<u64> {
-    let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
-    let current_pid = *running_process;
-    *running_process = None;
-
-    current_pid
-}
-
-pub fn switch_to(pid: u64) {
-    let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
-
-    if !process_tbl.contains_key(&pid) {
-	panic!("Attempted to switch to a nonexistent process");
-    }
-
-    unsafe {
-	let address_space = process_tbl[&pid].address_space.read();
-	address_space.switch_to();
-    }
-
-    let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
-    *running_process = Some(pid);
-}
-
 pub fn get_active_page_table() -> u64 {
     let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
@@ -410,11 +386,6 @@ pub fn get_active_page_table() -> u64 {
     } else {
 	panic!("Attempted to access user address space when no process is running");
     }
-}
-
-pub fn is_process_running() -> bool {
-    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-    running_process.is_some()
 }
 
 pub fn start_active_process() -> ! {

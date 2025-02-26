@@ -159,7 +159,7 @@ fn init() {
 extern "C" fn kmain() -> ! {
     init();
 
-    let pid = scheduler::start_new_process(0, String::from("/init/init"));
+    let pid = scheduler::start_new_process(String::from("/init/init"));
     scheduler::switch_to_process(pid);
     scheduler::open_fd(String::from("/dev/console"));  // Stdin
     scheduler::open_fd(String::from("/dev/console"));  // Stdout

@@ -9,7 +9,6 @@ use itertools::Itertools;
 use alloc::vec;
 use core::ptr;
 use bit_field::BitField;
-use x86_64::PhysAddr;
 
 use crate::driver;
 use crate::memory;
@@ -337,7 +336,7 @@ impl driver::Device for IdeDrive<'_> {
 	}
     }
 
-    fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()> {
+    fn write(&self, _buf: *const u8, _size: u64) -> Result<u64, ()> {
 	panic!("Attempted to write to IDE drive. Not yet implemented");
     }
 }

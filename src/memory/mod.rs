@@ -140,7 +140,7 @@ pub fn kernel_allocate_early(size: u64) -> Result<VirtAddr, MapToError<Size4KiB>
 
 pub fn kernel_allocate(
     size: u64,
-    alloc_type: MemoryAllocationType,
+    _alloc_type: MemoryAllocationType,
     alloc_options: MemoryAllocationOptions,
     mut access_restriction: MemoryAccessRestriction) -> Result<(VirtAddr, Vec<PhysAddr>), MapToError<Size4KiB>> {
     if access_restriction == MemoryAccessRestriction::Kernel {

@@ -11,7 +11,6 @@ use anyhow::{anyhow, Result};
 use alloc::slice;
 
 use crate::memory;
-use crate::scheduler;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct MemoryRegion {
@@ -237,7 +236,7 @@ impl AddressSpace {
 	let addr = virt_addr.as_u64() - (virt_addr.as_u64() % 4096);
 	let mut end_addr = virt_addr.as_u64() + (size as u64);
 	if ((virt_addr.as_u64()) + (size as u64)) % 4096 != 0 {
-	    end_addr += (4096 - ((virt_addr.as_u64() + (size as u64)) % 4096));  // Page align
+	    end_addr += 4096 - ((virt_addr.as_u64() + (size as u64)) % 4096);  // Page align
 	}
 	let total_size = end_addr - addr;
 	let size_in_pages = total_size/4096;

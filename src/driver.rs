@@ -107,12 +107,10 @@ impl vfs::FileSystem for DevFS {
 	    return Err(());
 	}
 
-	let device_id = match self.file_table.get(parts[0]) {
+	match self.file_table.get(parts[0]) {
 	    Some(id) => id.clone(),
 	    None => return Err(()),
 	};
-	let device_tbl = DEVICE_TABLE.get().ok_or(())?.write();
-	let device = device_tbl.get(device_id as usize).ok_or(())?;
 
 	Ok(vfs::Stat {
 	    file_name: path,
@@ -242,11 +240,4 @@ pub fn register_bus_and_enumerate(bus: Box<dyn Bus + Send + Sync>) {
 
     let mut bus_tbl = BUS_TABLE.get().expect("Attempted to access bus table before it is initialised").write();
     bus_tbl.push(bus);
-}
-
-pub fn read(device_id: u64, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()> {
-    let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
-    let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist");
-
-    device.read(offset, size, access_restriction)
 }

@@ -13,7 +13,7 @@ const IA32_FSBASE_MSR: u32 = 0xC0000100;
 const IA32_GSBASE_MSR: u32 = 0xC0000101;
 const IA32_KERNELGSBASE_MSR: u32 = 0xC0000102;
 
-struct Selectors {
+pub struct Selectors {
     code_selector: SegmentSelector,
     data_selector: SegmentSelector,
     user_code_selector: SegmentSelector,
@@ -35,7 +35,7 @@ pub struct ProcessorControlBlock {
 }
 
 pub fn init() {
-    let (mut pcb, pcb_ptr) = unsafe {
+    let (pcb, pcb_ptr) = unsafe {
 	let pcb = memory::kernel_allocate(
 	    size_of::<ProcessorControlBlock>() as u64,
 	    memory::MemoryAllocationType::RAM,

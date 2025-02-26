@@ -58,7 +58,7 @@ impl driver::Driver for IdeDriver {
 	}
     }
 
-    fn check_new_device(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
+    fn check_new_device(&self, _info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
 	true // Not yet implemented
     }
 }

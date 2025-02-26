@@ -39,12 +39,6 @@ impl Elf {
 	    panic!("Not an executable with an entry point");
 	}
 
-	let virtual_offset: u64 = match elf.header.pt2.type_().as_type() {
-	    header::Type::Executable => 0,  // Todo,
-	    header::Type::SharedObject => 0,  // TODO: We need a way here to ensure we have enough space free at the location
-	    _ => unimplemented!(),
-	};
-
 	let mut lowest_virt_addr: Option<u64> = None;
 	let mut highest_virt_addr: Option<u64> = None;
 	for program_header in elf.program_iter() {
@@ -99,7 +93,7 @@ impl Elf {
 	};
 
 	{
-	    let mut size_to_zero = highest_virt_addr.expect("No loadable sections were found") - lowest_virt_addr.expect("No loadable sections were found");
+	    let size_to_zero = highest_virt_addr.expect("No loadable sections were found") - lowest_virt_addr.expect("No loadable sections were found");
 
 	    let data_to_z = unsafe {
 		slice::from_raw_parts_mut(virt_start_addr.as_mut_ptr::<u8>(), size_to_zero as usize)
