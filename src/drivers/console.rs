@@ -16,8 +16,10 @@ impl driver::Device for ConsoleDevice {
 	let s = unsafe {
 	    slice::from_raw_parts(buf as *const ascii::Char, size as usize).as_str()
 	};
-	// This is wrong, as it adds a newline to everything
-	log::info!("{}", s);
+
+	let mut printk = crate::PRINTK.get().expect("Unable to get printk");
+	printk.write_str(s);
+
 	Ok(size)
     }
 }

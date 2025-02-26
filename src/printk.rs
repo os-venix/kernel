@@ -35,7 +35,6 @@ use {
 pub struct LockedPrintk(RwLock<Printk>);
 
 impl LockedPrintk {
-    
     // Constructor
     #[allow(dead_code)]
     pub fn new(i: Framebuffer<'static>) -> Self {
@@ -45,12 +44,19 @@ impl LockedPrintk {
     pub fn clear(&self) {
 	without_interrupts(|| {
             let mut printk = self.0.write();
-	    printk.clear();
+            printk.clear();
 	});
     }
 
     pub unsafe fn force_unlock(&self) {
 	self.0.force_write_unlock()
+    }
+
+    pub fn write_str(&self, s: &str) {
+	without_interrupts(|| {
+            let mut printk = self.0.write();
+	    write!(printk, "{}", s).unwrap();
+	});
     }
 }
 

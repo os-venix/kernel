@@ -10,9 +10,9 @@
 extern crate alloc;
 
 use core::panic::PanicInfo;
-use conquer_once::spin::OnceCell;
 use fixed::{types::extra::U3, FixedU64};
 use alloc::string::{String, ToString};
+use spin::Once;
 
 use limine::request::{
     EntryPointRequest,
@@ -74,7 +74,7 @@ static _START_MARKER: RequestsStartMarker = RequestsStartMarker::new();
 #[link_section = ".requests_end_marker"]
 static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 
-pub static PRINTK: OnceCell<printk::LockedPrintk> = OnceCell::uninit();
+pub static PRINTK: Once<printk::LockedPrintk> = Once::new();
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -98,7 +98,7 @@ fn init() {
 
     if let Some(framebuffer_response) = FRAMEBUFFER_REQUEST.get_response() {
 	if let Some(framebuffer) = framebuffer_response.framebuffers().next() {
-	    let kernel_logger = PRINTK.get_or_init(move || printk::LockedPrintk::new(framebuffer));
+	    let kernel_logger = PRINTK.call_once(move || printk::LockedPrintk::new(framebuffer));
 	    log::set_logger(kernel_logger).expect("Logger already set");
 	    log::set_max_level(log::LevelFilter::Trace);
 	} else {
