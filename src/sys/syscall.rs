@@ -5,6 +5,7 @@ use alloc::string::String;
 use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{FsBase, Efer, EferFlags, SFMask, Star, LStar};
 use x86_64::registers::rflags::RFlags;
+use alloc::vec::Vec;
 
 use crate::gdt;
 use crate::scheduler;
@@ -27,7 +28,7 @@ pub fn init() {
 		  RFlags::ALIGNMENT_CHECK);
 }
 
-fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, r10: u64, r8: u64, r9: u64, rcx: u64) -> (u64, u64) {
+fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u64, rcx: u64) -> (u64, u64) {
     match rax {
 	0x00 => {  // write
 	    let actual_fd = match scheduler::get_actual_fd(rdi) {
@@ -73,7 +74,7 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, r10: u64, r8: u64, r9: u64
 		unimplemented!();
 	    }
 
-	    if let Err(e) = vfs::stat(path.clone()) {
+	    if let Err(_) = vfs::stat(path.clone()) {
 		// File does not exist
 		log::info!("Could not stat {}", path);
 		return (0xFFFF_FFFF_FFFF_FFFF, 13)  // -1 error, EACCESS
@@ -137,6 +138,56 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, r10: u64, r8: u64, r9: u64
 	    let pid = scheduler::fork_current_process(rcx);
 	    (pid, 0)
 	},
+	0x3b => {  // execve
+	    let path = unsafe {
+		match CStr::from_ptr(rdi as *const i8).to_str() {
+		    Ok(path) => String::from(path),
+		    Err(_) => {
+			return (0xFFFF_FFFF_FFFF_FFFF, 22)  // -1 error, EINVAL
+		    },
+		}
+	    };
+	    let args = unsafe {
+		let mut args: Vec<String> = Vec::new();
+		let mut argc_ptr = rsi as *const u64;
+		while *argc_ptr != 0 {
+		    let arg = CStr::from_ptr(*argc_ptr as u64 as *const i8);
+
+		    match arg.to_str() {
+			Ok(a) => args.push(String::from(a)),
+			Err(_) => {
+			    return (0xFFFF_FFFF_FFFF_FFFF, 22)  // -1 error, EINVAL
+			},
+		    }
+
+		    argc_ptr = (rsi + 8) as *const u64;
+		}
+
+		args
+	    };
+	    let envvars = unsafe {
+		let mut envvars: Vec<String> = Vec::new();
+
+		let mut envvar_ptr = rdx as *const u64;
+		while *envvar_ptr != 0 {
+		    let envvar = CStr::from_ptr(*envvar_ptr as u64 as *const i8);
+
+		    match envvar.to_str() {
+			Ok(a) => envvars.push(String::from(a)),
+			Err(_) => {
+			    return (0xFFFF_FFFF_FFFF_FFFF, 22)  // -1 error, EINVAL
+			},
+		    }
+
+		    envvar_ptr = (rdx + 8) as *const u64;
+		}
+
+		envvars
+	    };
+	    scheduler::execve(path, args, envvars);
+
+	    (0, 0)
+	},
 	0x12c => {  // tcb_set
 	    FsBase::write(VirtAddr::new(rdi));
 	    (0, 0)
@@ -170,7 +221,16 @@ unsafe extern "C" fn syscall_inner(mut stack_frame: scheduler::GeneralPurposeReg
 	stack_frame.r8,
 	stack_frame.r9,
 	stack_frame.rcx);
+    
+    let (rsp, rip) = scheduler::get_registers_for_current_process(&mut stack_frame);
+    core::arch::asm!(
+	"mov gs:[{sp}], {rsp}",
+	sp = const(offset_of!(gdt::ProcessorControlBlock, tmp_user_stack_ptr)),
+	rsp = in(reg) rsp,
+    );
+    
     stack_frame.rax = rax;
+    stack_frame.rcx = rip;
     stack_frame.rdx = rdx;
 }
 

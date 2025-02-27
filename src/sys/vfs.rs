@@ -20,6 +20,7 @@ pub trait FileSystem {
     fn stat(&self, path: String) -> Result<Stat, ()>;
 }
 
+#[derive(Debug)]
 pub struct FileDescriptor {
     file_name: String,
     current_offset: u64,

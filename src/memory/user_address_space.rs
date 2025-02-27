@@ -2,8 +2,17 @@ use x86_64::{PhysAddr, VirtAddr};
 use x86_64::structures::paging::{
     frame::PhysFrame,
     page_table::PageTableEntry,
+    page::{
+	Page,
+	PageRangeInclusive,
+    },
+    mapper::CleanUp,
+    OffsetPageTable,
     PageTable,
     PageTableFlags,
+    Size4KiB,
+    Mapper,
+    FrameDeallocator,
 };
 use x86_64::registers::control::{Cr3, Cr3Flags};
 use alloc::vec::Vec;
@@ -28,6 +37,7 @@ struct PageVirtPhys {
 pub struct AddressSpace {
     pt4: PhysFrame,
     free_regions: Vec<MemoryRegion>,
+    mapped_regions: Vec<MemoryRegion>,
 }
 
 impl AddressSpace {
@@ -75,6 +85,7 @@ impl AddressSpace {
 		start: 0x100000,
 		end: (p4_size as u64) * 255,  // Anywhere in the lower half
             }]),
+	    mapped_regions: Vec::new(),
 	}
     }
 
@@ -118,6 +129,7 @@ impl AddressSpace {
 		start: 0x100000,
 		end: (p4_size as u64) * 255,  // Anywhere in the lower half
             }]),
+	    mapped_regions: Vec::new(),
 	};
 
 	unsafe {
@@ -218,12 +230,17 @@ impl AddressSpace {
 	    }
 	    if self.free_regions[idx].end - self.free_regions[idx].start == size_in_pages*4096 {
 		let region = self.free_regions.remove(idx);
+		self.mapped_regions.push(region.clone());
 
 		let sign_extended = ((region.start << 16) as i64) >> 16;
 		return VirtAddr::new(sign_extended as u64);
 	    } else if self.free_regions[idx].end - self.free_regions[idx].start > size_in_pages * 4096 {
 		let start = self.free_regions[idx].start;
 		self.free_regions[idx].start += size_in_pages * 4096;
+		self.mapped_regions.push(MemoryRegion {
+		    start: start,
+		    end: start + size_in_pages * 4096,
+		});		
 
 		let sign_extended = ((start << 16) as i64) >> 16;
 		return VirtAddr::new(sign_extended as u64);
@@ -245,13 +262,18 @@ impl AddressSpace {
 	    if self.free_regions[idx].start == addr && (
 		self.free_regions[idx].end - self.free_regions[idx].start == (size_in_pages as u64) * 4096) {
 		// Remove the whole region
-		self.free_regions.remove(idx);
+		let region = self.free_regions.remove(idx);
+		self.mapped_regions.push(region);
 		return Ok(());
 	    } else if self.free_regions[idx].start < addr && (
 		self.free_regions[idx].start < addr + (size_in_pages as u64) * 4096) && (
 		self.free_regions[idx].end == addr + (size_in_pages as u64) * 4096) {
 		// Resize region so that it ends where the alloc starts 
 		self.free_regions[idx].end = addr;
+		self.mapped_regions.push(MemoryRegion {
+		    start: addr,
+		    end: addr + size_in_pages as u64 * 4096,
+		});
 
 		return Ok(());		    
 	    } else if self.free_regions[idx].start < addr && (
@@ -264,16 +286,64 @@ impl AddressSpace {
 		    start: addr + (size_in_pages as u64) * 4096,
 		    end: old_end,
 		});
+		self.mapped_regions.push(MemoryRegion {
+		    start: addr,
+		    end: addr + size_in_pages as u64 * 4096,
+		});
 
 		return Ok(());
 	    } else if self.free_regions[idx].start == addr && (
 		self.free_regions[idx].end > addr + (size_in_pages as u64) * 4096) {
 		// Resize region so that it starts where the alloc ends
 		self.free_regions[idx].start = addr + (size_in_pages as u64) * 4096;
+		self.mapped_regions.push(MemoryRegion {
+		    start: addr,
+		    end: addr + size_in_pages as u64 * 4096,
+		});
 		return Ok(());
 	    }
 	}
 
 	Err(anyhow!("Block {:x} is already used", addr))
+    }
+
+    pub fn clear_user_space(&mut self) {
+	let p4_size = 1 << 39;
+	let first_user_page = Page::containing_address(VirtAddr::new(0));
+	let last_user_page = Page::containing_address(VirtAddr::new((p4_size * 256) - 1));
+
+	let pt4_virt = VirtAddr::new(self.pt4.start_address().as_u64() + memory::DIRECT_MAP_OFFSET.get().unwrap());
+	let mut offset_pt = unsafe {
+	    let pt4 = &mut *pt4_virt.as_mut_ptr::<PageTable>();
+	    OffsetPageTable::new(pt4, VirtAddr::new(*memory::DIRECT_MAP_OFFSET.get().unwrap()))
+	};
+
+	let mut frame_allocator = memory::VENIX_FRAME_ALLOCATOR.write();
+
+	for region in self.mapped_regions.iter() {
+	    for start in (region.start .. region.end).step_by(4096) {
+		let p: Page<Size4KiB> = Page::from_start_address(VirtAddr::new(start)).expect("Malformed start address");
+		let (frame, flush) = offset_pt.unmap(p).expect("Attempting to unmap page failed");
+		unsafe {
+		    frame_allocator.as_mut().expect("Attempted to clear userspace before memory initialised").deallocate_frame(frame);
+		}
+		flush.flush();
+	    }
+	}
+
+	let user_page_range = PageRangeInclusive {
+	    start: first_user_page,
+	    end: last_user_page,
+	};
+
+	unsafe {
+	    offset_pt.clean_up_addr_range(user_page_range, frame_allocator.as_mut().expect("Attempted to clear userspace before memory initialised"));
+	}
+
+	self.free_regions = Vec::from([MemoryRegion {
+	    start: 0x100000,
+	    end: (p4_size as u64) * 255,  // Anywhere in the lower half
+        }]);
+	self.mapped_regions = Vec::new();
     }
 }

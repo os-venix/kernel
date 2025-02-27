@@ -86,9 +86,9 @@ fn panic(info: &PanicInfo) -> ! {
     // 	kernel_logger.force_unlock();
     // }
 
-    // if let Some(printk) = PRINTK.get() {
-    // 	printk.clear();
-    // }
+    if let Some(printk) = PRINTK.get() {
+	printk.clear();
+    }
     log::error!("{}", info);
     loop {}
 }
@@ -132,7 +132,6 @@ fn init() {
     let direct_map_offset = HHDM_REQUEST.get_response().expect("Limine did not direct-map the higher half.").offset();
     memory::init(direct_map_offset, memory_map.entries());
     allocator::init();
-    scheduler::init();
     memory::init_full_mode();
 
     log::info!("Bringing up BSP");
@@ -153,6 +152,7 @@ fn init() {
 
     driver::configure_drivers();
 
+    scheduler::init();
     sys::syscall::init();
 }
 

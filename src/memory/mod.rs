@@ -31,6 +31,12 @@ static VENIX_PAGE_ALLOCATOR: RwLock<Option<page_allocator::VenixPageAllocator>> 
 
 static DIRECT_MAP_OFFSET: Once<u64> = Once::new();
 
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct MemoryRegion {
+    pub start: u64,
+    pub end: u64,
+}
+
 #[derive(PartialEq, Eq)]
 pub enum MemoryAllocationType {
     RAM,

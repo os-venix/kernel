@@ -15,6 +15,7 @@ use crate::interrupts;
 const LEG_RT_CNF: u64 = 0x02;
 const ENABLE_CNF: u64 = 0x01;
 
+const HPET_COUNTER_SET_ACCUMULATOR: u64 = 1 << 6;
 const HPET_COUNTER_PERIODIC: u64 = 1 << 3;
 const HPET_COUNTER_NON_PERIODIC: u64 = !HPET_COUNTER_PERIODIC;
 const HPET_COUNTER_ENABLED: u64 = 1 << 2;
@@ -37,6 +38,7 @@ struct Hpet {
     counters: Vec<HpetCounter>,
     callbacks: Vec<TimerCallback>,
     free_counters: Vec<u8>,
+    periodic_counters: Vec<u8>,
 }
 
 unsafe impl Send for Hpet {}
@@ -59,6 +61,7 @@ impl Hpet {
 	    counters: Vec::new(),
 	    callbacks: Vec::new(),
 	    free_counters: Vec::new(),
+	    periodic_counters: Vec::new(),
 	};
 
 	let num_counters = unsafe {
@@ -151,13 +154,17 @@ impl Hpet {
 	}
     }
     
-    pub fn set_timer_one_shot_ms(&self, timer: u8, time_ms: u64) {
+    pub fn set_timer(&self, timer: u8, time_ms: u64, is_periodic: bool) {
 	let counter = &self.counters[timer as usize];
 	let mut config = unsafe {
 	    read_volatile::<u64>(counter.configuration_capability_register)
 	};
 
-	config &= HPET_COUNTER_NON_PERIODIC;
+	if is_periodic {
+	    config |= HPET_COUNTER_PERIODIC | HPET_COUNTER_SET_ACCUMULATOR;
+	} else {
+	    config &= HPET_COUNTER_NON_PERIODIC;
+	}
 	config |= HPET_COUNTER_ENABLED | HPET_COUNTER_LEVEL_TRIGGERED;
 
 	let counter_divider = unsafe {
@@ -177,24 +184,42 @@ impl Hpet {
 	unsafe {
 	    write_volatile::<u64>(counter.comparator_value_register, counter_comparator_val);
 	    write_volatile::<u64>(counter.configuration_capability_register, config);
+	    if is_periodic {
+		write_volatile::<u64>(counter.comparator_value_register, time_in_ticks);		
+	    }
 	}
     }
 
     pub fn add_oneshot_ms(&mut self, time_ms: u64, callback: Box<dyn Fn() + Send + Sync>) {
 	if let Some(counter) = self.free_counters.pop() {
 	    self.callbacks.push(TimerCallback(counter, callback));
-	    self.set_timer_one_shot_ms(counter, time_ms);
+	    self.set_timer(counter, time_ms, false);
+	}
+    }
+
+    pub fn add_recurring_ms(&mut self, time_ms: u64, callback: Box<dyn Fn() + Send + Sync>) {
+	if let Some(counter) = self.free_counters.pop() {
+	    self.callbacks.push(TimerCallback(counter, callback));
+	    self.periodic_counters.push(counter);
+	    self.set_timer(counter, time_ms, true);
 	}
     }
 
     pub fn handle_triggered_callbacks(&mut self) {
 	if let Some(counter) = self.find_timer_interrupting() {
-	    self.callbacks
-		.extract_if(|callback| callback.0 == counter as u8)
-		.map(|callback| callback.1())
-		.for_each(drop);
+	    if self.periodic_counters.contains(&(counter as u8)) {
+		self.callbacks
+		    .iter()
+		    .filter(|callback| callback.0 == counter as u8)
+		    .for_each(|callback| callback.1());
+	    } else {
+		self.callbacks
+		    .extract_if(|callback| callback.0 == counter as u8)
+		    .map(|callback| callback.1())
+		    .for_each(drop);
 
-	    self.free_counters.push(counter as u8);
+		self.free_counters.push(counter as u8);
+	    }
 	}
     }
 }
@@ -207,6 +232,11 @@ fn hpet_handler() {
 pub fn add_oneshot(time_ms: u64, callback: Box<dyn Fn() + Send + Sync>) {
     let mut hpet = HPET.get().expect("Attempted to initialise HPET device before initialising driver").write();
     hpet.add_oneshot_ms(time_ms, callback);
+}
+
+pub fn add_periodic(time_ms: u64, callback: Box<dyn Fn() + Send + Sync>) {
+    let mut hpet = HPET.get().expect("Attempted to initialise HPET device before initialising driver").write();
+    hpet.add_recurring_ms(time_ms, callback);
 }
 
 static HPET: Once<RwLock<Hpet>> = Once::new();

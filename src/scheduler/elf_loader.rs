@@ -20,6 +20,7 @@ impl Elf {
 	let (file_contents, file_size) = match sys::vfs::read(file_name.clone()) {
 	    Ok(f) => f,
 	    Err(_) => {
+		log::info!("1a");
 		return Err(anyhow!("Could not load /init/init"));
 	    }
 	};

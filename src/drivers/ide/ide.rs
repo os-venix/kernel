@@ -525,48 +525,59 @@ impl IdeDrive<'_> {
 	    size * 512, memory::MemoryAllocationType::DMA, memory::MemoryAllocationOptions::Arbitrary, access_restriction)
 	    .expect("Unable to allocate a PDRT memory region");
 
-	// TODO: Refactor whatever this is
-	let mut current_start = buf_phys[0].as_u64();
+	let mut compacted_phys_addr = {
+	    let mut compacted_phys_addr: vec::Vec<memory::MemoryRegion> = vec::Vec::new();
+	    let mut current_start: u64 = 0;
+	    for (idx, phys_addr) in buf_phys.iter().enumerate() {
+		if idx == 0 {
+		    current_start = phys_addr.as_u64();
+		} else if phys_addr.as_u64() - 4096 != buf_phys[idx - 1].as_u64() {
+		    current_start = phys_addr.as_u64();
+		}
+
+		// If the last one, or if the next one isn't contiguous
+		if idx == buf_phys.len() - 1 || phys_addr.as_u64() + 4096 != buf_phys[idx + 1].as_u64() {
+		    compacted_phys_addr.push(memory::MemoryRegion {
+			start: current_start,
+			end: phys_addr.as_u64() + 4096,
+		    });
+		}
+	    }
+
+	    compacted_phys_addr
+	};
+
+	let total_size: u64 = compacted_phys_addr.iter()
+	    .map(|e| e.end - e.start)
+	    .sum();
+	if total_size != size * 512 {
+	    compacted_phys_addr.last_mut().unwrap().end -= total_size - (size * 512);
+	}
+
+	for i in 0 .. 1024 {
+	    ctl.prdt[i] = 0;
+	}
+
 	let mut prdt_entries = 0;
-	let mut bytes_remaining = size * 512;
-	for (i, buf_page) in buf_phys.iter().enumerate() {
-	    if buf_page.as_u64() >= 1 << 32 {
+	for current_region in compacted_phys_addr.iter() {
+	    if current_region.end >= 1 << 32 {
 		panic!("DMA region is out of bounds, in higher half of physical memory");
 	    }
 
-	    if i != buf_phys.len() - 1 {
-		if buf_page.as_u64() + 4096 != buf_phys[i + 1].as_u64() {
-		    while (buf_page.as_u64() + 4096) - current_start > 0x10000 {
-			ctl.prdt[prdt_entries * 2] = current_start as u32;
-			ctl.prdt[(prdt_entries * 2) + 1] = 0;
+	    for i in (current_region.start .. current_region.end).step_by(0x10000) {
+		ctl.prdt[prdt_entries * 2] = i as u32;
+		let region_size = current_region.end - i;
 
-			current_start += 0x10000;
-			bytes_remaining -= 0x10000;
-			prdt_entries += 1;
-		    }
-
-		    let phys_size_in_bytes = (((buf_page.as_u64() + 4096) - current_start) & 0xFFFF) as u32;
-		    ctl.prdt[prdt_entries * 2] = current_start as u32;
-		    ctl.prdt[(prdt_entries * 2) + 1] = phys_size_in_bytes;
-
-		    bytes_remaining -= phys_size_in_bytes as u64;
-		    current_start = buf_phys[i + 1].as_u64();
-		    prdt_entries += 1;
-		}
-	    } else {
-		while bytes_remaining > 0x10000 {
-		    ctl.prdt[prdt_entries * 2] = current_start as u32;
+		if region_size >= 0x10000 {
 		    ctl.prdt[(prdt_entries * 2) + 1] = 0;
-
-		    current_start += 0x10000;
-		    bytes_remaining -= 0x10000;
-		    prdt_entries += 1;
+		} else {
+		    ctl.prdt[(prdt_entries * 2) + 1] = region_size as u32 & 0xFFFF;
 		}
 
-		ctl.prdt[prdt_entries * 2] = current_start as u32;
-		ctl.prdt[(prdt_entries * 2) + 1] = (1 << 31) | (bytes_remaining & 0xFFFF) as u32;
+		prdt_entries += 1;
 	    }
 	}
+	ctl.prdt[(prdt_entries * 2) - 1] |= 1 << 31;
 
 	let busmaster_base = ctl.busmaster_base.expect("Attempted to do DMA xfer to non-DMA controller") as u16;
 
@@ -602,6 +613,7 @@ impl IdeDrive<'_> {
 	// TODO: we wait for the transfer here. We should be using interrupts to do other work, and let
 	// the transfer complete asynchronously.
 	for _ in 0 .. 1000000 { unsafe { asm!("nop"); } }
+
 	unsafe {
 	    let mut status_reg = Port::<u8>::new(ctl.io_base + IDE_STATUS_REG);
 
@@ -622,9 +634,10 @@ impl IdeDrive<'_> {
 		panic!("Read failure: {:X}", err);
 	    }
 	}
+
 	unsafe {
 	    let mut status_reg = Port::<u8>::new(busmaster_base + IDE_BUSMASTER_STATUS_REG);
-
+	    // Here
 	    loop {
 		let status = status_reg.read();
 		if status & IDE_BUSMASTER_STATUS_ACTIVE == 0 {
@@ -637,7 +650,7 @@ impl IdeDrive<'_> {
 		panic!("DMA error");
 	    }
 	}
-	
+
 	unsafe {
 	    let mut prdt_command_reg = Port::<u8>::new(busmaster_base + IDE_BUSMASTER_COMMAND_REG);
 	    prdt_command_reg.write(IDE_BUSMASTER_COMMAND_READ);

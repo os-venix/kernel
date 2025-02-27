@@ -3,7 +3,7 @@ use limine::memory_map::{Entry, EntryType};
 
 use x86_64::{
     PhysAddr,
-    structures::paging::{PhysFrame, FrameAllocator, Size4KiB}};
+    structures::paging::{PhysFrame, FrameAllocator, FrameDeallocator, Size4KiB}};
 
 struct MemoryRegion {
     pub start: u64,
@@ -105,6 +105,19 @@ unsafe impl FrameAllocator<Size4KiB> for VenixFrameAllocator {
 	    self.next += 1;
 
 	    frame
+	}
+    }
+}
+
+impl FrameDeallocator<Size4KiB> for VenixFrameAllocator {
+    unsafe fn deallocate_frame(&mut self, frame: PhysFrame<Size4KiB>) {
+	if let Some(ref mut free_regions) = self.free_regions {
+	    free_regions.push(MemoryRegion {
+		start: frame.start_address().as_u64(),
+		end: frame.start_address().as_u64() + 4096,
+	    });
+	} else {
+	    panic!("Attempted to deallocate while in runt mode");
 	}
     }
 }

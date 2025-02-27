@@ -101,6 +101,19 @@ impl Process {
 	}
     }
 
+    pub fn clear(&mut self, args: Vec<String>, envvars: Vec<String>) {
+	{
+	    let mut address_space = self.address_space.write();
+	    address_space.clear_user_space();
+	}
+
+	self.args = args;
+	self.envvars = envvars;
+	self.registers = GeneralPurposeRegisters::default();
+	self.registers.r11 = 0x202;
+	self.auxvs = Vec::new();
+    }
+
     pub fn init_stack(&mut self) {
 	let mut address_space = self.address_space.write();
 	let (rsp, _) = match memory::kernel_allocate(
@@ -229,6 +242,8 @@ pub fn init() {
     PROCESS_TABLE.call_once(|| RwLock::new(BTreeMap::new()));
     RUNNING_PROCESS.call_once(|| RwLock::new(None));
     NEXT_PID.call_once(|| Mutex::new(1));  // Don't use PID 0
+
+    hpet::add_periodic(1, Box::new(&schedule_next));
 }
 
 pub fn start_new_process(filename: String) -> u64 {
@@ -275,9 +290,36 @@ pub fn fork_current_process(rip: u64) -> u64 {
 	process_tbl.insert(pid, Process::from_existing(&existing_process, rip));
     };
 
-    hpet::add_oneshot(25, Box::new(&schedule_next));
-
     pid
+}
+
+pub fn execve(filename: String, args: Vec<String>, envvars: Vec<String>) {
+    {
+	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+	if let Some(pid) = *running_process {
+	    process_tbl.get_mut(&pid).unwrap().clear(args, envvars);
+	} else {
+	    panic!("Attempted to access user address space when no process is running");
+	}
+    }
+
+    let elf = elf_loader::Elf::new(filename).expect("Failed to load ELF");
+    let ld = elf_loader::Elf::new(String::from("/lib/ld.so")).expect("Failed to load ld.so");
+
+    {
+	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+	if let Some(pid) = *running_process {
+	    process_tbl.get_mut(&pid).unwrap().attach_loaded_elf(elf, ld);
+	    process_tbl.get_mut(&pid).unwrap().init_stack();
+	    process_tbl.get_mut(&pid).unwrap().init_stack_and_start();
+	} else {
+	    panic!("Attempted to access user address space when no process is running");
+	}
+    }
 }
 
 pub fn set_registers_for_current_process(rsp: u64, rip: u64, registers: &GeneralPurposeRegisters) {

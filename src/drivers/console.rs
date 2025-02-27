@@ -17,7 +17,7 @@ impl driver::Device for ConsoleDevice {
 	    slice::from_raw_parts(buf as *const ascii::Char, size as usize).as_str()
 	};
 
-	let mut printk = crate::PRINTK.get().expect("Unable to get printk");
+	let printk = crate::PRINTK.get().expect("Unable to get printk");
 	printk.write_str(s);
 
 	Ok(size)
