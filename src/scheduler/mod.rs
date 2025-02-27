@@ -322,6 +322,35 @@ pub fn execve(filename: String, args: Vec<String>, envvars: Vec<String>) {
     }
 }
 
+pub fn exit() -> (u64, u64) {
+    {
+	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+	if let Some(pid) = *running_process {
+	    // Free associated memory, and drop the process
+	    process_tbl.get_mut(&pid).unwrap().clear(Vec::new(), Vec::new());
+	    process_tbl.remove(&pid);
+	} else {
+	    panic!("Attempted to access user address space when no process is running");
+	}
+    }
+
+    schedule_next();
+    
+    {
+	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+	if let Some(pid) = *running_process {
+	    // Set syscall return registers to the value of the associated registers in the newly scheduled task
+	    (process_tbl[&pid].registers.rax, process_tbl[&pid].registers.rdx)
+	} else {
+	    panic!("Attempted to access user address space when no process is running");
+	}
+    }
+}
+
 pub fn set_registers_for_current_process(rsp: u64, rip: u64, registers: &GeneralPurposeRegisters) {
     let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
@@ -350,9 +379,12 @@ pub fn schedule_next() {
 
     let mut running_pids = process_tbl.keys();
     let next_pid = if let Some(pid) = *running_process {
-	let current_pid_idx = running_pids.clone().position(|tbl_pid| *tbl_pid == pid).unwrap();
-	if current_pid_idx + 1 != running_pids.len() {
-	    running_pids.nth(current_pid_idx + 1).unwrap()
+	if let Some(current_pid_idx) = running_pids.clone().position(|tbl_pid| *tbl_pid == pid) {
+	    if current_pid_idx + 1 != running_pids.len() {
+		running_pids.nth(current_pid_idx + 1).unwrap()
+	    } else {
+		running_pids.nth(0).unwrap()
+	    }
 	} else {
 	    running_pids.nth(0).unwrap()
 	}

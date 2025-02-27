@@ -134,6 +134,9 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 
 	    (start.as_u64(), 0)
 	},
+	0x0c => {  // exit
+	    scheduler::exit()	    
+	},
 	0x39 => {  // fork
 	    let pid = scheduler::fork_current_process(rcx);
 	    (pid, 0)
