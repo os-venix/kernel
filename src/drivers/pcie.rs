@@ -9,7 +9,7 @@ use x86_64::instructions::port::{PortGeneric, ReadWriteAccess, WriteOnlyAccess};
 use crate::driver;
 
 #[derive(Copy, Clone)]
-struct PciConfigAccess { }
+pub struct PciConfigAccess { }
 
 impl PciConfigAccess {
     pub fn new() -> PciConfigAccess {
