@@ -37,6 +37,7 @@ mod driver;
 mod printk;
 mod fs;
 mod scheduler;
+mod dma;
 
 #[used]
 #[link_section = ".requests"]

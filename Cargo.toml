@@ -21,6 +21,8 @@ bit_field = "0.10"
 limine = "0.3"
 xmas-elf = "0.9"
 anyhow = { version = "1.0", default-features = false }
+modular-bitfield = "0.11"
+bitfield = "0.19"
 
 [dependencies.itertools]
 version = "0.13"

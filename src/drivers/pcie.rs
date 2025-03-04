@@ -103,7 +103,7 @@ impl driver::Bus for PciBus {
 	String::from("PCI")
     }
 
-    fn enumerate(&self) -> Vec<Box<dyn driver::DeviceTypeIdentifier>> {
+    fn enumerate(&mut self) -> Vec<Box<dyn driver::DeviceTypeIdentifier>> {
 	let pci_config_access = PciConfigAccess::new();
 	let mut found_devices = Vec::<Box<dyn driver::DeviceTypeIdentifier>>::new();
 	for device in 0 .. 32 {

@@ -45,7 +45,7 @@ impl fmt::Display for SystemBusDeviceIdentifier {
 
 pub trait Bus {
     fn name(&self) -> String;
-    fn enumerate(&self) -> Vec<Box<dyn DeviceTypeIdentifier>>;
+    fn enumerate(&mut self) -> Vec<Box<dyn DeviceTypeIdentifier>>;
 }
 
 pub trait Device {
@@ -133,7 +133,7 @@ impl Bus for SystemBus {
 	String::from("System Bus")
     }
 
-    fn enumerate(&self) -> Vec<Box<dyn DeviceTypeIdentifier>> {
+    fn enumerate(&mut self) -> Vec<Box<dyn DeviceTypeIdentifier>> {
 	let mut namespace = {
 	    let aml = acpi::AML.get().expect("Attempted to access ACPI tables before ACPI is initialised").read();
 	    aml.namespace.clone()
@@ -220,7 +220,7 @@ pub fn register_device(device: Arc<dyn Device + Send + Sync>) -> u64 {
     (device_tbl.len() - 1) as u64
 }
 
-pub fn register_bus_and_enumerate(bus: Box<dyn Bus + Send + Sync>) {
+pub fn register_bus_and_enumerate(mut bus: Box<dyn Bus + Send + Sync>) {
     for found_device in bus.enumerate().iter() {
 	let driver_tbl = DRIVER_TABLE.get().expect("Attempted to access driver table before it is initialised").read();
 
