@@ -1,6 +1,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
-use core::{mem::MaybeUninit, ptr, sync::atomic::{AtomicUsize, Ordering}, usize};
+use core::{mem::MaybeUninit, ptr, sync::atomic::{AtomicUsize, Ordering}, slice, usize};
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::memory;
@@ -65,6 +65,33 @@ impl<'a> Arena {
 	}, phys_addr))
     }
 
+    /// Get a pointer to a place in the backing store where a slice of size l can be placed.
+    fn get_slice_place(&'a self, alignment: usize, length: usize) -> Option<(&'a mut [u8], PhysAddr)> {
+	if alignment != 0 {
+	    if let Err(e) = self.next_free_store_spot.fetch_update(
+		Ordering::Release,
+		Ordering::SeqCst,
+		|x| Some(x + (alignment - (x % alignment)))) {
+		panic!("Could not align arena: {}", e);
+	    }
+	}
+
+        let place = self.next_free_store_spot.fetch_add(length, Ordering::Release);
+
+	// TODO: get more memory
+        if place + length > 4096 * self.backing_store.len() {
+            return None;
+        }
+
+        let (virt_page, phys_page) = self.backing_store[place / 4096];
+	let virt_addr = virt_page + (place as u64 % 4096);
+	let phys_addr = phys_page + (place as u64 % 4096);
+
+        Some((unsafe {
+	    slice::from_raw_parts_mut(virt_addr.as_mut_ptr::<u8>(), length)
+	}, phys_addr))
+    }
+
     /// acquire a reference to a value of type T that is initialized with it's default value.
     /// This is useful for types that do not require initialization.
     pub fn acquire_default<T: Default>(&'a self, alignment: usize) -> Option<(&'a mut T, PhysAddr)> {
@@ -93,5 +120,13 @@ impl<'a> Arena {
                 .as_mut()
                 .unwrap_unchecked()
         }, phys_addr))
+    }
+
+    /// acquire a reference to a slice of length l, initialized to 0.
+    pub fn acquire_slice(&'a self, alignment: usize, length: usize) -> Option<(&'a [u8], PhysAddr)> {
+        let (slice, phys_addr) = self.get_slice_place(alignment, length)?;
+	slice.fill_with(Default::default);
+
+	Some((slice, phys_addr))
     }
 }

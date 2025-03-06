@@ -64,6 +64,31 @@ struct ConfigurationDescriptor {
     max_power: u8,
 }
 
+#[repr(packed)]
+#[derive(Debug, Default)]
+struct InterfaceDescriptor {
+    length: u8,
+    descriptor_type: u8,
+    interface_number: u8,
+    alternate_setting: u8,
+    num_endpoints: u8,
+    interface_class: u8,
+    interface_subclass: u8,
+    protocol: u8,
+    interface_string: u8,
+}
+
+#[repr(packed)]
+#[derive(Debug, Default)]
+struct EndpointDescriptor {
+    length: u8,
+    descriptor_type: u8,
+    endpoint_address: u8,
+    attributes: u8,
+    max_packet_size: u16,
+    interval: u8,
+}
+
 bitfield! {
     #[derive(Default)]
     pub struct QueueHead(u32);
@@ -311,10 +336,7 @@ impl<'a> UhciBus<'a> {
 	Ok(())
     }
 
-    fn enumerate_port(&mut self, port_num: u8) -> Result<Vec<Box<dyn driver::DeviceTypeIdentifier>>> {
-	self.reset_port(port_num)?;
-	let arena = arena::Arena::new();
-
+    fn get_configuration_descriptor<'b>(&mut self, address: u8, endpoint: u8, arena: &'b arena::Arena) -> &'b ConfigurationDescriptor {
 	let (packet, packet_phys) = arena.acquire::<SetupDataPacket>(0, SetupDataPacket {	    
 	    request_type: 0x80,
 	    request: 6,
@@ -400,8 +422,139 @@ impl<'a> UhciBus<'a> {
 		asm!("pause");
 	    }
 	}
-	log::info!("Configuration descriptor: {:?}", configuration_descriptor);
 
+	configuration_descriptor
+    }
+
+    fn get_all_descriptors<'b>(&mut self, address: u8, endpoint: u8, arena: &'b arena::Arena) -> (&'b ConfigurationDescriptor, Vec<&'b InterfaceDescriptor>, Vec<&'b EndpointDescriptor>) {
+	// Needed for length
+	let configuration_descriptor = self.get_configuration_descriptor(0, 0, arena);
+	let (packet, packet_phys) = arena.acquire::<SetupDataPacket>(0, SetupDataPacket {	    
+	    request_type: 0x80,
+	    request: 6,
+	    value: 0x0200,
+	    index: 0,
+	    length: configuration_descriptor.total_length,
+	}).unwrap();
+
+	let (descriptors, descriptors_phys) = arena.acquire_slice(
+	    0, configuration_descriptor.total_length as usize).unwrap();
+
+	let (data_out_td, data_out_td_phys) = arena.acquire_default::<TransferDescriptor>(0x10).unwrap();
+	data_out_td.set_link_pointer(0);
+	data_out_td.set_depth_breadth_select(true);
+	data_out_td.set_qh_td_select(false);
+	data_out_td.set_terminate(true);
+	data_out_td.set_error_count(3);
+	data_out_td.set_low_speed(true);
+	data_out_td.set_interrupt_on_complete(true);
+	data_out_td.set_status_active(true);
+	data_out_td.set_max_length(0x7FF);
+	data_out_td.set_toggle(false);
+	data_out_td.set_endpoint(0);
+	data_out_td.set_address(0);
+	data_out_td.set_packet_identification(0xE1);  // OUT
+	data_out_td.set_buffer_pointer(0);
+
+	let (data_in_td, data_in_td_phys) = arena.acquire_default::<TransferDescriptor>(0x10).unwrap();
+	data_in_td.set_link_pointer_phys_addr(data_out_td_phys);
+	data_in_td.set_depth_breadth_select(true);
+	data_in_td.set_qh_td_select(false);
+	data_in_td.set_terminate(false);
+	data_in_td.set_error_count(3);
+	data_in_td.set_low_speed(true);
+	data_in_td.set_status_active(true);
+	data_in_td.set_max_length((configuration_descriptor.total_length - 1) as u128);
+	data_in_td.set_toggle(true);
+	data_in_td.set_endpoint(0);
+	data_in_td.set_address(0);
+	data_in_td.set_packet_identification(0x69);  // IN
+	data_in_td.set_buffer_pointer_phys_addr(descriptors_phys);
+	    
+	let (setup_td, setup_td_phys) = arena.acquire_default::<TransferDescriptor>(0x10).unwrap();
+	setup_td.set_link_pointer_phys_addr(data_in_td_phys);
+	setup_td.set_depth_breadth_select(true);  // Depth first
+	setup_td.set_qh_td_select(false);  // Next one is a transfer descriptor
+	setup_td.set_terminate(false);
+	setup_td.set_error_count(3);
+	setup_td.set_low_speed(true);  // Low speed, as we don't know if it can do high speed yet
+	setup_td.set_status_active(true);
+	setup_td.set_max_length(7);  // 8 bytes
+	setup_td.set_toggle(false);
+	setup_td.set_endpoint(0);
+	setup_td.set_address(0);
+	setup_td.set_packet_identification(0x2d);  // SETUP
+	setup_td.set_buffer_pointer_phys_addr(packet_phys);
+
+	let (queue_head, queue_head_phys) = arena.acquire_default::<QueueHead>(0x10).unwrap();
+	queue_head.set_element_link_pointer_phys(setup_td_phys);
+	queue_head.set_qh_td_select(false);  // This is a queue of TDs
+	queue_head.set_terminate(false);
+
+	// Clear any lingering interrupts
+	unsafe {
+	    let mut port_sts = Port::<u16>::new(self.base_io + USBSTS);
+	    port_sts.write(STATUS_INT);
+	}
+
+	for i in 0 .. 1024 {
+	    // Set QH/TD first, and element pointer second, to avoid a race with the UHCI controller
+	    self.frame_list[i].set_qh_td_select(true);  // Entry is a QH
+	    self.frame_list[i].set_frame_list_pointer_phys(queue_head_phys);
+	    self.frame_list[i].set_terminate(false);
+	}
+
+	// Loop until done
+	// TODO: implement PCI interrupt routing
+	unsafe {
+	    let mut port_sts = Port::<u16>::new(self.base_io + USBSTS);
+	    while (port_sts.read() & STATUS_INT) == 0 {
+		if (port_sts.read() & STATUS_HALTED) != 0 {
+		    panic!("Status is halted");
+		}
+		asm!("pause");
+	    }
+	}
+
+	let mut interfaces = Vec::<&InterfaceDescriptor>::new();
+	let mut endpoints = Vec::<&EndpointDescriptor>::new();
+
+
+	// This is horrible, needs cleaning
+	{
+	    let mut i = 0;
+	    let mut ptr = descriptors.as_ptr();
+	    while i < configuration_descriptor.total_length {
+		match descriptors[i as usize + 1] {
+		    4 => {  // Interface
+			let interface = unsafe {
+			    (ptr.add(i as usize) as *const InterfaceDescriptor).as_ref().unwrap()
+			};
+			interfaces.push(interface);
+		    },
+		    5 => {  // Endpoint
+			let endpoint = unsafe { (
+			    ptr.add(i as usize) as *const EndpointDescriptor).as_ref().unwrap()
+			};
+			endpoints.push(endpoint);
+		    },
+		    _ => (),
+		}
+
+		i += descriptors[i as usize] as u16;
+	    }
+	}
+
+//	log::info!("{:#?}\n\n{:#?}", interfaces, endpoints);
+
+	(configuration_descriptor, interfaces, endpoints)
+    }
+
+    fn enumerate_port(&mut self, port_num: u8) -> Result<Vec<Box<dyn driver::DeviceTypeIdentifier>>> {
+	self.reset_port(port_num)?;
+	let mut arena = arena::Arena::new();
+
+	let (configuration_descriptor, interfaces, endpoints) = self.get_all_descriptors(0, 0, &mut arena);
 	
 	Err(anyhow!("Incomplete :3"))
     }
