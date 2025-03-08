@@ -5,6 +5,8 @@ use alloc::fmt;
 use core::any::Any;
 use pci_types::{ConfigRegionAccess, PciAddress, PciHeader, HeaderType, EndpointHeader, Bar, VendorId, DeviceId, BaseClass, SubClass, Interface};
 use x86_64::instructions::port::{PortGeneric, ReadWriteAccess, WriteOnlyAccess};
+use spin::Mutex;
+use alloc::sync::Arc;
 
 use crate::driver;
 
@@ -162,7 +164,7 @@ impl driver::Driver for PciDriver {
 		}
 	    }
 	} else {
-	    driver::register_bus_and_enumerate(Box::new(PciBus::new(0, 0)));
+	    driver::register_bus_and_enumerate(Arc::new(Mutex::new(PciBus::new(0, 0))));
 	}
     }
 

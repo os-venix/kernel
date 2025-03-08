@@ -1,6 +1,6 @@
 use core::any::Any;
 use core::fmt;
-use spin::{Once, RwLock};
+use spin::{Once, RwLock, Mutex};
 use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -122,7 +122,7 @@ impl vfs::FileSystem for DevFS {
 
 static DRIVER_TABLE: Once<RwLock<Vec<Box<dyn Driver + Send + Sync>>>> = Once::new();
 static DEVICE_TABLE: Once<RwLock<Vec<Arc<dyn Device + Send + Sync>>>> = Once::new();
-static BUS_TABLE: Once<RwLock<Vec<Box<dyn Bus + Send + Sync>>>> = Once::new();
+static BUS_TABLE: Once<RwLock<Vec<Arc<Mutex<dyn Bus + Send + Sync>>>>> = Once::new();
 static DEVFS: Once<Arc<RwLock<DevFS>>> = Once::new();
 
 struct SystemBus { }
@@ -201,7 +201,7 @@ pub fn init() {
 }
 
 pub fn configure_drivers() {    
-    register_bus_and_enumerate(Box::new(SystemBus { }));
+    register_bus_and_enumerate(Arc::new(Mutex::new(SystemBus { })));
 }
 
 pub fn register_devfs(mount_point: String, dev_id: u64) {
@@ -220,8 +220,13 @@ pub fn register_device(device: Arc<dyn Device + Send + Sync>) -> u64 {
     (device_tbl.len() - 1) as u64
 }
 
-pub fn register_bus_and_enumerate(mut bus: Box<dyn Bus + Send + Sync>) {
-    for found_device in bus.enumerate().iter() {
+pub fn register_bus_and_enumerate(mut bus: Arc<Mutex<dyn Bus + Send + Sync>>) {
+    let enumerated_bus_devices = {
+	let mut locked_bus = bus.lock();
+	locked_bus.enumerate()
+    };
+
+    for found_device in enumerated_bus_devices.iter() {
 	let driver_tbl = DRIVER_TABLE.get().expect("Attempted to access driver table before it is initialised").read();
 
 	let driver = match driver_tbl.iter()

@@ -109,10 +109,10 @@ impl<'a> Arena {
 
     /// acquire a reference to a value of type T that is initialized with the given value.
     /// This is useful for types that do not require initialization.
-    pub fn acquire<T>(&'a self, alignment: usize, val: T) -> Option<(&'a mut T, PhysAddr)> {
+    pub fn acquire<T: Clone>(&'a self, alignment: usize, val: &T) -> Option<(&'a mut T, PhysAddr)> {
         let (ptr, phys_addr) = self.get_ptr_place::<T>(alignment)?;
 
-        ptr.write(val);
+        ptr.write(val.clone());
 
         Some((unsafe {
             ptr::from_mut(ptr)
