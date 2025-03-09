@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -118,7 +119,7 @@ struct GenericDescriptor {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct ConfigurationDescriptor {
     length: u8,
     descriptor_type: Descriptor,
@@ -131,7 +132,7 @@ struct ConfigurationDescriptor {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct InterfaceDescriptor {
     length: u8,
     descriptor_type: Descriptor,
@@ -145,7 +146,7 @@ struct InterfaceDescriptor {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct EndpointDescriptor {
     length: u8,
     descriptor_type: Descriptor,
@@ -158,6 +159,7 @@ struct EndpointDescriptor {
 pub enum TransferType {
     ControlRead(SetupPacket),
     ControlWrite(SetupPacket),
+    ControlNoData(SetupPacket),
     BulkWrite,
     BulkRead,
     InterruptOut,
@@ -172,18 +174,42 @@ pub struct UsbTransfer {
 
 pub trait UsbHCI {
     fn get_ports(&self) -> Vec<Port>;
-    fn transfer(&mut self, transfer: UsbTransfer, arena: &arena::Arena);
+    fn transfer(&mut self, address: u8, transfer: UsbTransfer, arena: &arena::Arena);
+}
+
+pub struct UsbDevice {
+    configuration_descriptor: ConfigurationDescriptor,
+    interface_descriptors: Vec<InterfaceDescriptor>,
+    endpoint_descriptors: Vec<EndpointDescriptor>,
+    address: u8,
 }
 
 struct Usb {
     hcis: Vec<Box<dyn UsbHCI>>,
+    devices: BTreeMap<u8, UsbDevice>,
+    next_address: u8,
 }
 
 impl Usb {
     fn new() -> Self {
 	Usb {
 	    hcis: Vec::new(),
+	    devices: BTreeMap::new(),
+	    next_address: 1,
 	}
+    }
+
+    fn get_next_address(&mut self) -> u8 {
+	let addr = self.next_address;
+	self.next_address += 1;
+
+	// TODO: handle address recycling
+	// TODO: error here, rather than panicking
+	if addr > 127 {
+	    panic!("Ran out of USB addresses!");
+	}
+
+	addr
     }
 
     fn register_hci(&mut self, mut hci: Box<dyn UsbHCI>) {
@@ -196,14 +222,19 @@ impl Usb {
 
 	    let (configuration_descriptor, configuration_descriptor_phys) = arena.acquire_default::<ConfigurationDescriptor>(0).unwrap();
 
-	    let mut request_type = SetupPacketRequestType::default();
-	    request_type.set_direction_from_enum(SetupPacketRequestTypeDirection::DeviceToHost);
-	    request_type.set_request_type_from_enum(SetupPacketRequestTypeRequestType::STANDARD);
-	    request_type.set_recipient_from_enum(SetupPacketRequestTypeRecipient::DEVICE);
+	    let mut read_request_type = SetupPacketRequestType::default();
+	    read_request_type.set_direction_from_enum(SetupPacketRequestTypeDirection::DeviceToHost);
+	    read_request_type.set_request_type_from_enum(SetupPacketRequestTypeRequestType::STANDARD);
+	    read_request_type.set_recipient_from_enum(SetupPacketRequestTypeRecipient::DEVICE);
+
+	    let mut write_request_type = SetupPacketRequestType::default();
+	    write_request_type.set_direction_from_enum(SetupPacketRequestTypeDirection::HostToDevice);
+	    write_request_type.set_request_type_from_enum(SetupPacketRequestTypeRequestType::STANDARD);
+	    write_request_type.set_recipient_from_enum(SetupPacketRequestTypeRecipient::DEVICE);
 
 	    let xfer_config_descriptor = UsbTransfer {
 		transfer_type: TransferType::ControlRead(SetupPacket {
-		    request_type: request_type.clone(),
+		    request_type: read_request_type.clone(),
 		    request: RequestCode::GET_DESCRIPTOR,
 		    value: 0x0200,
 		    index: 0,
@@ -212,14 +243,28 @@ impl Usb {
 		buffer_phys_ptr: configuration_descriptor_phys,
 		poll: true,
 	    };
+	    hci.transfer(0, xfer_config_descriptor, &arena);
 
-	    hci.transfer(xfer_config_descriptor, &arena);
+	    let device_address = self.get_next_address();
+
+	    let set_addr = UsbTransfer {
+		transfer_type: TransferType::ControlNoData(SetupPacket {
+		    request_type: write_request_type,
+		    request: RequestCode::SET_ADDRESS,
+		    value: device_address.into(),
+		    index: 0,
+		    length: 0,
+		}),
+		buffer_phys_ptr: PhysAddr::new(0),
+		poll: true,
+	    };
+	    hci.transfer(0, set_addr, &arena);
 
 	    let (descriptors, descriptors_phys) = arena.acquire_slice(
 		0, configuration_descriptor.total_length as usize).unwrap();
 	    let xfer_descriptors = UsbTransfer {
 		transfer_type: TransferType::ControlRead(SetupPacket {
-		    request_type: request_type,
+		    request_type: read_request_type,
 		    request: RequestCode::GET_DESCRIPTOR,
 		    value: 0x0200,
 		    index: 0,
@@ -228,11 +273,10 @@ impl Usb {
 		buffer_phys_ptr: descriptors_phys,
 		poll: true,
 	    };
-
-	    hci.transfer(xfer_descriptors, &arena);
+	    hci.transfer(device_address, xfer_descriptors, &arena);
 	    
-	    let mut interfaces = Vec::<&InterfaceDescriptor>::new();
-	    let mut endpoints = Vec::<&EndpointDescriptor>::new();
+	    let mut interfaces = Vec::<InterfaceDescriptor>::new();
+	    let mut endpoints = Vec::<EndpointDescriptor>::new();
 
 	    // This is horrible, needs cleaning
 	    {
@@ -244,13 +288,13 @@ impl Usb {
 			    let interface = unsafe {
 				(ptr.add(i as usize) as *const InterfaceDescriptor).as_ref().unwrap()
 			    };
-			    interfaces.push(interface);
+			    interfaces.push(interface.clone());
 			},
 			5 => {  // Endpoint
 			    let endpoint = unsafe { (
 				ptr.add(i as usize) as *const EndpointDescriptor).as_ref().unwrap()
 			    };
-			    endpoints.push(endpoint);
+			    endpoints.push(endpoint.clone());
 			},
 			_ => (),
 		    }

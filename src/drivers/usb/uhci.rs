@@ -319,7 +319,7 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 	ports
     }
 
-    fn transfer(&mut self, transfer: usb::UsbTransfer, arena: &arena::Arena) {
+    fn transfer(&mut self, address: u8, transfer: usb::UsbTransfer, arena: &arena::Arena) {
 	let (queue_head, queue_head_phys) = arena.acquire_default::<QueueHead>(0x10).unwrap();
 
 	match transfer.transfer_type {
@@ -338,7 +338,7 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 		data_out_td.set_max_length(0x7FF);
 		data_out_td.set_toggle(false);
 		data_out_td.set_endpoint(0);
-		data_out_td.set_address(0);
+		data_out_td.set_address(address.into());
 		data_out_td.set_packet_identification(0xE1);  // OUT
 		data_out_td.set_buffer_pointer(0);
 
@@ -353,7 +353,7 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 		data_in_td.set_max_length((setup_packet.length - 1) as u128);
 		data_in_td.set_toggle(true);
 		data_in_td.set_endpoint(0);
-		data_in_td.set_address(0);
+		data_in_td.set_address(address.into());
 		data_in_td.set_packet_identification(0x69);  // IN
 		data_in_td.set_buffer_pointer_phys_addr(transfer.buffer_phys_ptr);
 		
@@ -368,7 +368,45 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 		setup_td.set_max_length(7);  // 8 bytes
 		setup_td.set_toggle(false);
 		setup_td.set_endpoint(0);
-		setup_td.set_address(0);
+		setup_td.set_address(address.into());
+		setup_td.set_packet_identification(0x2d);  // SETUP
+		setup_td.set_buffer_pointer_phys_addr(packet_phys);
+
+		queue_head.set_element_link_pointer_phys(setup_td_phys);
+		queue_head.set_qh_td_select(false);  // This is a queue of TDs
+		queue_head.set_terminate(false);
+	    },
+	    usb::TransferType::ControlNoData(setup_packet) => {
+		let (packet, packet_phys) = arena.acquire::<usb::SetupPacket>(0, &setup_packet).unwrap();
+
+		let (data_in_td, data_in_td_phys) = arena.acquire_default::<TransferDescriptor>(0x10).unwrap();
+		data_in_td.set_link_pointer(0);
+		data_in_td.set_depth_breadth_select(true);
+		data_in_td.set_qh_td_select(false);
+		data_in_td.set_terminate(true);
+		data_in_td.set_error_count(3);
+		data_in_td.set_low_speed(true);
+		data_in_td.set_interrupt_on_complete(true);
+		data_in_td.set_status_active(true);
+		data_in_td.set_max_length(0x7FF);
+		data_in_td.set_toggle(true);
+		data_in_td.set_endpoint(0);
+		data_in_td.set_address(address.into());
+		data_in_td.set_packet_identification(0x69);  // IN
+		data_in_td.set_buffer_pointer(0);
+		
+		let (setup_td, setup_td_phys) = arena.acquire_default::<TransferDescriptor>(0x10).unwrap();
+		setup_td.set_link_pointer_phys_addr(data_in_td_phys);
+		setup_td.set_depth_breadth_select(true);  // Depth first
+		setup_td.set_qh_td_select(false);  // Next one is a transfer descriptor
+		setup_td.set_terminate(false);
+		setup_td.set_error_count(3);
+		setup_td.set_low_speed(true);  // Low speed, as we don't know if it can do high speed yet
+		setup_td.set_status_active(true);
+		setup_td.set_max_length(7);  // 8 bytes
+		setup_td.set_toggle(false);
+		setup_td.set_endpoint(0);
+		setup_td.set_address(address.into());
 		setup_td.set_packet_identification(0x2d);  // SETUP
 		setup_td.set_buffer_pointer_phys_addr(packet_phys);
 
