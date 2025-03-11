@@ -2,6 +2,8 @@ use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::boxed::Box;
 use alloc::fmt;
+use alloc::format;
+use aml::{pci_routing::PciRoutingTable, AmlName};
 use core::any::Any;
 use pci_types::{ConfigRegionAccess, PciAddress, PciHeader, HeaderType, EndpointHeader, Bar, VendorId, DeviceId, BaseClass, SubClass, Interface};
 use x86_64::instructions::port::{PortGeneric, ReadWriteAccess, WriteOnlyAccess};
@@ -9,6 +11,7 @@ use spin::Mutex;
 use alloc::sync::Arc;
 
 use crate::driver;
+use crate::sys::acpi;
 
 #[derive(Copy, Clone)]
 pub struct PciConfigAccess { }
@@ -85,6 +88,7 @@ impl fmt::Display for PciDeviceType {
 }
 
 pub struct PciBus {
+    acpi_device_root: String,
     segment: u16,
     bus: u8,
 }
@@ -92,8 +96,9 @@ unsafe impl Send for PciBus { }
 unsafe impl Sync for PciBus { }
 
 impl PciBus {
-    pub fn new(segment: u16, bus: u8) -> PciBus {
+    pub fn new(acpi_device_root: String, segment: u16, bus: u8) -> PciBus {
 	PciBus {
+	    acpi_device_root: acpi_device_root,
 	    segment: segment,
 	    bus: bus,
 	}
@@ -116,8 +121,14 @@ impl driver::Bus for PciBus {
 		if device_vendor_id == 0xFFFF {
 		    continue;
 		}
-
+		
 		let (_, base_class, subclass, interface) = device_header.revision_and_class(pci_config_access);
+		if device_header.header_type(pci_config_access) == HeaderType::Endpoint {
+		    let endpoint_header = EndpointHeader::from_header(device_header, pci_config_access).expect("Creating endpoint header failed");
+		    let (interrupt_pin, interrupt_line) = endpoint_header.interrupt(pci_config_access);
+
+		    log::info!("{}:{}:{} uses pin {}, line {}", base_class, subclass, interface, interrupt_pin, interrupt_line);
+		}
 
 		found_devices.push(Box::new(PciDeviceType {
 		    address: PciAddress::new(self.segment, self.bus, device, function),
@@ -139,6 +150,12 @@ impl driver::Bus for PciBus {
 pub struct PciDriver {}
 impl driver::Driver for PciDriver {
     fn init(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) {
+	let system_bus_identifier = if let Some(sb_info) = info.as_any().downcast_ref::<driver::SystemBusDeviceIdentifier>() {
+	    sb_info
+	} else {
+	    panic!("Attempted to get SB identifier from a not SB device");
+	};
+
 	let pci_config_access = PciConfigAccess::new();
 	let root_bus_header = PciHeader::new(PciAddress::new(0, 0, 0, 0));
 
@@ -164,7 +181,7 @@ impl driver::Driver for PciDriver {
 		}
 	    }
 	} else {
-	    driver::register_bus_and_enumerate(Arc::new(Mutex::new(PciBus::new(0, 0))));
+	    driver::register_bus_and_enumerate(Arc::new(Mutex::new(PciBus::new(system_bus_identifier.path.as_string(), 0, 0))));
 	}
     }
 

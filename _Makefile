@@ -1,0 +1,21 @@
+SRCDIR := uacpi/source/
+OBJDIR := $(OUT_DIR)/.obj/$(TARGET)/
+
+SRCS := $(SRCDIR)tables.c $(SRCDIR)types.c $(SRCDIR)uacpi.c $(SRCDIR)utilities.c $(SRCDIR)interpreter.c $(SRCDIR)opcodes.c $(SRCDIR)namespace.c $(SRCDIR)stdlib.c $(SRCDIR)shareable.c $(SRCDIR)opregion.c $(SRCDIR)default_handlers.c $(SRCDIR)io.c $(SRCDIR)notify.c $(SRCDIR)sleep.c $(SRCDIR)registers.c $(SRCDIR)event.c $(SRCDIR)mutex.c $(SRCDIR)osi.c $(SRCDIR)resources.c
+OBJS := $(SRCS:$(SRCDIR)%.c=$(OBJDIR)%.o)
+
+CFLAGS := -I uacpi/include/ -ffreestanding -Wno-redundant-decls -Wno-unused-function -nostdlib -nodefaultlibs -lgcc -O2 -fPIC
+
+all: $(OUT_DIR)/libuacpi.a
+
+clean:
+	rm -rf $(OUTDIR)/uacpi.a $(OBJDIR)
+
+$(OUT_DIR)/libuacpi.a: $(OBJS)
+	@echo [AR] $@
+	@rm -rf $@ && ar rc $@ $(OBJS)
+
+$(OBJDIR)%.o: $(SRCDIR)%.c
+	@mkdir -p $(dir $@)
+	@echo [GCC] -o $@
+	@gcc $(CFLAGS) -m64 -o $@ -c $<

@@ -10,6 +10,8 @@ use alloc::string::String;
 
 use crate::memory;
 
+mod uacpi;
+
 pub struct SyncAcpiTables<H: AcpiHandler>(AcpiTables<H>);
 unsafe impl<H: AcpiHandler> Sync for SyncAcpiTables<H> {}
 
@@ -167,6 +169,7 @@ fn map_aml_table(tbl: AmlTable, aml: &mut AmlContext) {
 }
 
 pub fn init(rdsp_addr: u64) {
+    uacpi::init();
     let acpi = unsafe {
 	AcpiTables::from_rsdp(VenixAcpiHandler, rdsp_addr as usize)
     };
@@ -189,7 +192,7 @@ pub fn init(rdsp_addr: u64) {
 
 	for ssdt in acpi_tables.ssdts() {
 	    map_aml_table(ssdt, &mut aml);
-	}
+	}	
 
 	AML.call_once(|| RwLock::new(aml));
     }

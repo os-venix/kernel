@@ -44,7 +44,6 @@ pub fn init() {
 
 	(&mut *(pcb.0.as_mut_ptr::<ProcessorControlBlock>()), pcb.0.as_u64())
     };
-    log::info!("Test");
 
     pcb.self_ptr = pcb as *mut ProcessorControlBlock as usize;
 
