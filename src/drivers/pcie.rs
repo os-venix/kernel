@@ -2,16 +2,13 @@ use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::boxed::Box;
 use alloc::fmt;
-use alloc::format;
-use aml::{pci_routing::PciRoutingTable, AmlName};
 use core::any::Any;
 use pci_types::{ConfigRegionAccess, PciAddress, PciHeader, HeaderType, EndpointHeader, Bar, VendorId, DeviceId, BaseClass, SubClass, Interface};
 use x86_64::instructions::port::{PortGeneric, ReadWriteAccess, WriteOnlyAccess};
-use spin::Mutex;
+use spin::{Mutex, Once};
 use alloc::sync::Arc;
 
 use crate::driver;
-use crate::sys::acpi;
 
 #[derive(Copy, Clone)]
 pub struct PciConfigAccess { }
@@ -49,6 +46,12 @@ impl ConfigRegionAccess for PciConfigAccess {
 	config_address_port.write(address);
 	config_data_port.write(value);
     }
+}
+
+pub static PCI_ACCESS: Once<Mutex<PciConfigAccess>> = Once::new();
+
+pub fn init_pci_subsystem_for_acpi() {
+    PCI_ACCESS.call_once(|| Mutex::new(PciConfigAccess::new()));
 }
 
 pub fn init() {

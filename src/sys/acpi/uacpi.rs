@@ -2,13 +2,16 @@ use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use core::ffi::{c_char, c_void, CStr};
+use pci_types::{ConfigRegionAccess, PciAddress};
 use spin::Once;
 use x86_64::PhysAddr;
 use x86_64::instructions::port::Port;
 use x86_64::registers::rflags;
 
-use crate::sys::acpi::acpi_lock::Mutex;
+use crate::sys::acpi::acpi_lock::{Mutex, Semaphore};
+use crate::drivers::pcie;
 use crate::memory;
+use crate::interrupts;
 
 #[repr(C)]
 #[derive(PartialEq, Eq)]
@@ -73,7 +76,7 @@ struct UacpiPciAddress {
     segment: u16,
     bus: u8,
     device: u8,
-    funciton: u8,
+    function: u8,
 }
 
 #[derive(Copy, Clone)]
@@ -96,29 +99,73 @@ extern "C" fn uacpi_kernel_deinitialize() { }
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_pci_device_open(address: UacpiPciAddress, handle: *mut c_void) -> UacpiStatus {
-    unimplemented!();
+extern "C" fn uacpi_kernel_pci_device_open(address: UacpiPciAddress, handle: *mut *mut PciAddress) -> UacpiStatus {
+    let address = Box::new(PciAddress::new(address.segment, address.bus, address.device, address.function));
+    unsafe {
+	*handle = Box::into_raw(address);
+    }
+
+    UacpiStatus::Ok
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_pci_device_close(handle: *const c_void) -> UacpiStatus {
-    unimplemented!();
+extern "C" fn uacpi_kernel_pci_device_close(handle: *mut PciAddress) {
+    let _: Box<PciAddress> = unsafe { Box::from_raw(handle) };
 }
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_pci_read8(handle: *const c_void, offset: usize, out: *mut u8) -> UacpiStatus {
-    unimplemented!()
+extern "C" fn uacpi_kernel_pci_read8(address: *mut PciAddress, offset: usize, out: *mut u8) -> UacpiStatus {
+    let pci_address = if let Some(r) = unsafe { address.as_ref() } {
+	r
+    } else {
+	return UacpiStatus::InvalidArgument;
+    };
+
+    let pci_access = pcie::PCI_ACCESS.get().unwrap().lock();
+    let val = unsafe { pci_access.read(*pci_address, offset as u16 & 0xFC) } >> ((offset & 3) * 8);
+    
+    unsafe {
+	*out = val as u8;
+    }
+
+    UacpiStatus::Ok
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_pci_read16(handle: *const c_void, offset: usize, out: *mut u16) -> UacpiStatus {
-    unimplemented!()
+extern "C" fn uacpi_kernel_pci_read16(address: *mut PciAddress, offset: usize, out: *mut u16) -> UacpiStatus {
+    let pci_address = if let Some(r) = unsafe { address.as_ref() } {
+	r
+    } else {
+	return UacpiStatus::InvalidArgument;
+    };
+
+    let pci_access = pcie::PCI_ACCESS.get().unwrap().lock();
+    let val = unsafe { pci_access.read(*pci_address, offset as u16 & 0xFC) } >> ((offset & 2) * 8);
+    
+    unsafe {
+	*out = val as u16;
+    }
+
+    UacpiStatus::Ok
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_pci_read32(handle: *const c_void, offset: usize, out: *mut u32) -> UacpiStatus {
-    unimplemented!()
+extern "C" fn uacpi_kernel_pci_read32(address: *mut PciAddress, offset: usize, out: *mut u32) -> UacpiStatus {
+    let pci_address = if let Some(r) = unsafe { address.as_ref() } {
+	r
+    } else {
+	return UacpiStatus::InvalidArgument;
+    };
+
+    let pci_access = pcie::PCI_ACCESS.get().unwrap().lock();
+    let val = unsafe { pci_access.read(*pci_address, offset as u16 & 0xFC) };
+    
+    unsafe {
+	*out = val;
+    }
+
+    UacpiStatus::Ok
 }
 
 #[no_mangle]
@@ -275,14 +322,17 @@ extern "C" fn uacpi_kernel_alloc(size: usize) -> *mut c_void {
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_free(mem: *const c_void) {
-    unimplemented!()
+extern "C" fn uacpi_kernel_free(mem: *mut u8, size: usize) {
+    // unsafe {
+    // 	let s = slice::from_raw_parts_mut(mem, size);
+    // 	Box::from_raw(ptr::from_mut(s));
+    // }
 }
 
 #[no_mangle]
 #[allow(dead_code)]
 extern "C" fn uacpi_kernel_get_nanoseconds_since_boot() -> u64 {
-    unimplemented!()
+    0
 }
 
 #[no_mangle]
@@ -321,35 +371,36 @@ extern "C" fn uacpi_kernel_release_mutex(mutex: *mut Mutex) {
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_create_event() -> *const c_void {
-    unimplemented!()
+extern "C" fn uacpi_kernel_create_event() -> *mut Semaphore {
+    let semaphore = Box::new(Semaphore::new());
+    Box::into_raw(semaphore)
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_free_event(handle: *const c_void) {
-    unimplemented!()
+extern "C" fn uacpi_kernel_free_event(handle: *mut Semaphore) {
+    let _: Box<Semaphore> = unsafe { Box::from_raw(handle) };
+}
+#[no_mangle]
+#[allow(dead_code)]
+extern "C" fn uacpi_kernel_wait_for_event(semaphore: *mut Semaphore, msec: u16) -> bool {
+    let timeout = if msec == 0xFFFF { None } else { Some(msec) };
+    unsafe { semaphore.as_mut().unwrap().wait_for_event(timeout) }
+}
+#[no_mangle]
+#[allow(dead_code)]
+extern "C" fn uacpi_kernel_signal_event(semaphore: *mut Semaphore) {
+    unsafe { semaphore.as_mut().unwrap().signal(); }
+}
+#[no_mangle]
+#[allow(dead_code)]
+extern "C" fn uacpi_kernel_reset_event(semaphore: *mut Semaphore) {
+    unsafe { semaphore.as_mut().unwrap().reset(); }
 }
 
 #[no_mangle]
 #[allow(dead_code)]
 extern "C" fn uacpi_kernel_get_thread_id() -> u64 {
     0
-}
-
-#[no_mangle]
-#[allow(dead_code)]
-extern "C" fn uacpi_kernel_wait_for_event(handle: *const c_void, msec: u16) -> bool {
-    unimplemented!()
-}
-#[no_mangle]
-#[allow(dead_code)]
-extern "C" fn uacpi_kernel_signal_event(handle: *const c_void) {
-    unimplemented!()
-}
-#[no_mangle]
-#[allow(dead_code)]
-extern "C" fn uacpi_kernel_reset_event(handle: *const c_void) {
-    unimplemented!()
 }
 
 #[no_mangle]
@@ -361,8 +412,9 @@ extern "C" fn uacpi_kernel_handle_firmware_request(request: *const c_void) -> Ua
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_install_interrupt_handler(irq: u32, handler: *const c_void, ctx: *const c_void, out_handle: *const c_void) -> UacpiStatus {
-    unimplemented!()
+extern "C" fn uacpi_kernel_install_interrupt_handler(irq: u32, handler: unsafe extern "C" fn(u64), ctx: u64, out_handle: *const c_void) -> UacpiStatus {
+    interrupts::add_irq_handler(irq as u8, Box::new(move || unsafe { handler(ctx) }));
+    UacpiStatus::Ok
 }
 #[no_mangle]
 #[allow(dead_code)]
@@ -435,12 +487,30 @@ extern "C" fn uacpi_kernel_get_rsdp(rdsp_address: *mut u64) -> UacpiStatus {
 
 extern "C" {
     fn uacpi_initialize(flags: u64) -> UacpiStatus;
+    fn uacpi_namespace_load() -> UacpiStatus;
+    fn uacpi_namespace_initialize() -> UacpiStatus;
+    fn uacpi_finalize_gpe_initialization() -> UacpiStatus;
 }
 
 pub fn init(rdsp_addr: u64) {
     RDSP_PHYS_PTR.call_once(|| rdsp_addr);
 
     let status = unsafe { uacpi_initialize(0) };
+    if status != UacpiStatus::Ok {
+	panic!("Not okay");
+    }
+
+    let status = unsafe { uacpi_namespace_load() };
+    if status != UacpiStatus::Ok {
+	panic!("Not okay");
+    }
+
+    let status = unsafe { uacpi_namespace_initialize() };
+    if status != UacpiStatus::Ok {
+	panic!("Not okay");
+    }
+
+    let status = unsafe { uacpi_finalize_gpe_initialization() };
     if status != UacpiStatus::Ok {
 	panic!("Not okay");
     }

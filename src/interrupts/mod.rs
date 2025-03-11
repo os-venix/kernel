@@ -45,3 +45,7 @@ pub fn enable_gsi(gsi: u32, handler: &'static (dyn Fn() + Send + Sync)) {
 
     io_apic::enable_gsi(gsi);
 }
+
+pub fn add_irq_handler(irq: u8, handler: Box<(dyn Fn() + Send + Sync)>) {
+    idt::add_handler_to_irq(irq, Box::new(handler));
+}

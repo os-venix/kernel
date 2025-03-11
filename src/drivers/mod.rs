@@ -1,5 +1,5 @@
 pub mod hpet;
-mod pcie;
+pub mod pcie;
 mod ide;
 mod console;
 mod usb;
