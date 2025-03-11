@@ -307,6 +307,11 @@ pub fn allocate_arbitrary_contiguous_region_kernel(
     Ok((virt_addr, total_size as usize))
 }
 
+pub fn get_ptr_in_hhdm(phys_addr: PhysAddr) -> VirtAddr {
+    let hhdm = DIRECT_MAP_OFFSET.get().expect("Could not read HHDM");
+    VirtAddr::new(phys_addr.as_u64() + hhdm)
+}
+
 #[allow(named_asm_labels)]
 pub unsafe fn switch_to_kernel() {
     // Kernel always has no flags, user always has PAGE_LEVEL_CACHE_DISABLE

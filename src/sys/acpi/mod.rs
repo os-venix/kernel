@@ -11,6 +11,7 @@ use alloc::string::String;
 use crate::memory;
 
 mod uacpi;
+mod acpi_lock;
 
 pub struct SyncAcpiTables<H: AcpiHandler>(AcpiTables<H>);
 unsafe impl<H: AcpiHandler> Sync for SyncAcpiTables<H> {}
@@ -169,7 +170,7 @@ fn map_aml_table(tbl: AmlTable, aml: &mut AmlContext) {
 }
 
 pub fn init(rdsp_addr: u64) {
-    uacpi::init();
+    uacpi::init(rdsp_addr);
     let acpi = unsafe {
 	AcpiTables::from_rsdp(VenixAcpiHandler, rdsp_addr as usize)
     };
