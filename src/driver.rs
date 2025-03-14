@@ -8,8 +8,6 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::collections::BTreeMap;
 
-use aml::{AmlName, LevelType, value::{AmlValue, Args}};
-
 use crate::sys::acpi;
 use crate::sys::vfs;
 use crate::memory;
@@ -22,26 +20,6 @@ pub trait Driver {
 
 pub trait DeviceTypeIdentifier: fmt::Display {
     fn as_any(&self) -> &dyn Any;
-}
-
-#[derive(PartialEq, Eq, Clone)]
-pub struct SystemBusDeviceIdentifier {
-    pub namespace: acpi::Namespace,
-    pub hid: String,
-    pub uid: u32,
-    pub path: AmlName,
-}
-
-impl DeviceTypeIdentifier for SystemBusDeviceIdentifier {
-    fn as_any(&self) -> &dyn Any {
-	self
-    }
-}
-
-impl fmt::Display for SystemBusDeviceIdentifier {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-	write!(f, "{}/{}:{}", self.path.as_string(), self.hid, self.uid)
-    }
 }
 
 pub trait Bus {
@@ -120,76 +98,10 @@ impl vfs::FileSystem for DevFS {
     }
 }
 
-
 static DRIVER_TABLE: Once<RwLock<Vec<Box<dyn Driver + Send + Sync>>>> = Once::new();
 static DEVICE_TABLE: Once<RwLock<Vec<Arc<dyn Device + Send + Sync>>>> = Once::new();
 static BUS_TABLE: Once<RwLock<Vec<Arc<Mutex<dyn Bus + Send + Sync>>>>> = Once::new();
 static DEVFS: Once<Arc<RwLock<DevFS>>> = Once::new();
-
-struct SystemBus { }
-unsafe impl Send for SystemBus { }
-unsafe impl Sync for SystemBus { }
-impl Bus for SystemBus {
-    fn name(&self) -> String {
-	String::from("System Bus")
-    }
-
-    fn enumerate(&mut self) -> Vec<Box<dyn DeviceTypeIdentifier>> {
-	let mut namespace = {
-	    let aml = acpi::AML.get().expect("Attempted to access ACPI tables before ACPI is initialised").read();
-	    aml.namespace.clone()
-	};
-
-	let mut found_devices = Vec::<Box<dyn DeviceTypeIdentifier>>::new();
-
-	namespace.traverse(|name, ns_lvl| {
-	    match ns_lvl.typ {
-		LevelType::Scope => Ok(true),
-		LevelType::Processor => Ok(false),
-		LevelType::PowerResource => Ok(false),
-		LevelType::ThermalZone => Ok(false),
-		LevelType::MethodLocals => Ok(false),
-		LevelType::Device => {
-		    let hid_path = name.as_string() + "._HID";
-		    let hid = {
-			let mut aml = acpi::AML.get().expect("Attempted to access ACPI tables before ACPI is initialised").write();
-			match aml.invoke_method(
-			    &AmlName::from_str(&hid_path).expect(&format!("Unable to construct AmlName {}", &hid_path)),
-			    Args::EMPTY,
-			) {
-			    Ok(AmlValue::String(s)) => s,
-			    Ok(AmlValue::Integer(eisa_id)) => acpi::eisa_id_to_string(eisa_id),
-			    Err(_) => return Ok(true),
-			    _ => { panic!("Malformed _HID for device {}", hid_path) },
-			}
-		    };
-
-		    let uid_path = name.as_string() + "._UID";
-		    let uid = {
-			let mut aml = acpi::AML.get().expect("Attempted to access ACPI tables before ACPI is initialised").write();
-			match aml.invoke_method(
-			    &AmlName::from_str(&uid_path).expect(&format!("Unable to construct AmlName {}", &uid_path)),
-			    Args::EMPTY,
-			) {
-			    Ok(AmlValue::Integer(v)) => v as u32,
-			    _ => 0,
-			}
-		    };
-
-		    found_devices.push(Box::new(SystemBusDeviceIdentifier {
-			hid: hid,
-			uid: uid,
-			path: name.clone(),
-		    }));
-
-		    Ok(true)
-		},
-	    }
-	}).expect("Driver configuration failed.");
-
-	found_devices
-    }
-}
 
 pub fn init() {
     DRIVER_TABLE.call_once(|| RwLock::new(Vec::new()));
@@ -201,8 +113,8 @@ pub fn init() {
     vfs::mount(String::from("/dev"), devfs);
 }
 
-pub fn configure_drivers() {    
-    register_bus_and_enumerate(Arc::new(Mutex::new(SystemBus { })));
+pub fn configure_drivers() {
+    acpi::namespace::enumerate();
 }
 
 pub fn register_devfs(mount_point: String, dev_id: u64) {
@@ -246,4 +158,21 @@ pub fn register_bus_and_enumerate(mut bus: Arc<Mutex<dyn Bus + Send + Sync>>) {
 
     let mut bus_tbl = BUS_TABLE.get().expect("Attempted to access bus table before it is initialised").write();
     bus_tbl.push(bus);
+}
+
+pub fn enumerate_device(device_identifier: Box<dyn DeviceTypeIdentifier>) {
+    let driver_tbl = DRIVER_TABLE.get().expect("Attempted to access driver table before it is initialised").read();
+
+    let driver = match driver_tbl.iter()
+	.find(|d| d.check_device(&device_identifier) &&
+	      d.check_new_device(&device_identifier)) {
+	    Some(d) => d,
+	    None => {
+		log::info!("No driver installed or attempted to init twice for {}", device_identifier);
+		return;
+	    },
+	};
+
+    log::info!("Found new device {}", device_identifier);
+    driver.init(&device_identifier);    
 }

@@ -6,7 +6,7 @@ use alloc::boxed::Box;
 use spin::{Once, RwLock};
 use core::ptr::{read_volatile, write_volatile};
 
-use crate::sys::acpi::resources;
+use crate::sys::acpi::{namespace, resources};
 use crate::memory;
 use crate::interrupts;
 
@@ -259,7 +259,7 @@ impl driver::Device for HpetDevice {
 pub struct HpetDriver {}
 impl driver::Driver for HpetDriver {
     fn init(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) {
-	let system_bus_identifier = if let Some(sb_info) = info.as_any().downcast_ref::<driver::SystemBusDeviceIdentifier>() {
+	let system_bus_identifier = if let Some(sb_info) = info.as_any().downcast_ref::<namespace::SystemBusDeviceIdentifier>() {
 	    sb_info
 	} else {
 	    panic!("Attempted to get SB identifier from a not SB device");
@@ -294,8 +294,12 @@ impl driver::Driver for HpetDriver {
     }
 
     fn check_device(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
-	if let Some(sb_info) = info.as_any().downcast_ref::<driver::SystemBusDeviceIdentifier>() {
-	    sb_info.hid == String::from("PNP0103")
+	if let Some(sb_info) = info.as_any().downcast_ref::<namespace::SystemBusDeviceIdentifier>() {
+	    if let Some(hid) = &sb_info.hid {
+		*hid == String::from("PNP0103")
+	    } else {
+		false
+	    }
 	} else {
 	    false
 	}

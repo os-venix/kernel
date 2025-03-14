@@ -5,8 +5,9 @@ mod uacpi;
 mod acpi_lock;
 mod tables;
 pub mod resources;
+pub mod namespace;
 
-pub use uacpi::{InterruptModel, Namespace, UacpiIterationDecision, UacpiStatus};
+pub use uacpi::{InterruptModel, Namespace, UacpiIterationDecision, UacpiStatus, UacpiObjectType, UacpiIdString};
 pub use tables::ACPI;
 
 pub fn init(rdsp_addr: u64) {

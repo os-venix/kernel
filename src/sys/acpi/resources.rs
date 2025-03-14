@@ -88,6 +88,7 @@ type ForeachResourceCallbackPtr = unsafe extern "C" fn (user: *mut c_void, resou
 
 extern "C" {
     fn uacpi_get_current_resources(namespace: Namespace, resources: *mut *mut UacpiResources) -> UacpiStatus;
+    fn uacpi_free_resources(resources: *mut UacpiResources);
     fn uacpi_for_each_resource(resources: *mut UacpiResources, callback: ForeachResourceCallbackPtr, user: *mut c_void) -> UacpiStatus;
 }
 
@@ -121,6 +122,7 @@ pub fn get_resources(namespace: Namespace) -> Result<Vec<Resource>, UacpiStatus>
 	let mut resources_vec: Vec<Resource> = Vec::new();
 	let ret = uacpi_for_each_resource(resource_ptr, gather_resources_into_rust, &mut resources_vec as *mut _ as *mut c_void);
 
+	uacpi_free_resources(resource_ptr);
 	match ret {
 	    UacpiStatus::Ok => Ok(resources_vec),
 	    e => Err(e),

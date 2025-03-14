@@ -9,6 +9,7 @@ use spin::{Mutex, Once};
 use alloc::sync::Arc;
 
 use crate::driver;
+use crate::sys::acpi::namespace;
 
 #[derive(Copy, Clone)]
 pub struct PciConfigAccess { }
@@ -153,7 +154,7 @@ impl driver::Bus for PciBus {
 pub struct PciDriver {}
 impl driver::Driver for PciDriver {
     fn init(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) {
-	let system_bus_identifier = if let Some(sb_info) = info.as_any().downcast_ref::<driver::SystemBusDeviceIdentifier>() {
+	let system_bus_identifier = if let Some(sb_info) = info.as_any().downcast_ref::<namespace::SystemBusDeviceIdentifier>() {
 	    sb_info
 	} else {
 	    panic!("Attempted to get SB identifier from a not SB device");
@@ -184,13 +185,17 @@ impl driver::Driver for PciDriver {
 		}
 	    }
 	} else {
-	    driver::register_bus_and_enumerate(Arc::new(Mutex::new(PciBus::new(system_bus_identifier.path.as_string(), 0, 0))));
+	    driver::register_bus_and_enumerate(Arc::new(Mutex::new(PciBus::new(system_bus_identifier.path.clone(), 0, 0))));
 	}
     }
 
     fn check_device(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
-	if let Some(sb_info) = info.as_any().downcast_ref::<driver::SystemBusDeviceIdentifier>() {
-	    sb_info.hid == String::from("PNP0A03")
+	if let Some(sb_info) = info.as_any().downcast_ref::<namespace::SystemBusDeviceIdentifier>() {
+	    if let Some(hid) = &sb_info.hid {
+		*hid == String::from("PNP0A03")
+	    } else {
+		false
+	    }
 	} else {
 	    false
 	}

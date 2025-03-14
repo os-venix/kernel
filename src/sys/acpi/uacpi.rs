@@ -100,8 +100,44 @@ struct PortRange {
     pub length: u16,
 }
 
-#[derive(Eq, PartialEq, Clone)]
+#[derive(Eq, PartialEq, Copy, Clone)]
 pub struct Namespace(u64);
+
+#[repr(C)]
+pub enum UacpiObjectType {
+    Uninitialized,
+    Integer,
+    String,
+    Buffer,
+    Package,
+    FieldUnit,
+    Device,
+    Event,
+    Method,
+    Mutex,
+    OperationRegion,
+    PowerResource,
+    Processor,
+    ThermalZone,
+    BufferField,
+    Debug,
+
+    Reference = 20,
+    BufferIndex,
+}
+
+#[repr(C)]
+pub struct UacpiIdString {
+    size: u32,
+    contents: *const c_char,
+}
+
+impl UacpiIdString {
+    pub fn to_string(&self) -> String {
+	let cstr = unsafe { CStr::from_ptr(self.contents) };
+	String::from_utf8_lossy(cstr.to_bytes()).to_string()
+    }
+}
 
 #[repr(C)]
 pub struct UacpiObject {
