@@ -14,9 +14,9 @@ use crate::memory;
 use crate::interrupts;
 
 #[repr(C)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 #[allow(dead_code)]
-enum UacpiStatus {    
+pub enum UacpiStatus {
     Ok = 0,
     MappingFailed = 1,
     OutOfMemory = 2,
@@ -55,20 +55,35 @@ enum UacpiStatus {
 
 #[repr(C)]
 #[allow(dead_code)]
+pub enum UacpiIterationDecision {    
+    Continue,
+    Break,
+    NextPeer,
+}
+
+#[repr(C)]
+#[allow(dead_code)]
 enum UacpiInitLevel {
-    UACPI_INIT_LEVEL_EARLY,
-    UACPI_INIT_LEVEL_SUBSYSTEM_INITIALIZED,
-    UACPI_INIT_LEVEL_NAMESPACE_LOADED,
-    UACPI_INIT_LEVEL_NAMESPACE_INITIALIZED,
+    Early,
+    SubsystemInitialized,
+    NamespaceLoaded,
+    NamespaceInitialized,
 }
 
 #[repr(C)]
 enum UacpiLogLevel {
-    UACPI_LOG_ERROR = 1,
-    UACPI_LOG_WARN,
-    UACPI_LOG_INFO,
-    UACPI_LOG_TRACE,
-    UACPI_LOG_DEBUG,
+    Error = 1,
+    Warn,
+    Info,
+    Trace,
+    Debug,
+}
+
+#[repr(C)]
+pub enum InterruptModel {
+    Pic,
+    IoApic,
+    IosApic,
 }
 
 #[repr(C)]
@@ -85,11 +100,25 @@ struct PortRange {
     pub length: u16,
 }
 
+#[derive(Eq, PartialEq, Clone)]
+pub struct Namespace(u64);
+
+#[repr(C)]
+pub struct UacpiObject {
+    
+}
+
+#[repr(C)]
+pub struct UacpiObjectArray {
+    objects: *mut *mut UacpiObject,
+    count: usize,
+}
+
 static RDSP_PHYS_PTR: Once<u64> = Once::new();
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_initialize(uacpi_init_level: UacpiInitLevel) -> UacpiStatus {
+extern "C" fn uacpi_kernel_initialize(_uacpi_init_level: UacpiInitLevel) -> UacpiStatus {
     UacpiStatus::Ok
 }
 
@@ -205,7 +234,7 @@ extern "C" fn uacpi_kernel_io_map(base: u64, len: usize, handle: *mut *mut PortR
 #[no_mangle]
 #[allow(dead_code)]
 extern "C" fn uacpi_kernel_io_unmap(handle: *mut PortRange) {
-    let port_range: Box<PortRange> = unsafe { Box::from_raw(handle) };
+    let _: Box<PortRange> = unsafe { Box::from_raw(handle) };
 }
 
 #[no_mangle]
@@ -355,7 +384,7 @@ extern "C" fn uacpi_kernel_create_mutex() -> *mut Mutex {
 #[no_mangle]
 #[allow(dead_code)]
 extern "C" fn uacpi_kernel_free_mutex(handle: *mut Mutex) {
-    let mutex: Box<Mutex> = unsafe { Box::from_raw(handle) };
+    let _: Box<Mutex> = unsafe { Box::from_raw(handle) };
 }
 #[no_mangle]
 #[allow(dead_code)]
@@ -431,7 +460,7 @@ extern "C" fn uacpi_kernel_create_spinlock() -> *mut Mutex {
 #[no_mangle]
 #[allow(dead_code)]
 extern "C" fn uacpi_kernel_free_spinlock(handle: *mut Mutex) {
-    let mutex: Box<Mutex> = unsafe { Box::from_raw(handle) };
+    let _: Box<Mutex> = unsafe { Box::from_raw(handle) };
 }
 #[no_mangle]
 #[allow(dead_code)]
@@ -465,11 +494,11 @@ extern "C" fn uacpi_kernel_log(level: UacpiLogLevel, log: *const c_char) {
     let rust_string = rust_string_untrimmed.trim();
 
     match level {
-	UacpiLogLevel::UACPI_LOG_ERROR => log::error!("{}", rust_string),
-	UacpiLogLevel::UACPI_LOG_WARN => log::warn!("{}", rust_string),
-	UacpiLogLevel::UACPI_LOG_INFO => log::info!("{}", rust_string),
-	UacpiLogLevel::UACPI_LOG_TRACE => log::trace!("{}", rust_string),
-	UacpiLogLevel::UACPI_LOG_DEBUG => log::debug!("{}", rust_string),
+	UacpiLogLevel::Error => log::error!("{}", rust_string),
+	UacpiLogLevel::Warn => log::warn!("{}", rust_string),
+	UacpiLogLevel::Info => log::info!("{}", rust_string),
+	UacpiLogLevel::Trace => log::trace!("{}", rust_string),
+	UacpiLogLevel::Debug => log::debug!("{}", rust_string),
     }
 }
 
@@ -484,12 +513,14 @@ extern "C" fn uacpi_kernel_get_rsdp(rdsp_address: *mut u64) -> UacpiStatus {
     }
 }
 
-
 extern "C" {
     fn uacpi_initialize(flags: u64) -> UacpiStatus;
     fn uacpi_namespace_load() -> UacpiStatus;
     fn uacpi_namespace_initialize() -> UacpiStatus;
     fn uacpi_finalize_gpe_initialization() -> UacpiStatus;
+
+    fn uacpi_execute(parent_node: u64, path: *const i8, args: *mut UacpiObjectArray) -> UacpiStatus;
+    pub fn uacpi_set_interrupt_model(model: InterruptModel) -> UacpiStatus;
 }
 
 pub fn init(rdsp_addr: u64) {

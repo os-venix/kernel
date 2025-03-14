@@ -1,3 +1,4 @@
+use ::acpi::InterruptModel;
 use x86_64::registers::model_specific::Msr;
 use raw_cpuid::CpuId;
 use pic8259::ChainedPics;
@@ -43,8 +44,8 @@ pub fn init_bsp_local_apic() -> u64 {
 	};
 
 	let interrupt_model = match platform_info.interrupt_model {
-	    acpi::InterruptModel::Unknown => panic!("ACPI reports no APIC presence. CPU not supported."),
-	    acpi::InterruptModel::Apic(a) => a,
+	    InterruptModel::Unknown => panic!("ACPI reports no APIC presence. CPU not supported."),
+	    InterruptModel::Apic(a) => a,
 	    _ => panic!("Unrecognised interrupt model."),
 	};
 

@@ -1,6 +1,7 @@
 use spin::{Once, RwLock};
 use core::ptr::{read_volatile, write_volatile};
 use ::acpi::platform::interrupt::{TriggerMode, Polarity};
+use ::acpi::InterruptModel;
 use alloc::vec::Vec;
 use alloc::format;
 use alloc::collections::btree_map::BTreeMap;
@@ -133,8 +134,8 @@ pub fn init_io_apics(bsp_apic_id: u64) {
     };
 
     let interrupt_model = match platform_info.interrupt_model {
-	acpi::InterruptModel::Unknown => panic!("ACPI reports no APIC presence. CPU not supported."),
-	acpi::InterruptModel::Apic(a) => a,
+	InterruptModel::Unknown => panic!("ACPI reports no APIC presence. CPU not supported."),
+	InterruptModel::Apic(a) => a,
 	_ => panic!("Unrecognised interrupt model."),
     };
 

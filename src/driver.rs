@@ -26,6 +26,7 @@ pub trait DeviceTypeIdentifier: fmt::Display {
 
 #[derive(PartialEq, Eq, Clone)]
 pub struct SystemBusDeviceIdentifier {
+    pub namespace: acpi::Namespace,
     pub hid: String,
     pub uid: u32,
     pub path: AmlName,

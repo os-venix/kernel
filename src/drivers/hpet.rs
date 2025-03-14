@@ -1,14 +1,12 @@
 use crate::driver;
-use aml::{AmlName, AmlValue, value::Args, resource::{resource_descriptor_list, Resource, MemoryRangeDescriptor}};
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::sync::Arc;
 use alloc::boxed::Box;
-use alloc::format;
 use spin::{Once, RwLock};
 use core::ptr::{read_volatile, write_volatile};
 
-use crate::sys::acpi;
+use crate::sys::acpi::resources;
 use crate::memory;
 use crate::interrupts;
 
@@ -267,33 +265,17 @@ impl driver::Driver for HpetDriver {
 	    panic!("Attempted to get SB identifier from a not SB device");
 	};
 
-	let crs_path = system_bus_identifier.path.as_string() + "._CRS";
-	let crs = {
-	    let mut aml = acpi::AML.get().expect("Attempted to access ACPI tables before ACPI is initialised").write();
-	    match aml.invoke_method(
-		&AmlName::from_str(&crs_path).expect(&format!("Unable to construct AmlName {}", &crs_path)),
-		Args::EMPTY,
-	    ) {
-		Ok(AmlValue::Buffer(v)) => AmlValue::Buffer(v),
-		_ => panic!("CRS expected for HPET"),
-	    }
-	};
-
-	let resources = match resource_descriptor_list(&crs) {
-	    Ok(v) => v,
-	    Err(e) => panic!("Malformed CRS for HPET: {:#?}", e),
-	};
-
+	let resources = resources::get_resources(system_bus_identifier.namespace).unwrap();
 	let (base_address, range_length) = resources.iter()
 	    .filter(|r| match r {
-		Resource::MemoryRange(_) => true,
+		resources::Resource::FixedMemory32 { .. } => true,
 		_ => false,
 	    }).map(|r| match r {
-		Resource::MemoryRange(MemoryRangeDescriptor::FixedLocation {
-		    is_writable: _,
-		    base_address,
-		    range_length
-		}) => (base_address, range_length),
+		resources::Resource::FixedMemory32 {
+		    write_status: _,
+		    address,
+		    length
+		} => (address, length),
 		_ => panic!("This shouldn't happen"),
 	    }).nth(0).expect("No memory ranges returned for HPET");
 
