@@ -1,8 +1,10 @@
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
-use alloc::vec;
+use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::{c_char, c_void, CStr};
 use pci_types::{ConfigRegionAccess, PciAddress};
+use spin;
 use spin::Once;
 use x86_64::PhysAddr;
 use x86_64::instructions::port::Port;
@@ -12,6 +14,7 @@ use crate::sys::acpi::acpi_lock::{Mutex, Semaphore};
 use crate::drivers::pcie;
 use crate::memory;
 use crate::interrupts;
+use crate::allocator;
 
 #[repr(C)]
 #[derive(PartialEq, Eq, Debug)]
@@ -100,8 +103,9 @@ struct PortRange {
     pub length: u16,
 }
 
+#[repr(C)]
 #[derive(Eq, PartialEq, Copy, Clone)]
-pub struct Namespace(u64);
+pub struct Namespace(pub u64);
 
 #[repr(C)]
 pub enum UacpiObjectType {
@@ -141,7 +145,7 @@ impl UacpiIdString {
 
 #[repr(C)]
 pub struct UacpiObject {
-    
+    dummy: u8,
 }
 
 #[repr(C)]
@@ -151,6 +155,7 @@ pub struct UacpiObjectArray {
 }
 
 static RDSP_PHYS_PTR: Once<u64> = Once::new();
+static ACPI_ALLOCS: Once<spin::Mutex<BTreeMap<usize, usize>>> = Once::new();
 
 #[no_mangle]
 #[allow(dead_code)]
@@ -383,15 +388,34 @@ extern "C" fn uacpi_kernel_unmap(_addr: *const c_void) { /* No-op */ }
 #[no_mangle]
 #[allow(dead_code)]
 extern "C" fn uacpi_kernel_alloc(size: usize) -> *mut c_void {
-    Box::into_raw(vec![0; size].into_boxed_slice()) as *mut c_void
+    let ptr = unsafe {
+	allocator::ALLOCATOR.alloc(
+	    Layout::from_size_align(size, 8).unwrap()) as *mut c_void
+    };
+
+    {
+	let mut allocs = ACPI_ALLOCS.get().unwrap().lock();
+	allocs.insert(ptr as usize, size);
+    }
+
+    ptr
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_free(mem: *mut u8, size: usize) {
-    // unsafe {
-    // 	let s = slice::from_raw_parts_mut(mem, size);
-    // 	Box::from_raw(ptr::from_mut(s));
-    // }
+extern "C" fn uacpi_kernel_free(mem: *mut u8) {
+    if mem as usize == 0 {
+	return;
+    }
+
+    let size = {
+	let mut allocs = ACPI_ALLOCS.get().unwrap().lock();
+	allocs.remove(&(mem as usize)).unwrap()
+    };
+
+    unsafe {
+	allocator::ALLOCATOR.dealloc(
+	    mem, Layout::from_size_align(size, 8).unwrap());
+    }
 }
 
 #[no_mangle]
@@ -478,7 +502,8 @@ extern "C" fn uacpi_kernel_handle_firmware_request(request: *const c_void) -> Ua
 #[no_mangle]
 #[allow(dead_code)]
 extern "C" fn uacpi_kernel_install_interrupt_handler(irq: u32, handler: unsafe extern "C" fn(u64), ctx: u64, out_handle: *const c_void) -> UacpiStatus {
-    interrupts::add_irq_handler(irq as u8, Box::new(move || unsafe { handler(ctx) }));
+    let route = interrupts::InterruptRoute::Irq(irq as u8);
+    route.register_handler(Box::new(move || unsafe { handler(ctx) }));
     UacpiStatus::Ok
 }
 #[no_mangle]
@@ -561,6 +586,7 @@ extern "C" {
 
 pub fn init(rdsp_addr: u64) {
     RDSP_PHYS_PTR.call_once(|| rdsp_addr);
+    ACPI_ALLOCS.call_once(|| spin::Mutex::new(BTreeMap::new()));
 
     let status = unsafe { uacpi_initialize(0) };
     if status != UacpiStatus::Ok {

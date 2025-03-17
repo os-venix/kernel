@@ -1,7 +1,8 @@
 use alloc::vec::Vec;
-use core::ffi::c_void;
+use core::ffi::{c_char, c_void};
 
 use crate::sys::acpi::{Namespace, UacpiIterationDecision, UacpiStatus};
+use crate::utils::__IncompleteArrayField;
 
 #[repr(u32)]
 enum UacpiResourceType {
@@ -51,6 +52,40 @@ enum UacpiResourceType {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+struct UacpiResourceSource {
+    index: u8,
+    index_present: bool,
+    length: u16,
+    string: *const c_char,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct UacpiResourceIrq {
+    pub length_kind: u8,
+    pub triggering: u8,
+    pub polarity: u8,
+    pub sharing: u8,
+    pub wake_capability: u8,
+    pub num_irqs: u8,
+    pub irqs: __IncompleteArrayField<u8>,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct UacpiResourceExtendedIrq {
+    pub direction: u8,
+    pub triggering: u8,
+    pub polarity: u8,
+    pub sharing: u8,
+    pub wake_capability: u8,
+    pub num_irqs: u8,
+    pub source: UacpiResourceSource,
+    pub irqs: __IncompleteArrayField<u8>,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
 struct UacpiFixedMemory32 {
     pub write_status: u8,
     pub address: u32,
@@ -59,6 +94,8 @@ struct UacpiFixedMemory32 {
 
 #[repr(C)]
 union UacpiResourceUnion {
+    irq: UacpiResourceIrq,
+    extended_irq: UacpiResourceExtendedIrq,
     fixed_memory_32: UacpiFixedMemory32,
 }
 
@@ -76,7 +113,15 @@ struct UacpiResources {
     entries: *mut UacpiResource,
 }
 
+#[derive(Debug)]
 pub enum Resource {
+    Irq {
+	triggering: u8,
+	polarity: u8,
+	sharing: bool,
+	wake_capability: bool,
+	irqs: Vec<u8>,
+    },
     FixedMemory32 {
 	write_status: u8,
 	address: u32,
@@ -98,6 +143,28 @@ pub fn get_resources(namespace: Namespace) -> Result<Vec<Resource>, UacpiStatus>
 	let resource = resource_ptr.as_ref().unwrap();
 
 	match resource.resource_type {
+	    UacpiResourceType::Irq => {
+		let irq_vec = unsafe { resource.resource.irq.irqs.as_slice(resource.resource.irq.num_irqs as usize).to_vec() };
+
+		resources_vec.push(Resource::Irq {
+		    triggering: resource.resource.irq.triggering,
+		    polarity: resource.resource.irq.polarity,
+		    sharing: resource.resource.irq.sharing == 1,
+		    wake_capability: resource.resource.irq.wake_capability == 1,
+		    irqs: irq_vec,
+		});
+	    },
+	    UacpiResourceType::ExtendedIrq => {
+		let irq_vec = unsafe { resource.resource.extended_irq.irqs.as_slice(resource.resource.extended_irq.num_irqs as usize).to_vec() };
+
+		resources_vec.push(Resource::Irq {
+		    triggering: resource.resource.extended_irq.triggering,
+		    polarity: resource.resource.extended_irq.polarity,
+		    sharing: resource.resource.extended_irq.sharing == 1,
+		    wake_capability: resource.resource.extended_irq.wake_capability == 1,
+		    irqs: irq_vec,
+		});
+	    },
 	    UacpiResourceType::FixedMemory32 => {
 		resources_vec.push(Resource::FixedMemory32 {
 		    write_status: resource.resource.fixed_memory_32.write_status,

@@ -464,7 +464,7 @@ impl driver::Driver for UhciDriver {
 	    return;
 	};
 
-	let bar = pcie::get_bar(*pci_info, 4).expect("Unable to find UHCI BAR");
+	let bar = pcie::get_bar(pci_info.clone(), 4).expect("Unable to find UHCI BAR");
 
 	// UHCI is guaranteed to be I/O space
 	let uhci_base = bar.unwrap_io();

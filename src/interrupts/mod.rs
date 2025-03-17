@@ -8,6 +8,30 @@ mod idt;
 
 const IRQ_BASE: u8 = 32;
 
+#[derive(Clone, Debug)]
+pub enum InterruptRoute {
+    Gsi(u32),
+    Irq(u8),
+}
+
+impl InterruptRoute {
+    pub fn register_handler(&self, handler: Box<(dyn Fn() + Send + Sync)>) {
+	match self {
+	    InterruptRoute::Gsi(gsi) => {
+		let irq = io_apic::get_irq_for_gsi(*gsi);
+		log::info!("GSI = {}, IRQ = {}", gsi, irq);
+		idt::add_handler_to_irq(irq, handler);
+
+		io_apic::enable_gsi(*gsi);
+	    },
+	    InterruptRoute::Irq(irq) => {
+		log::info!("IRQ = {}", irq);
+		add_irq_handler(irq + IRQ_BASE, handler);
+	    }
+	}
+    }
+}
+
 pub fn init_idt() {
     idt::init();
 }

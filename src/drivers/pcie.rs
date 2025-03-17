@@ -9,7 +9,17 @@ use spin::{Mutex, Once};
 use alloc::sync::Arc;
 
 use crate::driver;
-use crate::sys::acpi::namespace;
+use crate::interrupts;
+use crate::sys::acpi::{Namespace, namespace};
+use crate::utils::vector_map::VecMap;
+
+#[derive(Eq, PartialEq, Ord, PartialOrd, Debug)]
+pub enum InterruptPin {
+    IntA,
+    IntB,
+    IntC,
+    IntD,
+}
 
 #[derive(Copy, Clone)]
 pub struct PciConfigAccess { }
@@ -61,7 +71,7 @@ pub fn init() {
     driver::register_driver(Box::new(pci_driver));
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct PciDeviceType {
     // Location
     pub address: PciAddress,
@@ -74,6 +84,9 @@ pub struct PciDeviceType {
     pub base_class: BaseClass,
     pub sub_class: SubClass,
     pub interface: Interface,
+
+    // Interrupt mapping
+    pub interrupt_mapping: Option<interrupts::InterruptRoute>,
 }
 
 impl driver::DeviceTypeIdentifier for PciDeviceType {
@@ -92,7 +105,8 @@ impl fmt::Display for PciDeviceType {
 }
 
 pub struct PciBus {
-    acpi_device_root: String,
+    acpi_namespace: Namespace,
+    routing_table: VecMap<namespace::PciInterruptFunction, interrupts::InterruptRoute>,
     segment: u16,
     bus: u8,
 }
@@ -100,9 +114,11 @@ unsafe impl Send for PciBus { }
 unsafe impl Sync for PciBus { }
 
 impl PciBus {
-    pub fn new(acpi_device_root: String, segment: u16, bus: u8) -> PciBus {
+    pub fn new(acpi_namespace: Namespace, segment: u16, bus: u8) -> PciBus {
+	let routing_table = namespace::get_pci_routing_table(acpi_namespace).unwrap();
 	PciBus {
-	    acpi_device_root: acpi_device_root,
+	    acpi_namespace: acpi_namespace,
+	    routing_table: routing_table,
 	    segment: segment,
 	    bus: bus,
 	}
@@ -120,29 +136,51 @@ impl driver::Bus for PciBus {
 	for device in 0 .. 32 {
 	    for function in 0 .. 8 {
 		let device_header = PciHeader::new(PciAddress::new(0, 0, device, function));
-		let (device_vendor_id, device_device_id) = device_header.id(pci_config_access);
+		let (vendor_id, device_id) = device_header.id(pci_config_access);
 
-		if device_vendor_id == 0xFFFF {
+		if vendor_id == 0xFFFF {
 		    continue;
 		}
-		
-		let (_, base_class, subclass, interface) = device_header.revision_and_class(pci_config_access);
+
+		let (_, base_class, sub_class, interface) = device_header.revision_and_class(pci_config_access);
+
+		let mut interrupt_mapping: Option<interrupts::InterruptRoute> = None;
+
 		if device_header.header_type(pci_config_access) == HeaderType::Endpoint {
 		    let endpoint_header = EndpointHeader::from_header(device_header, pci_config_access).expect("Creating endpoint header failed");
-		    let (interrupt_pin, interrupt_line) = endpoint_header.interrupt(pci_config_access);
+		    
+		    let (device_pin, device_irq) = endpoint_header.interrupt(pci_config_access);
+		    if device_pin != 0 {
+			// Device may use GSIs, consult with ACPI
+			let interrupt_function = namespace::PciInterruptFunction {
+			    device,
+			    function: Some(function),
+			    pin: match device_pin {
+				1 => InterruptPin::IntA,
+				2 => InterruptPin::IntB,
+				3 => InterruptPin::IntC,
+				4 => InterruptPin::IntD,
+				_ => panic!("Malformed interrupt pin"),
+			    },
+			};
 
-		    log::info!("{}:{}:{} uses pin {}, line {}", base_class, subclass, interface, interrupt_pin, interrupt_line);
+			interrupt_mapping = self.routing_table.get(&interrupt_function).cloned();
+		    } else if device_irq != 0xFF {
+			interrupt_mapping = Some(interrupts::InterruptRoute::Irq(device_irq));
+		    }
 		}
 
 		found_devices.push(Box::new(PciDeviceType {
 		    address: PciAddress::new(self.segment, self.bus, device, function),
 
-		    vendor_id: device_vendor_id,
-		    device_id: device_device_id,
+		    vendor_id,
+		    device_id,
 
-		    base_class: base_class,
-		    sub_class: subclass,
-		    interface: interface
+		    base_class,
+		    sub_class,
+		    interface,
+
+		    interrupt_mapping,
 		}));
 	    }
 	}
@@ -185,7 +223,7 @@ impl driver::Driver for PciDriver {
 		}
 	    }
 	} else {
-	    driver::register_bus_and_enumerate(Arc::new(Mutex::new(PciBus::new(system_bus_identifier.path.clone(), 0, 0))));
+	    driver::register_bus_and_enumerate(Arc::new(Mutex::new(PciBus::new(system_bus_identifier.namespace, 0, 0))));
 	}
     }
 

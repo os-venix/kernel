@@ -5,12 +5,32 @@ use bitfield::bitfield;
 use core::any::Any;
 use core::ffi::{c_char, c_void, CStr};
 
+use crate::interrupts;
+use crate::utils::vector_map::VecMap;
 use crate::sys::acpi::{Namespace, UacpiStatus, UacpiIterationDecision, UacpiObjectType, UacpiIdString};
+use crate::sys::acpi::resources;
 use crate::driver;
+use crate::drivers::pcie::InterruptPin;
+use crate::utils::__IncompleteArrayField;
 
 type ForeachNamespaceCallbackPtr = unsafe extern "C" fn (user: *mut c_void, namespace: Namespace, depth: u32) -> UacpiIterationDecision;
 
+#[repr(C)]
+struct UacpiPciRoutingTableEntry {
+    address: u32,
+    index: u32,
+    source: Namespace,
+    pin: u8,
+}
+
+#[repr(C)]
+struct UacpiPciRoutingTable {
+    num_entries: usize,
+    entries: __IncompleteArrayField<UacpiPciRoutingTableEntry>,
+}
+
 bitfield! {
+    #[repr(C)]
     pub struct NamespaceNodeInfoFlags(u8);
 
     sxw, _: 6;
@@ -49,6 +69,7 @@ struct UacpiNamespaceNodeInfo {
 }
 
 bitfield! {
+    #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct UacpiObjectTypeBits(u32);
 
@@ -85,6 +106,20 @@ impl fmt::Display for SystemBusDeviceIdentifier {
     }
 }
 
+#[derive(Debug, Eq, PartialOrd)]
+pub struct PciInterruptFunction {
+    pub device: u8,
+    pub function: Option<u8>,
+    pub pin: InterruptPin,
+}
+
+impl PartialEq for PciInterruptFunction {
+    fn eq(&self, other: &Self) -> bool {
+	let functions_equal = self.function == other.function || self.function == None || other.function == None;
+	self.device == other.device && self.pin == other.pin && functions_equal
+    }
+}
+
 extern "C" {
     fn uacpi_namespace_node_generate_absolute_path(namespace: Namespace) -> *const c_char;
     fn uacpi_free_absolute_path(path: *const c_char);
@@ -95,6 +130,9 @@ extern "C" {
 	descending_callback: Option<ForeachNamespaceCallbackPtr>, type_mask: UacpiObjectTypeBits,
 	max_depth: u32, user: *mut c_void) -> UacpiStatus;
     fn uacpi_namespace_root() -> Namespace;
+
+    fn uacpi_get_pci_routing_table(node: Namespace, ret: *mut *mut UacpiPciRoutingTable) -> UacpiStatus;
+    fn uacpi_free_pci_routing_table(route: *mut UacpiPciRoutingTable);
 }
 
 unsafe extern "C" fn acpi_probe_device(user: *mut c_void, namespace: Namespace, depth: u32) -> UacpiIterationDecision {
@@ -128,6 +166,8 @@ unsafe extern "C" fn acpi_probe_device(user: *mut c_void, namespace: Namespace, 
     };
 
     driver::enumerate_device(Box::new(ident));
+
+    uacpi_free_namespace_node_info(namespace_info_ptr);
     UacpiIterationDecision::Continue
 }
 
@@ -145,4 +185,65 @@ pub fn enumerate() -> Result<(), UacpiStatus> {
 	UacpiStatus::Ok => Ok(()),
 	_ => Err(ret),
     }
+}
+
+pub fn get_pci_routing_table(namespace: Namespace) -> Result<VecMap<PciInterruptFunction, interrupts::InterruptRoute>, UacpiStatus> {
+    let mut pci_routing_ptr: *mut UacpiPciRoutingTable = core::ptr::null_mut();
+    let ret = unsafe {
+	uacpi_get_pci_routing_table(namespace, &mut pci_routing_ptr)
+    };
+
+    if ret != UacpiStatus::Ok {
+	return Err(ret);
+    }
+
+    let pci_routing = unsafe { pci_routing_ptr.as_ref().unwrap() };
+    let routes = unsafe { pci_routing.entries.as_slice(pci_routing.num_entries) };
+    let mut routing_map: VecMap<PciInterruptFunction, interrupts::InterruptRoute> = VecMap::new();
+    for route in routes {
+	let all_functions = (route.address & 0xFFFF) == 0xFFFF;
+	let function_address = if all_functions { None } else { Some(route.address as u8) };
+	let device_address = (route.address >> 16) as u8;
+	let pin = match route.pin {
+	    0 => InterruptPin::IntA,
+	    1 => InterruptPin::IntB,
+	    2 => InterruptPin::IntC,
+	    3 => InterruptPin::IntD,
+	    _ => panic!("Malformed interrupt routing"),
+	};
+
+	if route.index != 0 {
+	    // GSI
+	    routing_map.insert(PciInterruptFunction {
+		device: device_address,
+		function: function_address,
+		pin: pin,
+	    }, interrupts::InterruptRoute::Gsi(route.index));
+	} else {
+	    // IRQ
+	    let link_resources = resources::get_resources(route.source)?;
+	    
+	    let irqs = link_resources.iter()
+		.filter(|r| match r {
+		    resources::Resource::Irq { .. } => true,
+		    _ => false,
+		}).map(|r| match r {
+		    resources::Resource::Irq {
+			irqs,
+			..
+		    } => irqs,
+		    _ => panic!("This shouldn't happen"),
+		}).nth(0).expect("Expected a list of IRQs");
+	    let irq = irqs[0];
+
+	    routing_map.insert(PciInterruptFunction {
+		device: device_address,
+		function: function_address,
+		pin: pin,
+	    }, interrupts::InterruptRoute::Irq(irq));
+	}
+    }
+
+    unsafe { uacpi_free_pci_routing_table(pci_routing_ptr); }
+    Ok(routing_map)
 }

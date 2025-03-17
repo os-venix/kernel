@@ -38,6 +38,7 @@ mod printk;
 mod fs;
 mod scheduler;
 mod dma;
+mod utils;
 
 #[used]
 #[link_section = ".requests"]

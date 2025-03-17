@@ -34,7 +34,7 @@ impl driver::Driver for IdeDriver {
 	// This device supports bus mastering
 	let (busmaster_primary_base, busmaster_secondary_base) = if (interface & 0x80) != 0 {
 	    log::info!("Busmastering (DMA) IDE controller found");
-	    let bar = pcie::get_bar(*pci_info, 4).expect("Unable to find Busmaster BAR");
+	    let bar = pcie::get_bar(pci_info.clone(), 4).expect("Unable to find Busmaster BAR");
 
 	    // Assume I/O space for now. It might not be, but assume it is
 	    let busmaster_base = bar.unwrap_io();

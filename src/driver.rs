@@ -114,7 +114,7 @@ pub fn init() {
 }
 
 pub fn configure_drivers() {
-    acpi::namespace::enumerate();
+    acpi::namespace::enumerate().expect("Could not enumerate ACPI devices");
 }
 
 pub fn register_devfs(mount_point: String, dev_id: u64) {

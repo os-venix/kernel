@@ -22,6 +22,7 @@ xmas-elf = "0.9"
 anyhow = { version = "1.0", default-features = false }
 modular-bitfield = "0.11"
 bitfield = "0.19"
+contracts = "0.4"
 
 [dependencies.itertools]
 version = "0.13"
