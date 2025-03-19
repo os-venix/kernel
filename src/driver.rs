@@ -5,7 +5,6 @@ use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::boxed::Box;
-use alloc::format;
 use alloc::collections::BTreeMap;
 
 use crate::sys::acpi;
@@ -168,7 +167,7 @@ pub fn enumerate_device(device_identifier: Box<dyn DeviceTypeIdentifier>) {
 	      d.check_new_device(&device_identifier)) {
 	    Some(d) => d,
 	    None => {
-		log::info!("No driver installed or attempted to init twice for {}", device_identifier);
+//		log::info!("No driver installed or attempted to init twice for {}", device_identifier);
 		return;
 	    },
 	};

@@ -12,13 +12,14 @@ use crate::driver;
 
 #[derive(PartialEq, Eq)]
 pub enum PortStatus {
-    CONNECTED,
-    DISCONNECTED,
+    Connected,
+    Disconnected,
 }
 
+#[derive(Copy, Clone)]
 pub enum PortSpeed {
-    LOW_SPEED,
-    FULL_SPEED,
+    LowSpeed,
+    FullSpeed,
 }
 
 pub struct Port {
@@ -35,18 +36,20 @@ pub enum SetupPacketRequestTypeDirection {
 }
 
 #[repr(u8)]
+#[allow(dead_code)]
 pub enum SetupPacketRequestTypeRequestType {
-    STANDARD,
-    CLASS,
-    VENDOR,
+    Standard,
+    Class,
+    Vendor,
 }
 
 #[repr(u8)]
+#[allow(dead_code)]
 pub enum SetupPacketRequestTypeRecipient {
-    DEVICE,
-    INTERFACE,
-    ENDPOINT,
-    OTHER,
+    Device,
+    Interface,
+    Endpoint,
+    Other,
 }
 
 bitfield! {
@@ -74,18 +77,19 @@ impl SetupPacketRequestType {
 
 #[repr(u8)]
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub enum RequestCode {
-    GET_STATUS,
-    CLEAR_FEATURE,
-    SET_FEATURE = 3,
-    SET_ADDRESS = 5,
-    GET_DESCRIPTOR,
-    SET_DESCRIPTOR,
-    GET_CONFIGURATION,
-    SET_CONFIGURATION,
-    GET_INTERFACE,
-    SET_INTERFACE,
-    SYNC_FRAME,
+    GetStatus,
+    ClearFeature,
+    SetFeature = 3,
+    SetAddress = 5,
+    GetDescriptor,
+    SetDescriptor,
+    GetConfiguration,
+    SetConfiguration,
+    GetInterface,
+    SetInterface,
+    SyncFrame,
 }
 
 #[repr(C, packed)]
@@ -100,16 +104,17 @@ pub struct SetupPacket {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Default)]
+#[allow(dead_code)]
 enum Descriptor {
     #[default]
-    DEVICE = 1,
-    CONFIGURATION,
-    STRING,
-    INTERFACE,
-    ENDPOINT,
-    DEVICE_QUALIFIER,
-    OTHER_SPEED_CONFIGURATION,
-    INTERFACE_POWER,
+    Device = 1,
+    Configuration,
+    String,
+    Interface,
+    Endpoint,
+    DeviceQualifier,
+    OtherSpeedConfiguration,
+    InterfacePower,
 }
 
 #[repr(C, packed)]
@@ -156,6 +161,7 @@ struct EndpointDescriptor {
     interval: u8,
 }
 
+#[allow(dead_code)]
 pub enum TransferType {
     ControlRead(SetupPacket),
     ControlWrite(SetupPacket),
@@ -168,6 +174,7 @@ pub enum TransferType {
 
 pub struct UsbTransfer {
     pub transfer_type: TransferType,
+    pub speed: PortSpeed,
     pub buffer_phys_ptr: PhysAddr,
     pub poll: bool,
 }
@@ -177,6 +184,7 @@ pub trait UsbHCI {
     fn transfer(&mut self, address: u8, transfer: UsbTransfer, arena: &arena::Arena);
 }
 
+#[allow(dead_code)]
 pub struct UsbDevice {
     configuration_descriptor: ConfigurationDescriptor,
     interface_descriptors: Vec<InterfaceDescriptor>,
@@ -184,6 +192,7 @@ pub struct UsbDevice {
     address: u8,
 }
 
+#[allow(dead_code)]
 struct Usb {
     hcis: Vec<Box<dyn UsbHCI>>,
     devices: BTreeMap<u8, UsbDevice>,
@@ -216,7 +225,7 @@ impl Usb {
 	for port in hci.get_ports() {
 	    let arena = arena::Arena::new();
 
-	    if port.status == PortStatus::DISCONNECTED {
+	    if port.status == PortStatus::Disconnected {
 		continue;
 	    }
 
@@ -224,22 +233,23 @@ impl Usb {
 
 	    let mut read_request_type = SetupPacketRequestType::default();
 	    read_request_type.set_direction_from_enum(SetupPacketRequestTypeDirection::DeviceToHost);
-	    read_request_type.set_request_type_from_enum(SetupPacketRequestTypeRequestType::STANDARD);
-	    read_request_type.set_recipient_from_enum(SetupPacketRequestTypeRecipient::DEVICE);
+	    read_request_type.set_request_type_from_enum(SetupPacketRequestTypeRequestType::Standard);
+	    read_request_type.set_recipient_from_enum(SetupPacketRequestTypeRecipient::Device);
 
 	    let mut write_request_type = SetupPacketRequestType::default();
 	    write_request_type.set_direction_from_enum(SetupPacketRequestTypeDirection::HostToDevice);
-	    write_request_type.set_request_type_from_enum(SetupPacketRequestTypeRequestType::STANDARD);
-	    write_request_type.set_recipient_from_enum(SetupPacketRequestTypeRecipient::DEVICE);
+	    write_request_type.set_request_type_from_enum(SetupPacketRequestTypeRequestType::Standard);
+	    write_request_type.set_recipient_from_enum(SetupPacketRequestTypeRecipient::Device);
 
 	    let xfer_config_descriptor = UsbTransfer {
 		transfer_type: TransferType::ControlRead(SetupPacket {
 		    request_type: read_request_type.clone(),
-		    request: RequestCode::GET_DESCRIPTOR,
+		    request: RequestCode::GetDescriptor,
 		    value: 0x0200,
 		    index: 0,
 		    length: size_of::<ConfigurationDescriptor>() as u16,
 		}),
+		speed: port.speed,
 		buffer_phys_ptr: configuration_descriptor_phys,
 		poll: true,
 	    };
@@ -250,11 +260,12 @@ impl Usb {
 	    let set_addr = UsbTransfer {
 		transfer_type: TransferType::ControlNoData(SetupPacket {
 		    request_type: write_request_type,
-		    request: RequestCode::SET_ADDRESS,
+		    request: RequestCode::SetAddress,
 		    value: device_address.into(),
 		    index: 0,
 		    length: 0,
 		}),
+		speed: port.speed,
 		buffer_phys_ptr: PhysAddr::new(0),
 		poll: true,
 	    };
@@ -265,11 +276,12 @@ impl Usb {
 	    let xfer_descriptors = UsbTransfer {
 		transfer_type: TransferType::ControlRead(SetupPacket {
 		    request_type: read_request_type,
-		    request: RequestCode::GET_DESCRIPTOR,
+		    request: RequestCode::GetDescriptor,
 		    value: 0x0200,
 		    index: 0,
 		    length: configuration_descriptor.total_length,
 		}),
+		speed: port.speed,
 		buffer_phys_ptr: descriptors_phys,
 		poll: true,
 	    };
@@ -281,7 +293,7 @@ impl Usb {
 	    // This is horrible, needs cleaning
 	    {
 		let mut i = 0;
-		let mut ptr = descriptors.as_ptr();
+		let ptr = descriptors.as_ptr();
 		while i < configuration_descriptor.total_length {
 		    match descriptors[i as usize + 1] {
 			4 => {  // Interface
@@ -333,7 +345,7 @@ pub fn init() {
     USB_BUS.call_once(|| usb_bus);
 }
 
-pub fn register_hci(mut hci: Box<dyn UsbHCI>) {
+pub fn register_hci(hci: Box<dyn UsbHCI>) {
     let mut usb = USB_BUS.get().unwrap().lock();
     usb.register_hci(hci);
 }
