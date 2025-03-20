@@ -1,7 +1,9 @@
+mod hid;
 mod uhci;
-mod usb;
+pub mod usb;
 
 pub fn init() {
     uhci::init();
     usb::init();
+    hid::init();
 }

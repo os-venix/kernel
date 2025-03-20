@@ -146,7 +146,7 @@ pub fn register_bus_and_enumerate(mut bus: Arc<Mutex<dyn Bus + Send + Sync>>) {
 		  d.check_new_device(found_device)) {
 		Some(d) => d,
 		None => {
-		    log::info!("No driver installed or attempted to init twice for {}", found_device);
+//		    log::info!("No driver installed or attempted to init twice for {}", found_device);
 		    continue;
 		},
 	    };

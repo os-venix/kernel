@@ -1,9 +1,11 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::fmt;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitfield::bitfield;
+use core::any::Any;
 use spin::{Once, Mutex};
 use x86_64::PhysAddr;
 
@@ -125,7 +127,7 @@ struct GenericDescriptor {
 
 #[repr(C, packed)]
 #[derive(Clone, Debug, Default)]
-struct ConfigurationDescriptor {
+pub struct ConfigurationDescriptor {
     length: u8,
     descriptor_type: Descriptor,
     total_length: u16,
@@ -138,21 +140,21 @@ struct ConfigurationDescriptor {
 
 #[repr(C, packed)]
 #[derive(Clone, Debug, Default)]
-struct InterfaceDescriptor {
+pub struct InterfaceDescriptor {
     length: u8,
     descriptor_type: Descriptor,
     interface_number: u8,
     alternate_setting: u8,
     num_endpoints: u8,
-    interface_class: u8,
-    interface_subclass: u8,
-    protocol: u8,
+    pub interface_class: u8,
+    pub interface_subclass: u8,
+    pub protocol: u8,
     interface_string: u8,
 }
 
 #[repr(C, packed)]
 #[derive(Clone, Debug, Default)]
-struct EndpointDescriptor {
+pub struct EndpointDescriptor {
     length: u8,
     descriptor_type: Descriptor,
     endpoint_address: u8,
@@ -184,12 +186,29 @@ pub trait UsbHCI {
     fn transfer(&mut self, address: u8, transfer: UsbTransfer, arena: &arena::Arena);
 }
 
+#[derive(Clone)]
 #[allow(dead_code)]
 pub struct UsbDevice {
-    configuration_descriptor: ConfigurationDescriptor,
-    interface_descriptors: Vec<InterfaceDescriptor>,
-    endpoint_descriptors: Vec<EndpointDescriptor>,
-    address: u8,
+    pub configuration_descriptor: ConfigurationDescriptor,
+    pub interface_descriptors: Vec<InterfaceDescriptor>,
+    pub endpoint_descriptors: Vec<EndpointDescriptor>,
+    pub address: u8,
+}
+
+impl driver::DeviceTypeIdentifier for UsbDevice {
+    fn as_any(&self) -> &dyn Any {
+	self
+    }
+}
+
+impl fmt::Display for UsbDevice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+	// Todo: this only supports devices with one ID
+	write!(f, "usb/{}:{}:{}",
+	       self.interface_descriptors[0].interface_class,
+	       self.interface_descriptors[0].interface_subclass,
+	       self.interface_descriptors[0].protocol)
+    }
 }
 
 #[allow(dead_code)]
@@ -315,9 +334,15 @@ impl Usb {
 		}
 	    }
 
-	    log::info!("{:?}", configuration_descriptor);
-	    log::info!("{:?}", interfaces);
-	    log::info!("{:?}", endpoints);
+	    let device = UsbDevice {
+		configuration_descriptor: configuration_descriptor.clone(),
+		interface_descriptors: interfaces,
+		endpoint_descriptors: endpoints,
+		address: device_address,
+	    };
+
+	    self.devices.insert(device_address, device.clone());
+	    driver::enumerate_device(Box::new(device));
 	}
 	
 	self.hcis.push(hci);

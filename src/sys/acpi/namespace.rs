@@ -160,12 +160,15 @@ unsafe extern "C" fn acpi_probe_device(user: *mut c_void, namespace: Namespace, 
 
     let ident = SystemBusDeviceIdentifier {
 	namespace: namespace,
-	hid: hid,
-	uid: uid,
+	hid: hid.clone(),
+	uid: uid.clone(),
 	path: path,
     };
 
-    driver::enumerate_device(Box::new(ident));
+    if hid.is_some() || uid.is_some() {
+	// If neither of these, probably not a device with a driver. Could be a PCI link, for instance
+	driver::enumerate_device(Box::new(ident));
+    }
 
     uacpi_free_namespace_node_info(namespace_info_ptr);
     UacpiIterationDecision::Continue
