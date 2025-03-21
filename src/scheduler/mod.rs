@@ -242,8 +242,6 @@ pub fn init() {
     PROCESS_TABLE.call_once(|| RwLock::new(BTreeMap::new()));
     RUNNING_PROCESS.call_once(|| RwLock::new(None));
     NEXT_PID.call_once(|| Mutex::new(1));  // Don't use PID 0
-
-    hpet::add_periodic(1, Box::new(&schedule_next));
 }
 
 pub fn start_new_process(filename: String) -> u64 {
@@ -475,6 +473,9 @@ pub fn start_active_process() -> ! {
 	}
     };
 
+    // This is the entry point for init, and init alone. Only start the scheduler when we won't be messing about
+    // with the scheduler any longer - for a start, we don't need to, and for two, we risk causing lock contention
+    hpet::add_periodic(1, Box::new(&schedule_next));
     unsafe {
 	core::arch::asm!(
 	    "swapgs",

@@ -11,8 +11,11 @@ pub use uacpi::{InterruptModel, Namespace, UacpiIterationDecision, UacpiStatus, 
 pub use tables::ACPI;
 
 pub fn init(rdsp_addr: u64) {
-    uacpi::init(rdsp_addr);
     tables::init(rdsp_addr);
+}
+
+pub fn init_aml(rdsp_addr: u64) {
+    uacpi::init(rdsp_addr);
 }
 
 pub fn eisa_id_to_string(eisa_id: u64) -> String {

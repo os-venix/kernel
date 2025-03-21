@@ -84,10 +84,16 @@ pub fn init_bsp_local_apic() -> u64 {
     bsp_apic_id
 }
 
-pub fn ack_apic() {
+pub fn ack_apic(interrupt: u8) {
     let mut ia32_x2apic_eoi = Msr::new(IA32_X2APIC_EOI);
     unsafe {
 	ia32_x2apic_eoi.write(0);
+    }
+
+    // Do this anyway, it can handle not actually being the source of the interrupt
+    let mut pics = PICS.write();
+    unsafe {
+	pics.notify_end_of_interrupt(interrupt);
     }
 }
 

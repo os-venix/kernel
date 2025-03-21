@@ -11,10 +11,10 @@ use pci_types::{ConfigRegionAccess, PciAddress, PciHeader, CommandRegister};
 use x86_64::instructions::port::Port;
 use x86_64::PhysAddr;
 
+use crate::dma::arena;
 use crate::drivers::pcie;
 use crate::driver;
 use crate::memory;
-use crate::dma::arena;
 use crate::drivers::usb::usb;
 
 const USBCMD: u16 = 0x00;
@@ -348,9 +348,9 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 	let (queue_head, queue_head_phys) = arena.acquire_default::<QueueHead>(0x10).unwrap();
 	let mut transfer_descriptors_to_check: Vec<&mut TransferDescriptor> = Vec::new();
 
-	let data_per_xfer: u16 = match transfer.speed {
-	    usb::PortSpeed::LowSpeed => 8,
-	    usb::PortSpeed::FullSpeed => 1023,
+	let (data_per_xfer, is_low_speed) = match transfer.speed {
+	    usb::PortSpeed::LowSpeed => (8, true),
+	    usb::PortSpeed::FullSpeed => (1023, false),
 	};
 
 	match transfer.transfer_type {
@@ -365,7 +365,7 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 		setup_td.set_qh_td_select(false);  // Next one is a transfer descriptor
 		setup_td.set_terminate(false);
 		setup_td.set_error_count(3);
-		setup_td.set_low_speed(true);  // Low speed, as we don't know if it can do high speed yet
+		setup_td.set_low_speed(is_low_speed);  // Low speed, as we don't know if it can do high speed yet
 		setup_td.set_status_active(true);
 		setup_td.set_max_length(7);  // 8 bytes
 		setup_td.set_toggle(true);
@@ -391,7 +391,7 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 		    data_in_td.set_qh_td_select(false);
 		    data_in_td.set_terminate(false);
 		    data_in_td.set_error_count(3);
-		    data_in_td.set_low_speed(true);
+		    data_in_td.set_low_speed(is_low_speed);
 		    data_in_td.set_status_active(true);
 		    data_in_td.set_max_length((length - 1) as u128);
 		    data_in_td.set_toggle(current_toggle);
@@ -419,8 +419,8 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 		data_out_td.set_qh_td_select(false);
 		data_out_td.set_terminate(true);
 		data_out_td.set_error_count(3);
-		data_out_td.set_low_speed(true);
-		data_out_td.set_interrupt_on_complete(true);
+		data_out_td.set_low_speed(is_low_speed);
+		data_out_td.set_interrupt_on_complete(!(transfer.poll));
 		data_out_td.set_status_active(true);
 		data_out_td.set_max_length(0x7FF);
 		data_out_td.set_endpoint(0);
@@ -445,8 +445,8 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 		data_in_td.set_qh_td_select(false);
 		data_in_td.set_terminate(true);
 		data_in_td.set_error_count(3);
-		data_in_td.set_low_speed(true);
-		data_in_td.set_interrupt_on_complete(true);
+		data_in_td.set_low_speed(is_low_speed);
+		data_in_td.set_interrupt_on_complete(!(transfer.poll));
 		data_in_td.set_status_active(true);
 		data_in_td.set_max_length(0x7FF);
 		data_in_td.set_toggle(true);
@@ -461,7 +461,7 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 		setup_td.set_qh_td_select(false);  // Next one is a transfer descriptor
 		setup_td.set_terminate(false);
 		setup_td.set_error_count(3);
-		setup_td.set_low_speed(true);  // Low speed, as we don't know if it can do high speed yet
+		setup_td.set_low_speed(is_low_speed);  // Low speed, as we don't know if it can do high speed yet
 		setup_td.set_status_active(true);
 		setup_td.set_max_length(7);  // 8 bytes
 		setup_td.set_toggle(false);
@@ -504,40 +504,51 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 	}
 
 	if transfer.poll {
-	    // Loop until done
-	    // TODO: implement PCI interrupt routing
-	    unsafe {
-		let mut port_sts = Port::<u16>::new(self.base_io + USBSTS);
-		while (port_sts.read() & STATUS_INT) == 0 {
-		    if (port_sts.read() & STATUS_HALTED) != 0 {
-			log::info!("A fatal error occurred: {:x}", port_sts.read());
-
-			for (i, td) in transfer_descriptors_to_check.iter().enumerate() {
-			    log::info!("{} - length {:x}, pid {:x}, active = {}", i, td.max_length(), td.packet_identification(), td.status_active());
-			    if td.status_stalled() {
-				log::info!("  Stalled");
-			    }
-			    if td.status_buffer_error() {
-				log::info!("  Buffer error");
-			    }
-			    if td.status_babble() {
-				log::info!("  Babble");
-			    }
-			    if td.status_nak() {
-				log::info!("  Nak");
-			    }
-			    if td.status_crc_timeout() {
-				log::info!("  CRC/Timeout");
-			    }
-			    if td.status_bitstuff_error() {
-				log::info!("  Bitstuff error");
-			    }
-			}
-			panic!("Status is halted");
-		    }
+	    while transfer_descriptors_to_check.iter().any(|td| td.status_active()) {
+		unsafe {
 		    asm!("pause");
 		}
 	    }
+
+	    let halted = unsafe {
+		let mut port_sts = Port::<u16>::new(self.base_io + USBSTS);
+		(port_sts.read() & STATUS_HALTED) != 0
+	    };
+
+	    if halted {
+		log::info!("A fatal error occurred");
+
+		for (i, td) in transfer_descriptors_to_check.iter().enumerate() {
+		    log::info!("{} - length {:x}, pid {:x}, active = {}", i, td.max_length(), td.packet_identification(), td.status_active());
+		    if td.status_stalled() {
+			log::info!("  Stalled");
+		    }
+		    if td.status_buffer_error() {
+			log::info!("  Buffer error");
+		    }
+		    if td.status_babble() {
+			log::info!("  Babble");
+		    }
+		    if td.status_nak() {
+			log::info!("  Nak");
+		    }
+		    if td.status_crc_timeout() {
+			log::info!("  CRC/Timeout");
+		    }
+		    if td.status_bitstuff_error() {
+			log::info!("  Bitstuff error");
+		    }
+		}
+		panic!("Status is halted");
+	    }
+
+	    for td in transfer_descriptors_to_check.iter_mut() {
+		if td.interrupt_on_complete() {
+		    td.set_interrupt_on_complete(false);
+		}
+	    }
+
+	    self.frame_list.fill_with(Default::default);
 	} else {
 	    unimplemented!();
 	}
@@ -562,6 +573,11 @@ impl driver::Driver for UhciDriver {
 
 	let bar = pcie::get_bar(pci_info.clone(), 4).expect("Unable to find UHCI BAR");
 
+	if let Some(interrupt_route) = &pci_info.interrupt_mapping {
+	    pcie::enable_interrupts(pci_info.clone());
+	    interrupt_route.register_handler(Box::new(handle_uhci_interrupts));
+	}
+
 	// UHCI is guaranteed to be I/O space
 	let uhci_base = bar.unwrap_io();
 	usb::register_hci(Box::new(UhciBus::new(pci_info.address, uhci_base as u16)));
@@ -580,4 +596,8 @@ impl driver::Driver for UhciDriver {
     fn check_new_device(&self, _info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
 	true // Not yet implemented
     }
+}
+
+fn handle_uhci_interrupts() {
+    log::info!("UHCI Interrupt!");
 }

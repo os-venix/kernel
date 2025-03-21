@@ -3,7 +3,7 @@ use alloc::string::String;
 use alloc::boxed::Box;
 use alloc::fmt;
 use core::any::Any;
-use pci_types::{ConfigRegionAccess, PciAddress, PciHeader, HeaderType, EndpointHeader, Bar, VendorId, DeviceId, BaseClass, SubClass, Interface};
+use pci_types::{ConfigRegionAccess, CommandRegister, PciAddress, PciHeader, HeaderType, EndpointHeader, Bar, VendorId, DeviceId, BaseClass, SubClass, Interface};
 use x86_64::instructions::port::{PortGeneric, ReadWriteAccess, WriteOnlyAccess};
 use spin::{Mutex, Once};
 use alloc::sync::Arc;
@@ -256,4 +256,11 @@ pub fn get_bar(info: PciDeviceType, slot: u8) -> Option<Bar> {
     };
 
     endpoint_header.bar(slot, pci_config_access)
+}
+
+pub fn enable_interrupts(info: PciDeviceType) {
+    let pci_config_access = PciConfigAccess::new();
+    let mut device_header = PciHeader::new(info.address);
+
+    device_header.update_command(pci_config_access, |command| command & !CommandRegister::INTERRUPT_DISABLE);
 }

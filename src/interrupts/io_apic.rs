@@ -125,6 +125,7 @@ impl IoApic {
 }
 
 static IOAPICS: Once<RwLock<Vec<IoApic>>> = Once::new();
+static IRQ_TO_GSI: Once<RwLock<BTreeMap<u8, u32>>> = Once::new();
 
 pub fn init_io_apics(bsp_apic_id: u64) {
     let acpi = acpi::ACPI.get().expect("Attempted to access ACPI tables before ACPI is initialised").read();
@@ -145,8 +146,11 @@ pub fn init_io_apics(bsp_apic_id: u64) {
 	ioapics.push(IoApic::new(io_apic.id, io_apic.address, io_apic.global_system_interrupt_base));
     }
 
+    let mut irq_to_gsi = IRQ_TO_GSI.call_once(|| RwLock::new(BTreeMap::<u8, u32>::new())).write();
     let interrupt_source_overrides = interrupt_model.interrupt_source_overrides;
     for over in interrupt_source_overrides.iter() {
+	irq_to_gsi.insert(over.isa_source, over.global_system_interrupt);
+
 	find_ioapic(over.global_system_interrupt, &mut ioapics)
 	    .expect(
 		format!("Unable to find an I/O APIC for legacy IRQ {}/GSI {}",
@@ -175,6 +179,8 @@ pub fn init_io_apics(bsp_apic_id: u64) {
 	    .any(|over| over.global_system_interrupt == legacy_irq as u32) {
 		continue;
 	    }
+
+	irq_to_gsi.insert(legacy_irq, legacy_irq as u32);
 
 	find_ioapic(legacy_irq as u32, &mut ioapics)
 	    .expect(
@@ -214,4 +220,14 @@ pub fn enable_gsi(gsi: u32) {
     let io_apic = find_ioapic(gsi, &mut ioapics).expect(&format!("GSI {} not found", gsi));
 
     io_apic.enable_gsi(gsi);
+}
+
+pub fn enable_irq(irq: u8) {
+    let irq_to_gsi = IRQ_TO_GSI.call_once(|| RwLock::new(BTreeMap::<u8, u32>::new())).read();
+    let gsi = irq_to_gsi.get(&irq).unwrap();
+
+    let mut ioapics = IOAPICS.call_once(|| RwLock::new(Vec::<IoApic>::new())).write();
+    let io_apic = find_ioapic(*gsi, &mut ioapics).expect(&format!("GSI {} not found", gsi));
+
+    io_apic.enable_gsi(*gsi);
 }

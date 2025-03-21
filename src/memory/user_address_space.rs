@@ -33,7 +33,7 @@ struct PageVirtPhys {
     pub phys_start: PhysAddr,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct AddressSpace {
     pt4: PhysFrame,
     free_regions: Vec<MemoryRegion>,

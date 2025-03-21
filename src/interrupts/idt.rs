@@ -4,7 +4,7 @@ use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
 use spin::{Once, RwLock};
 use alloc::boxed::Box;
-use x86_64::VirtAddr;
+use x86_64::{PrivilegeLevel, VirtAddr};
 
 use crate::interrupts::local_apic;
 use crate::gdt;
@@ -23,9 +23,13 @@ macro_rules! irq_handler_def {
 	    #[allow(named_asm_labels)]
 	    extern "x86-interrupt" fn [<irq_ $irq >] (stack_frame: InterruptStackFrame) {
 		extern "C" fn inner(mut stack_frame: StackFrame) {
-		    scheduler::set_registers_for_current_process(
-			stack_frame.stack_frame.stack_pointer.as_u64(), stack_frame.stack_frame.instruction_pointer.as_u64(), &stack_frame.registers);
-		    local_apic::ack_apic();
+		    // We don't (yet) have kthreads. Only save if coming from ring 3
+		    if stack_frame.stack_frame.code_segment.rpl() == PrivilegeLevel::Ring3 {
+			scheduler::set_registers_for_current_process(
+			    stack_frame.stack_frame.stack_pointer.as_u64(), stack_frame.stack_frame.instruction_pointer.as_u64(), &stack_frame.registers);
+		    }
+
+		    local_apic::ack_apic($irq);
 
 		    {
 			let handler_funcs = HANDLER_FUNCS.get().expect("Handler funcs not initialised").read();
@@ -37,13 +41,14 @@ macro_rules! irq_handler_def {
 			}
 		    }
 		    
-		    let (rsp, rip) = scheduler::get_registers_for_current_process(&mut stack_frame.registers);
-
-		    unsafe {
-			stack_frame.stack_frame.as_mut().update(|frame| {
-			    frame.stack_pointer = VirtAddr::new(rsp);
-			    frame.instruction_pointer = VirtAddr::new(rip);
-			});
+		    if stack_frame.stack_frame.code_segment.rpl() == PrivilegeLevel::Ring3 {
+			let (rsp, rip) = scheduler::get_registers_for_current_process(&mut stack_frame.registers);
+			unsafe {
+			    stack_frame.stack_frame.as_mut().update(|frame| {
+				frame.stack_pointer = VirtAddr::new(rsp);
+				frame.instruction_pointer = VirtAddr::new(rip);
+			    });
+			}
 		    }
 		}
 
@@ -141,12 +146,12 @@ lazy_static! {
 	    idt[0x27].set_handler_fn(irq_39).set_stack_index(gdt::KERNEL_IST_INDEX);
 	    idt[0x28].set_handler_fn(irq_40).set_stack_index(gdt::KERNEL_IST_INDEX);
 	    idt[0x29].set_handler_fn(irq_41).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x2A].set_handler_fn(unknown_handler).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x2B].set_handler_fn(unknown_handler).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x2C].set_handler_fn(mouse_handler).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x2D].set_handler_fn(fpu_handler).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x2E].set_handler_fn(primary_hdd_handler).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x2F].set_handler_fn(secondary_hdd_handler).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x2A].set_handler_fn(irq_42).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x2B].set_handler_fn(irq_43).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x2C].set_handler_fn(irq_44).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x2D].set_handler_fn(irq_45).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x2E].set_handler_fn(irq_46).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    idt[0x2F].set_handler_fn(irq_47).set_stack_index(gdt::KERNEL_IST_INDEX);
 	}
 
 	// APIC Spurious Interrupts
@@ -255,38 +260,9 @@ irq_handler_def!(38);
 irq_handler_def!(39);
 irq_handler_def!(40);
 irq_handler_def!(41);
-
-extern "x86-interrupt" fn unknown_handler(_stack_frame: InterruptStackFrame) {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-	log::info!("Unknown IRQ happened");
-	local_apic::ack_apic();
-    });
-}
-
-extern "x86-interrupt" fn mouse_handler(_stack_frame: InterruptStackFrame) {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-	log::info!("Mouse IRQ happened");
-	local_apic::ack_apic();
-    });
-}
-
-extern "x86-interrupt" fn fpu_handler(_stack_frame: InterruptStackFrame) {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-	log::info!("FPU IRQ happened");
-	local_apic::ack_apic();
-    });
-}
-
-extern "x86-interrupt" fn primary_hdd_handler(_stack_frame: InterruptStackFrame) {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-	log::info!("IDE1 IRQ happened");
-	local_apic::ack_apic();
-    });
-}
-
-extern "x86-interrupt" fn secondary_hdd_handler(_stack_frame: InterruptStackFrame) {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-	log::info!("IDE2 IRQ happened");
-	local_apic::ack_apic();
-    });
-}
+irq_handler_def!(42);
+irq_handler_def!(43);
+irq_handler_def!(44);
+irq_handler_def!(45);
+irq_handler_def!(46);
+irq_handler_def!(47);

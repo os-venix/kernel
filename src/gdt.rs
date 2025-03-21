@@ -2,7 +2,7 @@ use x86_64::VirtAddr;
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::structures::gdt::{GlobalDescriptorTable, Descriptor, SegmentSelector};
 use x86_64::instructions::tables::load_tss;
-use x86_64::instructions::segmentation::{CS, DS, ES, FS, GS, Segment};
+use x86_64::instructions::segmentation::{CS, DS, ES, FS, GS, SS, Segment};
 use x86_64::registers::model_specific::Msr;
 
 use crate::memory;
@@ -84,6 +84,7 @@ pub fn init() {
 	ES::set_reg(SegmentSelector(0));
 	FS::set_reg(SegmentSelector(0));
 	GS::set_reg(SegmentSelector(0));
+	SS::set_reg(pcb.gdt_selectors.data_selector);
 	load_tss(pcb.gdt_selectors.tss_selector);
     }
 
