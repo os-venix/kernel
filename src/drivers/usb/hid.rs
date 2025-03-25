@@ -18,7 +18,7 @@ impl driver::Driver for HidDriver {
 		unimplemented!();
 	    }
 
-	    if usb_info.interface_descriptors[0].interface_subclass == 1 {
+	    if usb_info.interface_descriptors[0].subclass == 1 {
 		log::info!("  Boot protocol");
 	    } else {
 		log::info!("  Report protocol");
@@ -38,7 +38,7 @@ impl driver::Driver for HidDriver {
 		unimplemented!();
 	    }
 
-	    usb_info.interface_descriptors[0].interface_class == 3
+	    usb_info.interface_descriptors[0].class == 3
 	} else {
 	    false
 	}

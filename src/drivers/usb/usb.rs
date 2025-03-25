@@ -11,6 +11,7 @@ use x86_64::PhysAddr;
 
 use crate::dma::arena;
 use crate::driver;
+use crate::drivers::usb::protocol;
 
 #[derive(PartialEq, Eq)]
 pub enum PortStatus {
@@ -18,12 +19,14 @@ pub enum PortStatus {
     Disconnected,
 }
 
+#[allow(dead_code)]
 #[derive(Copy, Clone)]
 pub enum PortSpeed {
     LowSpeed,
     FullSpeed,
 }
 
+#[allow(dead_code)]
 pub struct Port {
     pub num: u32,
     pub status: PortStatus,
@@ -119,50 +122,6 @@ enum Descriptor {
     InterfacePower,
 }
 
-#[repr(C, packed)]
-struct GenericDescriptor {
-    length: u8,
-    descriptor_type: Descriptor,
-}
-
-#[repr(C, packed)]
-#[derive(Clone, Debug, Default)]
-pub struct ConfigurationDescriptor {
-    length: u8,
-    descriptor_type: Descriptor,
-    total_length: u16,
-    num_interfaces: u8,
-    configuration_value: u8,
-    configuration_index: u8,
-    attributes: u8,
-    max_power: u8,
-}
-
-#[repr(C, packed)]
-#[derive(Clone, Debug, Default)]
-pub struct InterfaceDescriptor {
-    length: u8,
-    descriptor_type: Descriptor,
-    interface_number: u8,
-    alternate_setting: u8,
-    num_endpoints: u8,
-    pub interface_class: u8,
-    pub interface_subclass: u8,
-    pub protocol: u8,
-    interface_string: u8,
-}
-
-#[repr(C, packed)]
-#[derive(Clone, Debug, Default)]
-pub struct EndpointDescriptor {
-    length: u8,
-    descriptor_type: Descriptor,
-    endpoint_address: u8,
-    attributes: u8,
-    max_packet_size: u16,
-    interval: u8,
-}
-
 #[allow(dead_code)]
 pub enum TransferType {
     ControlRead(SetupPacket),
@@ -189,9 +148,8 @@ pub trait UsbHCI {
 #[derive(Clone)]
 #[allow(dead_code)]
 pub struct UsbDevice {
-    pub configuration_descriptor: ConfigurationDescriptor,
-    pub interface_descriptors: Vec<InterfaceDescriptor>,
-    pub endpoint_descriptors: Vec<EndpointDescriptor>,
+    pub configuration_descriptor: protocol::ConfigurationDescriptor,
+    pub interface_descriptors: Vec<protocol::InterfaceDescriptor>,
     pub address: u8,
 }
 
@@ -205,8 +163,8 @@ impl fmt::Display for UsbDevice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 	// Todo: this only supports devices with one ID
 	write!(f, "usb/{}:{}:{}",
-	       self.interface_descriptors[0].interface_class,
-	       self.interface_descriptors[0].interface_subclass,
+	       self.interface_descriptors[0].class,
+	       self.interface_descriptors[0].subclass,
 	       self.interface_descriptors[0].protocol)
     }
 }
@@ -248,7 +206,7 @@ impl Usb {
 		continue;
 	    }
 
-	    let (configuration_descriptor, configuration_descriptor_phys) = arena.acquire_default::<ConfigurationDescriptor>(0).unwrap();
+	    let (configuration_descriptor_slice, configuration_descriptor_phys) = arena.acquire_slice(0, 9).unwrap();
 
 	    let mut read_request_type = SetupPacketRequestType::default();
 	    read_request_type.set_direction_from_enum(SetupPacketRequestTypeDirection::DeviceToHost);
@@ -266,13 +224,15 @@ impl Usb {
 		    request: RequestCode::GetDescriptor,
 		    value: 0x0200,
 		    index: 0,
-		    length: size_of::<ConfigurationDescriptor>() as u16,
+		    length: 9,
 		}),
 		speed: port.speed,
 		buffer_phys_ptr: configuration_descriptor_phys,
 		poll: true,
 	    };
 	    hci.transfer(0, xfer_config_descriptor, &arena);
+
+	    let (_, configuration_descriptor) = protocol::parse_configuration_descriptor(configuration_descriptor_slice).unwrap();
 
 	    let device_address = self.get_next_address();
 
@@ -305,39 +265,12 @@ impl Usb {
 		poll: true,
 	    };
 	    hci.transfer(device_address, xfer_descriptors, &arena);
-	    
-	    let mut interfaces = Vec::<InterfaceDescriptor>::new();
-	    let mut endpoints = Vec::<EndpointDescriptor>::new();
 
-	    // This is horrible, needs cleaning
-	    {
-		let mut i = 0;
-		let ptr = descriptors.as_ptr();
-		while i < configuration_descriptor.total_length {
-		    match descriptors[i as usize + 1] {
-			4 => {  // Interface
-			    let interface = unsafe {
-				(ptr.add(i as usize) as *const InterfaceDescriptor).as_ref().unwrap()
-			    };
-			    interfaces.push(interface.clone());
-			},
-			5 => {  // Endpoint
-			    let endpoint = unsafe { (
-				ptr.add(i as usize) as *const EndpointDescriptor).as_ref().unwrap()
-			    };
-			    endpoints.push(endpoint.clone());
-			},
-			_ => (),
-		    }
-
-		    i += descriptors[i as usize] as u16;
-		}
-	    }
+	    let (_, (configuration_descriptor, interface_descriptors)) = protocol::parse_configuration_descriptors(descriptors).unwrap();
 
 	    let device = UsbDevice {
-		configuration_descriptor: configuration_descriptor.clone(),
-		interface_descriptors: interfaces,
-		endpoint_descriptors: endpoints,
+		configuration_descriptor,
+		interface_descriptors,
 		address: device_address,
 	    };
 

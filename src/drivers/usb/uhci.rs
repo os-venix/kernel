@@ -177,7 +177,7 @@ impl<'a> UhciBus<'a> {
 
 	    cmd_reg.write(GLOBAL_RESET);
 
-	    for _ in 0 .. 1000000 { unsafe { asm!("nop"); } }
+	    for _ in 0 .. 1000000 { asm!("nop"); }
 
 	    cmd_reg.write(0);
 
@@ -193,7 +193,7 @@ impl<'a> UhciBus<'a> {
 	    port_sts.write(0xFF);
 
 	    cmd_reg.write(HOST_CONTROLLER_RESET);
-	    for _ in 0 .. 1000000 { unsafe { asm!("nop"); } }
+	    for _ in 0 .. 1000000 { asm!("nop"); }
 	    if (cmd_reg.read() & HOST_CONTROLLER_RESET) != 0 {
 		panic!("UHCI controller did not properly reset");
 	    }
@@ -242,7 +242,7 @@ impl<'a> UhciBus<'a> {
 	    let mut port_sts = Port::<u16>::new(uhci_base + USBSTS);
 
 	    cmd_reg.write(HOST_CONTROLLER_RUN | MAX_PACKET_SIZE_64);
-	    for _ in 0 .. 1000000 { unsafe { asm!("nop"); } }
+	    for _ in 0 .. 1000000 { asm!("nop"); }
 
 	    if (port_sts.read() & STATUS_HALTED) != 0 {
 		panic!("Status is halted");

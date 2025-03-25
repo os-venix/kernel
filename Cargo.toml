@@ -42,5 +42,10 @@ features = ["spin_no_std"]
 version = "1.11"
 default-features = false
 
+[dependencies.nom]
+version = "8.0"
+default-features = false
+features = ["alloc"]
+
 [build-dependencies]
 cmake = "0.1"
