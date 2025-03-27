@@ -145,7 +145,6 @@ impl TransferDescriptor {
 }
 
 pub struct UhciBus<'a> {
-    pci_address: PciAddress,
     base_io: u16,
 
     frame_list: &'a mut [FrameListPointer],
@@ -265,7 +264,6 @@ impl<'a> UhciBus<'a> {
 	};
 
 	UhciBus {
-	    pci_address: pci_address,
 	    base_io: uhci_base,
 
 	    frame_list: frame_list,
@@ -360,7 +358,7 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 	};
 
 	match transfer.transfer_type {
-	    usb::TransferType::ControlRead(setup_packet) => {
+	    usb::TransferType::ControlRead(ref setup_packet) => {
 		let (_, packet_phys) = arena.acquire::<usb::SetupPacket>(0, &setup_packet).unwrap();
 
 		// These two are of fixed size, so we can preallocate. This makes linking everything together much easier
@@ -442,7 +440,7 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 		el_pointer.set_terminate(false);
 		queue_head.set_el_pointer(el_pointer);
 	    },
-	    usb::TransferType::ControlNoData(setup_packet) => {
+	    usb::TransferType::ControlNoData(ref setup_packet) => {
 		let (_, packet_phys) = arena.acquire::<usb::SetupPacket>(0, &setup_packet).unwrap();
 
 		let (data_in_td, data_in_td_phys) = arena.acquire_default::<TransferDescriptor>(0x10).unwrap();
@@ -485,6 +483,48 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 		transfer_descriptors_to_check.push(setup_td);
 		transfer_descriptors_to_check.push(data_in_td);
 	    },
+	    usb::TransferType::InterruptIn(ref interrupt_transfer_descriptor) => {
+		let (data_out_td, data_out_td_phys) = arena.acquire_default::<TransferDescriptor>(0x10).unwrap();
+		data_out_td.set_link_pointer(0);
+		data_out_td.set_depth_breadth_select(true);
+		data_out_td.set_qh_td_select(false);
+		data_out_td.set_terminate(true);
+		data_out_td.set_error_count(3);
+		data_out_td.set_low_speed(is_low_speed);
+		data_out_td.set_interrupt_on_complete(true);
+		data_out_td.set_status_active(true);
+		data_out_td.set_max_length(0x7FF);
+		data_out_td.set_toggle(true);
+		data_out_td.set_endpoint(interrupt_transfer_descriptor.endpoint.into());
+		data_out_td.set_address(address.into());
+		data_out_td.set_packet_identification(0xE1);  // IN
+		data_out_td.set_buffer_pointer(0);
+
+		let (data_in_td, data_in_td_phys) = arena.acquire_default::<TransferDescriptor>(0x10).unwrap();
+		data_in_td.set_link_pointer_phys_addr(data_out_td_phys);
+		data_in_td.set_depth_breadth_select(true);
+		data_in_td.set_qh_td_select(false);
+		data_in_td.set_terminate(false);
+		data_in_td.set_error_count(3);
+		data_in_td.set_low_speed(is_low_speed);
+		data_in_td.set_interrupt_on_complete(false);
+		data_in_td.set_status_active(true);
+		data_in_td.set_max_length(interrupt_transfer_descriptor.length.into());
+		data_in_td.set_toggle(false);
+		data_in_td.set_endpoint(interrupt_transfer_descriptor.endpoint.into());
+		data_in_td.set_address(address.into());
+		data_in_td.set_packet_identification(0x69);  // IN
+		data_in_td.set_buffer_pointer_phys_addr(transfer.buffer_phys_ptr);
+
+		let mut el_pointer = Pointer::default();
+		el_pointer.set_link_pointer_phys(data_in_td_phys);
+		el_pointer.set_qh_td_select(false);
+		el_pointer.set_terminate(false);
+		queue_head.set_el_pointer(el_pointer);
+
+		transfer_descriptors_to_check.push(data_in_td);
+		transfer_descriptors_to_check.push(data_out_td);
+	    },
 	    _ => unimplemented!(),
 	}
 	
@@ -494,19 +534,36 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 	    port_sts.write(STATUS_INT);
 	}
 
-	for i in 0 .. 1024 {
-	    // First, ensure the frame pointer is terminated, so that the controller will not attempt to run
-	    // a partially updated frame pointer
-	    self.frame_list[i].set_terminate(true);
-	    fence(Ordering::SeqCst);
+	if let usb::TransferType::InterruptIn(interrupt_transfer_descriptor) = transfer.transfer_type {
+	    for i in (0 .. 1024).step_by(interrupt_transfer_descriptor.frequency_in_ms as usize) {
+		// First, ensure the frame pointer is terminated, so that the controller will not attempt to run
+		// a partially updated frame pointer
+		self.frame_list[i].set_terminate(true);
+		fence(Ordering::SeqCst);
 
-	    // Next, update the pointer to the Queue Head
-	    self.frame_list[i].set_qh_td_select(true);  // Entry is a QH
-	    self.frame_list[i].set_frame_list_pointer_phys(queue_head_phys);
+		// Next, update the pointer to the Queue Head
+		self.frame_list[i].set_qh_td_select(true);  // Entry is a QH
+		self.frame_list[i].set_frame_list_pointer_phys(queue_head_phys);
 
-	    // Lastly, allow the controller to go ahead and execute
-	    fence(Ordering::SeqCst);
-	    self.frame_list[i].set_terminate(false);
+		// Lastly, allow the controller to go ahead and execute
+		fence(Ordering::SeqCst);
+		self.frame_list[i].set_terminate(false);
+	    }
+	} else {
+	    for i in 0 .. 1024 {
+		// First, ensure the frame pointer is terminated, so that the controller will not attempt to run
+		// a partially updated frame pointer
+		self.frame_list[i].set_terminate(true);
+		fence(Ordering::SeqCst);
+
+		// Next, update the pointer to the Queue Head
+		self.frame_list[i].set_qh_td_select(true);  // Entry is a QH
+		self.frame_list[i].set_frame_list_pointer_phys(queue_head_phys);
+
+		// Lastly, allow the controller to go ahead and execute
+		fence(Ordering::SeqCst);
+		self.frame_list[i].set_terminate(false);
+	    }
 	}
 
 	if transfer.poll {
@@ -556,7 +613,7 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 
 	    self.frame_list.fill_with(Default::default);
 	} else {
-	    unimplemented!();
+	    // We should somehow save the TDs to check here, so they can be checked later
 	}
     }
 

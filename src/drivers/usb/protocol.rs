@@ -34,7 +34,7 @@ pub struct ConfigurationDescriptor {
     pub max_power: u8,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum EndpointDirection {
     Out,
     In,
@@ -55,7 +55,7 @@ pub enum EndpointSynchType {
     Synchronous,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum EndpointTransferType {
     Control,
     Isochronous,
@@ -239,6 +239,10 @@ fn parse_interface_descriptor(input: &[u8]) -> IResult<&[u8], InterfaceDescripto
 	tag([9, 4].as_slice()),
 	parse_interface_descriptor_inner).parse(input)?;
     let (input, (endpoints, other_descriptors)) = parse_rest_of_interface(input)?;
+
+    if endpoints.len() != num_endpoints as usize {
+	panic!("Incorrect number of endpoints");
+    }
 
     interface_descriptor.endpoints = endpoints;
     interface_descriptor.other_descriptors = other_descriptors;

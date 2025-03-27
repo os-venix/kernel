@@ -121,6 +121,13 @@ enum Descriptor {
 }
 
 #[allow(dead_code)]
+pub struct InterruptTransferDescriptor {
+    pub endpoint: u8,
+    pub frequency_in_ms: u8,
+    pub length: u8,
+}
+
+#[allow(dead_code)]
 pub enum TransferType {
     ControlRead(SetupPacket),
     ControlWrite(SetupPacket),
@@ -128,7 +135,7 @@ pub enum TransferType {
     BulkWrite,
     BulkRead,
     InterruptOut,
-    InterruptIn,
+    InterruptIn(InterruptTransferDescriptor),
 }
 
 pub struct UsbTransfer {
@@ -151,6 +158,7 @@ pub struct UsbDevice {
     pub interface_descriptor: protocol::InterfaceDescriptor,
     pub address: u8,
     pub hci: Arc<Mutex<Box<dyn UsbHCI>>>,
+    pub speed: PortSpeed,
 }
 
 impl driver::DeviceTypeIdentifier for UsbDevice {
@@ -248,6 +256,7 @@ pub fn register_hci(locked_hci: Arc<Mutex<Box<dyn UsbHCI>>>) {
 		    interface_descriptor,
 		    address: device_address,
 		    hci: locked_hci.clone(),
+		    speed: port.speed,
 		};
 
 		devices.push(device);

@@ -3,6 +3,7 @@ pub mod pcie;
 mod ide;
 mod console;
 mod usb;
+mod usbhid;
 
 pub fn init() {
     hpet::init();
@@ -10,4 +11,5 @@ pub fn init() {
     ide::init();
     console::init();
     usb::init();
+    usbhid::init();
 }
