@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use anyhow::{anyhow, Result};
 use bitfield::bitfield;
@@ -8,6 +9,7 @@ use core::ops::BitOr;
 use core::slice;
 use core::sync::atomic::{fence, Ordering};
 use pci_types::{ConfigRegionAccess, PciAddress, PciHeader, CommandRegister};
+use spin::Mutex;
 use x86_64::instructions::port::Port;
 use x86_64::PhysAddr;
 
@@ -150,6 +152,8 @@ pub struct UhciBus<'a> {
 
     port1: bool,
     port2: bool,
+
+    next_address: u8,
 }
 
 unsafe impl Send for UhciBus<'_> { }
@@ -267,6 +271,8 @@ impl<'a> UhciBus<'a> {
 	    frame_list: frame_list,
 	    port1: port1,
 	    port2: port2,
+
+	    next_address: 1,
 	}
     }
 
@@ -553,6 +559,12 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 	    unimplemented!();
 	}
     }
+
+    fn get_free_address(&mut self) -> u8 {
+	let addr = self.next_address;
+	self.next_address += 1;
+	addr
+    }
 }
 
 pub fn init() {
@@ -580,7 +592,7 @@ impl driver::Driver for UhciDriver {
 
 	// UHCI is guaranteed to be I/O space
 	let uhci_base = bar.unwrap_io();
-	usb::register_hci(Box::new(UhciBus::new(pci_info.address, uhci_base as u16)));
+	usb::register_hci(Arc::new(Mutex::new(Box::new(UhciBus::new(pci_info.address, uhci_base as u16)))));
     }
 
     fn check_device(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {

@@ -1,12 +1,10 @@
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
 use alloc::fmt;
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitfield::bitfield;
 use core::any::Any;
-use spin::{Once, Mutex};
+use spin::Mutex;
 use x86_64::PhysAddr;
 
 use crate::dma::arena;
@@ -143,14 +141,16 @@ pub struct UsbTransfer {
 pub trait UsbHCI {
     fn get_ports(&self) -> Vec<Port>;
     fn transfer(&mut self, address: u8, transfer: UsbTransfer, arena: &arena::Arena);
+    fn get_free_address(&mut self) -> u8;
 }
 
 #[derive(Clone)]
 #[allow(dead_code)]
 pub struct UsbDevice {
     pub configuration_descriptor: protocol::ConfigurationDescriptor,
-    pub interface_descriptors: Vec<protocol::InterfaceDescriptor>,
+    pub interface_descriptor: protocol::InterfaceDescriptor,
     pub address: u8,
+    pub hci: Arc<Mutex<Box<dyn UsbHCI>>>,
 }
 
 impl driver::DeviceTypeIdentifier for UsbDevice {
@@ -163,42 +163,16 @@ impl fmt::Display for UsbDevice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 	// Todo: this only supports devices with one ID
 	write!(f, "usb/{}:{}:{}",
-	       self.interface_descriptors[0].class,
-	       self.interface_descriptors[0].subclass,
-	       self.interface_descriptors[0].protocol)
+	       self.interface_descriptor.class,
+	       self.interface_descriptor.subclass,
+	       self.interface_descriptor.protocol)
     }
 }
 
-#[allow(dead_code)]
-struct Usb {
-    hcis: Vec<Box<dyn UsbHCI>>,
-    devices: BTreeMap<u8, UsbDevice>,
-    next_address: u8,
-}
-
-impl Usb {
-    fn new() -> Self {
-	Usb {
-	    hcis: Vec::new(),
-	    devices: BTreeMap::new(),
-	    next_address: 1,
-	}
-    }
-
-    fn get_next_address(&mut self) -> u8 {
-	let addr = self.next_address;
-	self.next_address += 1;
-
-	// TODO: handle address recycling
-	// TODO: error here, rather than panicking
-	if addr > 127 {
-	    panic!("Ran out of USB addresses!");
-	}
-
-	addr
-    }
-
-    fn register_hci(&mut self, mut hci: Box<dyn UsbHCI>) {
+pub fn register_hci(locked_hci: Arc<Mutex<Box<dyn UsbHCI>>>) {
+    let mut devices: Vec<UsbDevice> = Vec::new();
+    {
+	let mut hci = locked_hci.lock();
 	for port in hci.get_ports() {
 	    let arena = arena::Arena::new();
 
@@ -234,7 +208,7 @@ impl Usb {
 
 	    let (_, configuration_descriptor) = protocol::parse_configuration_descriptor(configuration_descriptor_slice).unwrap();
 
-	    let device_address = self.get_next_address();
+	    let device_address = hci.get_free_address();
 
 	    let set_addr = UsbTransfer {
 		transfer_type: TransferType::ControlNoData(SetupPacket {
@@ -266,44 +240,22 @@ impl Usb {
 	    };
 	    hci.transfer(device_address, xfer_descriptors, &arena);
 
+	    // Effectively treat each interface as its own device, which it more or less is
 	    let (_, (configuration_descriptor, interface_descriptors)) = protocol::parse_configuration_descriptors(descriptors).unwrap();
+	    for interface_descriptor in interface_descriptors {
+		let device = UsbDevice {
+		    configuration_descriptor: configuration_descriptor.clone(),
+		    interface_descriptor,
+		    address: device_address,
+		    hci: locked_hci.clone(),
+		};
 
-	    let device = UsbDevice {
-		configuration_descriptor,
-		interface_descriptors,
-		address: device_address,
-	    };
-
-	    self.devices.insert(device_address, device.clone());
-	    driver::enumerate_device(Box::new(device));
+		devices.push(device);
+	    }
 	}
-	
-	self.hcis.push(hci);
-    }
-}
-
-unsafe impl Send for Usb { }
-unsafe impl Sync for Usb { }
-
-impl driver::Bus for Usb {
-    fn name(&self) -> String {
-	String::from("USB")
     }
 
-    fn enumerate(&mut self) -> Vec<Box<dyn driver::DeviceTypeIdentifier>> {
-	Vec::new()
+    for device in devices {
+	driver::enumerate_device(Box::new(device));
     }
-}
-
-static USB_BUS: Once<Arc<Mutex<Usb>>> = Once::new();
-
-pub fn init() {
-    let usb_bus = Arc::new(Mutex::new(Usb::new()));
-    driver::register_bus_and_enumerate(usb_bus.clone());
-    USB_BUS.call_once(|| usb_bus);
-}
-
-pub fn register_hci(hci: Box<dyn UsbHCI>) {
-    let mut usb = USB_BUS.get().unwrap().lock();
-    usb.register_hci(hci);
 }

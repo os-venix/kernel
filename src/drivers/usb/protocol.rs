@@ -78,9 +78,9 @@ pub struct EndpointDescriptor {
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct GenericDescriptor {
-    length: u8,
-    descriptor_type: u8,
-    remaining_bytes: Box<[u8]>,
+    pub length: u8,
+    pub descriptor_type: u8,
+    pub remaining_bytes: Box<[u8]>,
 }
 
 #[allow(dead_code)]
