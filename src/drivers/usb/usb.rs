@@ -5,9 +5,7 @@ use alloc::vec::Vec;
 use bitfield::bitfield;
 use core::any::Any;
 use spin::Mutex;
-use x86_64::PhysAddr;
 
-use crate::dma::arena;
 use crate::driver;
 use crate::drivers::usb::protocol;
 
@@ -141,14 +139,14 @@ pub enum TransferType {
 pub struct UsbTransfer {
     pub transfer_type: TransferType,
     pub speed: PortSpeed,
-    pub buffer_phys_ptr: PhysAddr,
     pub poll: bool,
 }
 
-pub trait UsbHCI {
+pub trait UsbHCI: Send + Sync {
     fn get_ports(&self) -> Vec<Port>;
-    fn transfer(&mut self, address: u8, transfer: UsbTransfer, arena: &arena::Arena);
+    fn transfer(&mut self, address: u8, transfer: UsbTransfer) -> Option<Box<[u8]>>;
     fn get_free_address(&mut self) -> u8;
+    fn interrupt(&mut self);
 }
 
 #[derive(Clone)]
@@ -182,13 +180,9 @@ pub fn register_hci(locked_hci: Arc<Mutex<Box<dyn UsbHCI>>>) {
     {
 	let mut hci = locked_hci.lock();
 	for port in hci.get_ports() {
-	    let arena = arena::Arena::new();
-
 	    if port.status == PortStatus::Disconnected {
 		continue;
 	    }
-
-	    let (configuration_descriptor_slice, configuration_descriptor_phys) = arena.acquire_slice(0, 9).unwrap();
 
 	    let mut read_request_type = SetupPacketRequestType::default();
 	    read_request_type.set_direction_from_enum(SetupPacketRequestTypeDirection::DeviceToHost);
@@ -209,12 +203,10 @@ pub fn register_hci(locked_hci: Arc<Mutex<Box<dyn UsbHCI>>>) {
 		    length: 9,
 		}),
 		speed: port.speed,
-		buffer_phys_ptr: configuration_descriptor_phys,
 		poll: true,
 	    };
-	    hci.transfer(0, xfer_config_descriptor, &arena);
-
-	    let (_, configuration_descriptor) = protocol::parse_configuration_descriptor(configuration_descriptor_slice).unwrap();
+	    let configuration_descriptor_slice = hci.transfer(0, xfer_config_descriptor).unwrap();
+	    let (_, configuration_descriptor) = protocol::parse_configuration_descriptor(&configuration_descriptor_slice).unwrap();
 
 	    let device_address = hci.get_free_address();
 
@@ -227,13 +219,10 @@ pub fn register_hci(locked_hci: Arc<Mutex<Box<dyn UsbHCI>>>) {
 		    length: 0,
 		}),
 		speed: port.speed,
-		buffer_phys_ptr: PhysAddr::new(0),
 		poll: true,
 	    };
-	    hci.transfer(0, set_addr, &arena);
+	    hci.transfer(0, set_addr);
 
-	    let (descriptors, descriptors_phys) = arena.acquire_slice(
-		0, configuration_descriptor.total_length as usize).unwrap();
 	    let xfer_descriptors = UsbTransfer {
 		transfer_type: TransferType::ControlRead(SetupPacket {
 		    request_type: read_request_type,
@@ -243,13 +232,12 @@ pub fn register_hci(locked_hci: Arc<Mutex<Box<dyn UsbHCI>>>) {
 		    length: configuration_descriptor.total_length,
 		}),
 		speed: port.speed,
-		buffer_phys_ptr: descriptors_phys,
 		poll: true,
 	    };
-	    hci.transfer(device_address, xfer_descriptors, &arena);
+	    let descriptors = hci.transfer(device_address, xfer_descriptors).unwrap();
 
 	    // Effectively treat each interface as its own device, which it more or less is
-	    let (_, (configuration_descriptor, interface_descriptors)) = protocol::parse_configuration_descriptors(descriptors).unwrap();
+	    let (_, (configuration_descriptor, interface_descriptors)) = protocol::parse_configuration_descriptors(&descriptors).unwrap();
 	    for interface_descriptor in interface_descriptors {
 		let device = UsbDevice {
 		    configuration_descriptor: configuration_descriptor.clone(),

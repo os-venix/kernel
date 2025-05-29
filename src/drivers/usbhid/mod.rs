@@ -1,7 +1,6 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
-use crate::dma::arena;
 use crate::driver;
 use crate::drivers::usb::protocol as usb_protocol;
 use crate::drivers::usb::usb;
@@ -17,7 +16,6 @@ enum HidProtocol {
 
 #[allow(dead_code)]
 struct Keyboard {
-    arena: arena::Arena,
     device_info: usb::UsbDevice,
     protocol: HidProtocol,
     hid_descriptor: protocol::HidDescriptor,
@@ -28,9 +26,6 @@ impl Keyboard {
 	if protocol == HidProtocol::Report {
 	    unimplemented!()
 	}
-
-	let arena = arena::Arena::new();
-	let (report_slice, report_phys) = arena.acquire_slice(0, 8).unwrap();
 
 	let (endpoint_num, endpoint) = device_info.interface_descriptor.endpoints.iter()
 	    .filter(|(_, endpoint)|
@@ -46,15 +41,13 @@ impl Keyboard {
 		length: 8,
 	    }),
 	    speed: device_info.speed,
-	    buffer_phys_ptr: report_phys,
 	    poll: false,
 	};
 	{
-	    device_info.hci.lock().transfer(device_info.address, xfer_config_descriptor, &arena);
+	    device_info.hci.lock().transfer(device_info.address, xfer_config_descriptor);
 	}
 
 	Keyboard {
-	    arena,
 	    device_info,
 	    protocol,
 	    hid_descriptor,

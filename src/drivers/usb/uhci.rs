@@ -117,12 +117,12 @@ bitfield! {
     isochronous, set_isochronous: 57;
     interrupt_on_complete, set_interrupt_on_complete: 56;
     status_active, set_status_active: 55;
-    status_stalled, _: 54;
-    status_buffer_error, _: 53;
-    status_babble, _: 52;
-    status_nak, _: 51;
-    status_crc_timeout, _: 50;
-    status_bitstuff_error, _: 49;
+    status_stalled, set_status_stalled: 54;
+    status_buffer_error, set_status_buffer_error: 53;
+    status_babble, set_status_babble: 52;
+    status_nak, set_status_nak: 51;
+    status_crc_timeout, set_status_crc_timeout: 50;
+    status_bitstuff_error, set_status_bitstuff_error: 49;
     actual_length, _: 42, 32;
 
     max_length, set_max_length: 95, 85;
@@ -144,6 +144,123 @@ impl TransferDescriptor {
     }
 }
 
+struct UhciTransfer {
+    pub arena: arena::Arena,
+    queue_head: arena::ArenaTag,
+    queue_head_phys: PhysAddr,
+    transfer_descriptors: Vec<arena::ArenaTag>,
+    buffer: Option<arena::ArenaTag>,
+    buf_length: usize,
+}
+
+unsafe impl Send for UhciTransfer { }
+unsafe impl Sync for UhciTransfer { }
+
+impl UhciTransfer {
+    pub fn new() -> Self {
+	let arena = arena::Arena::new();
+	let (_, queue_head_tag, queue_head_phys) = arena.acquire_default_by_tag::<QueueHead>(0x10).unwrap();
+	UhciTransfer {
+	    arena,
+	    queue_head: queue_head_tag,
+	    queue_head_phys,
+	    transfer_descriptors: Vec::new(),
+	    buffer: None,
+	    buf_length: 0,
+	}
+    }
+
+    pub fn is_complete(&self) -> bool {
+	self.transfer_descriptors.iter()
+	    .all(|td| {
+		log::info!("  {}", self.arena.tag_to_ptr::<TransferDescriptor>(*td).status_active());
+		!self.arena.tag_to_ptr::<TransferDescriptor>(*td).status_active()
+	    })
+    }
+
+    pub fn reset_tds(&mut self) {
+	for td in self.transfer_descriptors.iter_mut() {
+	    self.arena.tag_to_ptr::<TransferDescriptor>(*td).set_status_stalled(false);
+	    self.arena.tag_to_ptr::<TransferDescriptor>(*td).set_status_buffer_error(false);
+	    self.arena.tag_to_ptr::<TransferDescriptor>(*td).set_status_babble(false);
+	    self.arena.tag_to_ptr::<TransferDescriptor>(*td).set_status_nak(false);
+	    self.arena.tag_to_ptr::<TransferDescriptor>(*td).set_status_crc_timeout(false);
+	    self.arena.tag_to_ptr::<TransferDescriptor>(*td).set_status_bitstuff_error(false);
+	}
+
+	// Do this in reverse order, so that the last TD to be marked active is the first in the queue.
+	// This will mean the controller still sees the queue as inactive, and won't try to execute it,
+	// until the last step, when the first TD is marked as active, at which point absolutely everything
+	// else has already been reset.
+	for td in self.transfer_descriptors.iter_mut().rev() {
+	    self.arena.tag_to_ptr::<TransferDescriptor>(*td).set_status_active(true);
+	}
+    }
+
+    pub fn create_transfer_buffer(&mut self, size: usize) -> PhysAddr {
+	let (_, buffer_tag, buffer_phys) = self.arena.acquire_slice_by_tag(0, size).unwrap();
+
+	self.buffer = Some(buffer_tag);
+	self.buf_length = size;
+
+	buffer_phys
+    }
+
+    pub fn create_transfer_descriptor(&mut self, is_low_speed: bool, len: u8, endpoint: u8, address: u8, packet_id: u8, buf: PhysAddr) {
+	let (td, td_tag, td_phys) = self.arena.acquire_default_by_tag::<TransferDescriptor>(0x10).unwrap();
+
+	if self.transfer_descriptors.len() == 0 {
+	    let mut el_pointer = Pointer::default();	    
+	    el_pointer.set_link_pointer_phys(td_phys);
+	    el_pointer.set_qh_td_select(false);
+	    el_pointer.set_terminate(false);
+
+	    self.arena.tag_to_ptr::<QueueHead>(self.queue_head).set_el_pointer(el_pointer);
+	} else {
+	    self.arena.tag_to_ptr::<TransferDescriptor>(*self.transfer_descriptors.iter_mut().rev().nth(0).unwrap())
+		.set_link_pointer_phys_addr(td_phys);
+	};
+
+	let toggle = if self.transfer_descriptors.len() == 0 { true } else {
+	    !self.arena.tag_to_ptr::<TransferDescriptor>(*self.transfer_descriptors.iter_mut().rev().nth(0).unwrap())
+		.toggle()
+	};
+	let length: u16 = if len != 0 { (len - 1).into() } else { 0x7FF };
+
+	td.set_depth_breadth_select(true);  // Depth first
+	td.set_qh_td_select(false);  // Next one is a transfer descriptor
+	td.set_terminate(false);
+	td.set_error_count(3);
+	td.set_low_speed(is_low_speed);  // Low speed, as we don't know if it can do high speed yet
+	td.set_status_active(true);
+	td.set_max_length(length.into());
+	td.set_toggle(toggle);
+	td.set_endpoint(endpoint.into());
+	td.set_address(address.into());
+	td.set_packet_identification(packet_id.into());
+	td.set_buffer_pointer_phys_addr(buf);
+
+	self.transfer_descriptors.push(td_tag);
+    }
+
+    pub fn finalise_and_get_qh(&mut self, poll: bool) -> PhysAddr {
+	self.arena.tag_to_ptr::<TransferDescriptor>(*self.transfer_descriptors.iter_mut().rev().nth(0).unwrap())
+	    .set_terminate(true);
+	self.arena.tag_to_ptr::<TransferDescriptor>(*self.transfer_descriptors.iter_mut().rev().nth(0).unwrap())
+	    .set_interrupt_on_complete(!poll);
+
+	self.queue_head_phys
+    }
+
+    pub fn get_owned_buf(&mut self) -> Option<Box<[u8]>> {
+	if let Some(buf_tag) = self.buffer {
+	    Some(self.arena.tag_to_slice(buf_tag, self.buf_length).to_vec().into_boxed_slice())
+	} else {
+	    None
+	}
+    }
+}
+
 pub struct UhciBus<'a> {
     base_io: u16,
 
@@ -153,6 +270,8 @@ pub struct UhciBus<'a> {
     port2: bool,
 
     next_address: u8,
+
+    recurring_transfers: Vec<UhciTransfer>,
 }
 
 unsafe impl Send for UhciBus<'_> { }
@@ -271,6 +390,8 @@ impl<'a> UhciBus<'a> {
 	    port2: port2,
 
 	    next_address: 1,
+
+	    recurring_transfers: Vec::new(),
 	}
     }
 
@@ -317,40 +438,9 @@ impl<'a> UhciBus<'a> {
 
 	Ok(())
     }
-}
-    
-impl<'a> usb::UsbHCI for UhciBus<'a> {
-    fn get_ports(&self) -> Vec<usb::Port> {
-	let mut ports: Vec<usb::Port> = Vec::new();
-	if self.port1 {
-	    if let Err(e) = self.reset_port(1) {
-		log::info!("{}", e);
-	    } else {
-		ports.push(usb::Port {
-		    num: 1,
-		    status: usb::PortStatus::Connected,
-		    speed: usb::PortSpeed::LowSpeed,  // TODO (here and below): actually check the speed of the port
-		});
-	    }
-	}
-	if self.port2 {
-	    if let Err(e) = self.reset_port(2) {
-		log::info!("{}", e);
-	    } else {
-		ports.push(usb::Port {
-		    num: 2,
-		    status: usb::PortStatus::Disconnected,
-		    speed: usb::PortSpeed::LowSpeed,
-		});
-	    }
-	}
 
-	ports
-    }
-
-    fn transfer(&mut self, address: u8, transfer: usb::UsbTransfer, arena: &arena::Arena) {
-	let (queue_head, queue_head_phys) = arena.acquire_default::<QueueHead>(0x10).unwrap();
-	let mut transfer_descriptors_to_check: Vec<&mut TransferDescriptor> = Vec::new();
+    fn handle_transfer(&mut self, address: u8, transfer: usb::UsbTransfer, index: usize) -> Option<Box<[u8]>> {
+	let uhci_transfer = &mut self.recurring_transfers[index];
 
 	let (data_per_xfer, is_low_speed) = match transfer.speed {
 	    usb::PortSpeed::LowSpeed => (8, true),
@@ -359,29 +449,11 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 
 	match transfer.transfer_type {
 	    usb::TransferType::ControlRead(ref setup_packet) => {
-		let (_, packet_phys) = arena.acquire::<usb::SetupPacket>(0, &setup_packet).unwrap();
+		let (_, packet_phys) = uhci_transfer.arena.acquire::<usb::SetupPacket>(0, &setup_packet).unwrap();
+		let buffer_phys = uhci_transfer.create_transfer_buffer(setup_packet.length as usize);
 
-		// These two are of fixed size, so we can preallocate. This makes linking everything together much easier
-		let (setup_td, setup_td_phys) = arena.acquire_default::<TransferDescriptor>(0x10).unwrap();
-		let (data_out_td, data_out_td_phys) = arena.acquire_default::<TransferDescriptor>(0x10).unwrap();
+		uhci_transfer.create_transfer_descriptor(is_low_speed, 8 /* len */, 0 /* endpoint */, address, 0x2d /* packet_id = SETUP */, packet_phys);
 
-		setup_td.set_depth_breadth_select(true);  // Depth first
-		setup_td.set_qh_td_select(false);  // Next one is a transfer descriptor
-		setup_td.set_terminate(false);
-		setup_td.set_error_count(3);
-		setup_td.set_low_speed(is_low_speed);  // Low speed, as we don't know if it can do high speed yet
-		setup_td.set_status_active(true);
-		setup_td.set_max_length(7);  // 8 bytes
-		setup_td.set_toggle(true);
-		setup_td.set_endpoint(0);
-		setup_td.set_address(address.into());
-		setup_td.set_packet_identification(0x2d);  // SETUP
-		setup_td.set_buffer_pointer_phys_addr(packet_phys);
-
-		transfer_descriptors_to_check.push(setup_td);
-
-		let mut data_in_tds: Vec<PhysAddr> = Vec::new();
-		let mut current_toggle = true;
 		for offset in (0 .. setup_packet.length).step_by(data_per_xfer as usize) {
 		    let length = if setup_packet.length - offset < data_per_xfer {
 			setup_packet.length - offset
@@ -389,141 +461,25 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 			data_per_xfer
 		    };
 
-		    let (data_in_td, data_in_td_phys) = arena.acquire_default::<TransferDescriptor>(0x10).unwrap();
-		    data_in_td.set_link_pointer_phys_addr(data_out_td_phys);  // Fine as a default, as this is what's needed for the last element anyway
-		    data_in_td.set_depth_breadth_select(true);
-		    data_in_td.set_qh_td_select(false);
-		    data_in_td.set_terminate(false);
-		    data_in_td.set_error_count(3);
-		    data_in_td.set_low_speed(is_low_speed);
-		    data_in_td.set_status_active(true);
-		    data_in_td.set_max_length((length - 1) as u128);
-		    data_in_td.set_toggle(current_toggle);
-		    data_in_td.set_endpoint(0);
-		    data_in_td.set_address(address.into());
-		    data_in_td.set_packet_identification(0x69);  // IN
-		    data_in_td.set_buffer_pointer_phys_addr(transfer.buffer_phys_ptr + offset.into());
-
-		    data_in_tds.push(data_in_td_phys);
-		    transfer_descriptors_to_check.push(data_in_td);
-		    current_toggle = !current_toggle;
+		    uhci_transfer.create_transfer_descriptor(
+			is_low_speed, length.try_into().unwrap(), 0 /* endpoint */, address, 0x69 /* packet_id = IN */, buffer_phys + offset.into());
 		}
 
-		// Skip 1 td, as the first element is setup
-		transfer_descriptors_to_check.iter_mut().skip(1)
-		    .zip(data_in_tds.iter().skip(1))
-		    .for_each(|(data_in_td, data_in_td_phys)| data_in_td.set_link_pointer_phys_addr(*data_in_td_phys));
-
-		// Link setup to data in
-		transfer_descriptors_to_check[0].set_link_pointer_phys_addr(data_in_tds[0]);
-
-		// NULL transfer to finish
-		data_out_td.set_link_pointer(0);
-		data_out_td.set_depth_breadth_select(true);
-		data_out_td.set_qh_td_select(false);
-		data_out_td.set_terminate(true);
-		data_out_td.set_error_count(3);
-		data_out_td.set_low_speed(is_low_speed);
-		data_out_td.set_interrupt_on_complete(!(transfer.poll));
-		data_out_td.set_status_active(true);
-		data_out_td.set_max_length(0x7FF);
-		data_out_td.set_endpoint(0);
-		data_out_td.set_address(address.into());
-		data_out_td.set_packet_identification(0xE1);  // OUT
-		data_out_td.set_buffer_pointer(0);
-
-		transfer_descriptors_to_check.push(data_out_td);
-
-		let mut el_pointer = Pointer::default();
-		el_pointer.set_link_pointer_phys(setup_td_phys);
-		el_pointer.set_qh_td_select(false);
-		el_pointer.set_terminate(false);
-		queue_head.set_el_pointer(el_pointer);
+		uhci_transfer.create_transfer_descriptor(is_low_speed, 0 /* len */, 0 /* endpoint */, address, 0xe1 /* packet_id = OUT */, PhysAddr::new(0));
 	    },
 	    usb::TransferType::ControlNoData(ref setup_packet) => {
-		let (_, packet_phys) = arena.acquire::<usb::SetupPacket>(0, &setup_packet).unwrap();
-
-		let (data_in_td, data_in_td_phys) = arena.acquire_default::<TransferDescriptor>(0x10).unwrap();
-		data_in_td.set_link_pointer(0);
-		data_in_td.set_depth_breadth_select(true);
-		data_in_td.set_qh_td_select(false);
-		data_in_td.set_terminate(true);
-		data_in_td.set_error_count(3);
-		data_in_td.set_low_speed(is_low_speed);
-		data_in_td.set_interrupt_on_complete(!(transfer.poll));
-		data_in_td.set_status_active(true);
-		data_in_td.set_max_length(0x7FF);
-		data_in_td.set_toggle(true);
-		data_in_td.set_endpoint(0);
-		data_in_td.set_address(address.into());
-		data_in_td.set_packet_identification(0x69);  // IN
-		data_in_td.set_buffer_pointer(0);
-		
-		let (setup_td, setup_td_phys) = arena.acquire_default::<TransferDescriptor>(0x10).unwrap();
-		setup_td.set_link_pointer_phys_addr(data_in_td_phys);
-		setup_td.set_depth_breadth_select(true);  // Depth first
-		setup_td.set_qh_td_select(false);  // Next one is a transfer descriptor
-		setup_td.set_terminate(false);
-		setup_td.set_error_count(3);
-		setup_td.set_low_speed(is_low_speed);  // Low speed, as we don't know if it can do high speed yet
-		setup_td.set_status_active(true);
-		setup_td.set_max_length(7);  // 8 bytes
-		setup_td.set_toggle(false);
-		setup_td.set_endpoint(0);
-		setup_td.set_address(address.into());
-		setup_td.set_packet_identification(0x2d);  // SETUP
-		setup_td.set_buffer_pointer_phys_addr(packet_phys);
-
-		let mut el_pointer = Pointer::default();
-		el_pointer.set_link_pointer_phys(setup_td_phys);
-		el_pointer.set_qh_td_select(false);
-		el_pointer.set_terminate(false);
-		queue_head.set_el_pointer(el_pointer);
-
-		transfer_descriptors_to_check.push(setup_td);
-		transfer_descriptors_to_check.push(data_in_td);
+		let (_, packet_phys) = uhci_transfer.arena.acquire::<usb::SetupPacket>(0, &setup_packet).unwrap();
+		uhci_transfer.create_transfer_descriptor(is_low_speed, 8 /* len */, 0 /* endpoint */, address, 0x2d /* packet_id = SETUP */, packet_phys);
+		uhci_transfer.create_transfer_descriptor(is_low_speed, 0 /* len */, 0 /* endpoint */, address, 0x69 /* packet_id = IN */, PhysAddr::new(0));
 	    },
 	    usb::TransferType::InterruptIn(ref interrupt_transfer_descriptor) => {
-		let (data_out_td, data_out_td_phys) = arena.acquire_default::<TransferDescriptor>(0x10).unwrap();
-		data_out_td.set_link_pointer(0);
-		data_out_td.set_depth_breadth_select(true);
-		data_out_td.set_qh_td_select(false);
-		data_out_td.set_terminate(true);
-		data_out_td.set_error_count(3);
-		data_out_td.set_low_speed(is_low_speed);
-		data_out_td.set_interrupt_on_complete(true);
-		data_out_td.set_status_active(true);
-		data_out_td.set_max_length(0x7FF);
-		data_out_td.set_toggle(true);
-		data_out_td.set_endpoint(interrupt_transfer_descriptor.endpoint.into());
-		data_out_td.set_address(address.into());
-		data_out_td.set_packet_identification(0xE1);  // IN
-		data_out_td.set_buffer_pointer(0);
-
-		let (data_in_td, data_in_td_phys) = arena.acquire_default::<TransferDescriptor>(0x10).unwrap();
-		data_in_td.set_link_pointer_phys_addr(data_out_td_phys);
-		data_in_td.set_depth_breadth_select(true);
-		data_in_td.set_qh_td_select(false);
-		data_in_td.set_terminate(false);
-		data_in_td.set_error_count(3);
-		data_in_td.set_low_speed(is_low_speed);
-		data_in_td.set_interrupt_on_complete(false);
-		data_in_td.set_status_active(true);
-		data_in_td.set_max_length(interrupt_transfer_descriptor.length.into());
-		data_in_td.set_toggle(false);
-		data_in_td.set_endpoint(interrupt_transfer_descriptor.endpoint.into());
-		data_in_td.set_address(address.into());
-		data_in_td.set_packet_identification(0x69);  // IN
-		data_in_td.set_buffer_pointer_phys_addr(transfer.buffer_phys_ptr);
-
-		let mut el_pointer = Pointer::default();
-		el_pointer.set_link_pointer_phys(data_in_td_phys);
-		el_pointer.set_qh_td_select(false);
-		el_pointer.set_terminate(false);
-		queue_head.set_el_pointer(el_pointer);
-
-		transfer_descriptors_to_check.push(data_in_td);
-		transfer_descriptors_to_check.push(data_out_td);
+		let buffer_phys = uhci_transfer.create_transfer_buffer(interrupt_transfer_descriptor.length as usize);
+		uhci_transfer.create_transfer_descriptor(
+		    is_low_speed, interrupt_transfer_descriptor.length.into(), interrupt_transfer_descriptor.endpoint.into(),
+		    address, 0x69 /* packet_id = IN */, buffer_phys);
+		uhci_transfer.create_transfer_descriptor(
+		    is_low_speed, 0, interrupt_transfer_descriptor.endpoint.into(),
+		    address, 0xe1 /* packet_id = OUT */, PhysAddr::new(0));
 	    },
 	    _ => unimplemented!(),
 	}
@@ -533,6 +489,8 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 	    let mut port_sts = Port::<u16>::new(self.base_io + USBSTS);
 	    port_sts.write(STATUS_INT);
 	}
+
+	let queue_head_phys = uhci_transfer.finalise_and_get_qh(transfer.poll);
 
 	if let usb::TransferType::InterruptIn(interrupt_transfer_descriptor) = transfer.transfer_type {
 	    for i in (0 .. 1024).step_by(interrupt_transfer_descriptor.frequency_in_ms as usize) {
@@ -567,11 +525,13 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 	}
 
 	if transfer.poll {
-	    while transfer_descriptors_to_check.iter().any(|td| td.status_active()) {
+	    while !uhci_transfer.is_complete() {
 		unsafe {
 		    asm!("pause");
 		}
 	    }
+
+	    // TODO - if this is a one-time transfer, remove it from the list
 
 	    let halted = unsafe {
 		let mut port_sts = Port::<u16>::new(self.base_io + USBSTS);
@@ -581,39 +541,80 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 	    if halted {
 		log::info!("A fatal error occurred");
 
-		for (i, td) in transfer_descriptors_to_check.iter().enumerate() {
-		    log::info!("{} - length {:x}, pid {:x}, active = {}", i, td.max_length(), td.packet_identification(), td.status_active());
-		    if td.status_stalled() {
-			log::info!("  Stalled");
-		    }
-		    if td.status_buffer_error() {
-			log::info!("  Buffer error");
-		    }
-		    if td.status_babble() {
-			log::info!("  Babble");
-		    }
-		    if td.status_nak() {
-			log::info!("  Nak");
-		    }
-		    if td.status_crc_timeout() {
-			log::info!("  CRC/Timeout");
-		    }
-		    if td.status_bitstuff_error() {
-			log::info!("  Bitstuff error");
-		    }
-		}
+		// for (i, td) in uhci_transfer.transfer_descriptors.iter().enumerate() {
+		//     log::info!("{} - length {:x}, pid {:x}, active = {}", i, td.max_length(), td.packet_identification(), td.status_active());
+		//     if td.status_stalled() {
+		// 	log::info!("  Stalled");
+		//     }
+		//     if td.status_buffer_error() {
+		// 	log::info!("  Buffer error");
+		//     }
+		//     if td.status_babble() {
+		// 	log::info!("  Babble");
+		//     }
+		//     if td.status_nak() {
+		// 	log::info!("  Nak");
+		//     }
+		//     if td.status_crc_timeout() {
+		// 	log::info!("  CRC/Timeout");
+		//     }
+		//     if td.status_bitstuff_error() {
+		// 	log::info!("  Bitstuff error");
+		//     }
+		// }
 		panic!("Status is halted");
 	    }
 
-	    for td in transfer_descriptors_to_check.iter_mut() {
-		if td.interrupt_on_complete() {
-		    td.set_interrupt_on_complete(false);
-		}
-	    }
-
 	    self.frame_list.fill_with(Default::default);
-	} else {
-	    // We should somehow save the TDs to check here, so they can be checked later
+	    return uhci_transfer.get_owned_buf();
+	}
+
+	None
+    }
+}
+    
+impl<'a> usb::UsbHCI for UhciBus<'a> {
+    fn get_ports(&self) -> Vec<usb::Port> {
+	let mut ports: Vec<usb::Port> = Vec::new();
+	if self.port1 {
+	    if let Err(e) = self.reset_port(1) {
+		log::info!("{}", e);
+	    } else {
+		ports.push(usb::Port {
+		    num: 1,
+		    status: usb::PortStatus::Connected,
+		    speed: usb::PortSpeed::LowSpeed,  // TODO (here and below): actually check the speed of the port
+		});
+	    }
+	}
+	if self.port2 {
+	    if let Err(e) = self.reset_port(2) {
+		log::info!("{}", e);
+	    } else {
+		ports.push(usb::Port {
+		    num: 2,
+		    status: usb::PortStatus::Disconnected,
+		    speed: usb::PortSpeed::LowSpeed,
+		});
+	    }
+	}
+
+	ports
+    }
+
+    fn transfer(&mut self, address: u8, transfer: usb::UsbTransfer) -> Option<Box<[u8]>> {
+	match transfer.transfer_type {
+	    usb::TransferType::InterruptIn(_) => {
+		self.recurring_transfers.push(UhciTransfer::new());
+		let index = self.recurring_transfers.len() - 1;
+		self.handle_transfer(address, transfer, index)
+	    },
+	    _ => {
+		// TODO - these should be one time transfers, not recurring transfers, but we don't have those yet
+		self.recurring_transfers.push(UhciTransfer::new());
+		let index = self.recurring_transfers.len() - 1;
+		self.handle_transfer(address, transfer, index)
+	    },
 	}
     }
 
@@ -621,6 +622,24 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 	let addr = self.next_address;
 	self.next_address += 1;
 	addr
+    }
+    
+    fn interrupt(&mut self) {
+	unsafe {
+	    let mut port_sts = Port::<u16>::new(self.base_io + USBSTS);
+	    log::info!("{:x}", port_sts.read());
+	    port_sts.write(STATUS_INT);
+	    loop {}
+	}
+
+	for transfer in self.recurring_transfers.iter_mut() {
+	    if transfer.is_complete() {
+		log::info!("Hi!");
+		transfer.reset_tds();
+	    }
+	}
+
+	log::info!("UHCI Interrupt!");
     }
 }
 
@@ -642,14 +661,20 @@ impl driver::Driver for UhciDriver {
 
 	let bar = pcie::get_bar(pci_info.clone(), 4).expect("Unable to find UHCI BAR");
 
-	if let Some(interrupt_route) = &pci_info.interrupt_mapping {
-	    pcie::enable_interrupts(pci_info.clone());
-	    interrupt_route.register_handler(Box::new(handle_uhci_interrupts));
-	}
-
 	// UHCI is guaranteed to be I/O space
 	let uhci_base = bar.unwrap_io();
-	usb::register_hci(Arc::new(Mutex::new(Box::new(UhciBus::new(pci_info.address, uhci_base as u16)))));
+	let uhci: Arc<Mutex<Box<dyn usb::UsbHCI>>> = Arc::new(Mutex::new(Box::new(UhciBus::new(pci_info.address, uhci_base as u16))));
+
+	if let Some(interrupt_route) = &pci_info.interrupt_mapping {
+	    pcie::enable_interrupts(pci_info.clone());
+
+	    let uhci_interrupt = uhci.clone();
+	    interrupt_route.register_handler(Box::new(move || {
+		handle_uhci_interrupts(&uhci_interrupt);
+	    }));
+	}
+
+	usb::register_hci(uhci);
     }
 
     fn check_device(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
@@ -667,6 +692,6 @@ impl driver::Driver for UhciDriver {
     }
 }
 
-fn handle_uhci_interrupts() {
-    log::info!("UHCI Interrupt!");
+fn handle_uhci_interrupts(hci: &Arc<Mutex<Box<dyn usb::UsbHCI>>>) {
+    hci.lock().interrupt();
 }
