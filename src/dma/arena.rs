@@ -133,6 +133,14 @@ impl<'a> Arena {
 	Some((slice, phys_addr))
     }
 
+    /// acquire a reference to a slice of length l, initialized to 0.
+    pub fn acquire_slice_buffer(&'a self, alignment: usize, buffer: &[u8], length: usize) -> Option<(&'a [u8], PhysAddr)> {
+        let (slice, _, phys_addr) = self.get_slice_place(alignment, length)?;
+	slice.clone_from_slice(buffer);
+
+	Some((slice, phys_addr))
+    }
+
     /// acquire a reference to a value of type T that is initialized with it's default value.
     /// This is useful for types that do not require initialization.
     pub fn acquire_default_by_tag<T: Default>(&'a self, alignment: usize) -> Option<(&'a mut T, ArenaTag, PhysAddr)> {

@@ -9,7 +9,7 @@ use spin::Mutex;
 use crate::driver;
 use crate::drivers::usb::protocol;
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone)]
 pub enum PortStatus {
     Connected,
     Disconnected,
@@ -23,6 +23,7 @@ pub enum PortSpeed {
 }
 
 #[allow(dead_code)]
+#[derive(Clone)]
 pub struct Port {
     pub num: u32,
     pub status: PortStatus,
@@ -30,7 +31,7 @@ pub struct Port {
 }
 
 #[repr(u8)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone)]
 pub enum SetupPacketRequestTypeDirection {
     HostToDevice,
     DeviceToHost,
@@ -38,6 +39,7 @@ pub enum SetupPacketRequestTypeDirection {
 
 #[repr(u8)]
 #[allow(dead_code)]
+#[derive(Clone)]
 pub enum SetupPacketRequestTypeRequestType {
     Standard,
     Class,
@@ -46,6 +48,7 @@ pub enum SetupPacketRequestTypeRequestType {
 
 #[repr(u8)]
 #[allow(dead_code)]
+#[derive(Clone)]
 pub enum SetupPacketRequestTypeRecipient {
     Device,
     Interface,
@@ -63,15 +66,15 @@ bitfield! {
 }
 
 impl SetupPacketRequestType {
-    fn set_direction_from_enum(&mut self, direction: SetupPacketRequestTypeDirection) {
+    pub fn set_direction_from_enum(&mut self, direction: SetupPacketRequestTypeDirection) {
 	self.set_direction(direction == SetupPacketRequestTypeDirection::DeviceToHost);
     }
 
-    fn set_request_type_from_enum(&mut self, request_type: SetupPacketRequestTypeRequestType) {
+    pub fn set_request_type_from_enum(&mut self, request_type: SetupPacketRequestTypeRequestType) {
 	self.set_request_type(request_type as u8);
     }
 
-    fn set_recipient_from_enum(&mut self, recipient: SetupPacketRequestTypeRecipient) {
+    pub fn set_recipient_from_enum(&mut self, recipient: SetupPacketRequestTypeRecipient) {
 	self.set_recipient(recipient as u8);
     }
 }
@@ -97,10 +100,16 @@ pub enum RequestCode {
 #[derive(Clone)]
 pub struct SetupPacket {
     pub request_type: SetupPacketRequestType,
-    pub request: RequestCode,
+    pub request: u8,
     pub value: u16,
     pub index: u16,
     pub length: u16,
+}
+
+#[derive(Clone)]
+pub struct WriteSetupPacket {
+    pub setup_packet: SetupPacket,
+    pub buf: Vec<u8>,
 }
 
 #[repr(u8)]
@@ -119,16 +128,17 @@ enum Descriptor {
 }
 
 #[allow(dead_code)]
+#[derive(Clone)]
 pub struct InterruptTransferDescriptor {
-    pub endpoint: u8,
     pub frequency_in_ms: u8,
     pub length: u8,
 }
 
 #[allow(dead_code)]
+#[derive(Clone)]
 pub enum TransferType {
     ControlRead(SetupPacket),
-    ControlWrite(SetupPacket),
+    ControlWrite(WriteSetupPacket),
     ControlNoData(SetupPacket),
     BulkWrite,
     BulkRead,
@@ -136,8 +146,10 @@ pub enum TransferType {
     InterruptIn(InterruptTransferDescriptor),
 }
 
+#[derive(Clone)]
 pub struct UsbTransfer {
     pub transfer_type: TransferType,
+    pub endpoint: u8,
     pub speed: PortSpeed,
     pub poll: bool,
 }
@@ -197,11 +209,12 @@ pub fn register_hci(locked_hci: Arc<Mutex<Box<dyn UsbHCI>>>) {
 	    let xfer_config_descriptor = UsbTransfer {
 		transfer_type: TransferType::ControlRead(SetupPacket {
 		    request_type: read_request_type.clone(),
-		    request: RequestCode::GetDescriptor,
+		    request: RequestCode::GetDescriptor as u8,
 		    value: 0x0200,
 		    index: 0,
 		    length: 9,
 		}),
+		endpoint: 0,
 		speed: port.speed,
 		poll: true,
 	    };
@@ -213,11 +226,12 @@ pub fn register_hci(locked_hci: Arc<Mutex<Box<dyn UsbHCI>>>) {
 	    let set_addr = UsbTransfer {
 		transfer_type: TransferType::ControlNoData(SetupPacket {
 		    request_type: write_request_type,
-		    request: RequestCode::SetAddress,
+		    request: RequestCode::SetAddress as u8,
 		    value: device_address.into(),
 		    index: 0,
 		    length: 0,
 		}),
+		endpoint: 0,
 		speed: port.speed,
 		poll: true,
 	    };
@@ -226,11 +240,12 @@ pub fn register_hci(locked_hci: Arc<Mutex<Box<dyn UsbHCI>>>) {
 	    let xfer_descriptors = UsbTransfer {
 		transfer_type: TransferType::ControlRead(SetupPacket {
 		    request_type: read_request_type,
-		    request: RequestCode::GetDescriptor,
+		    request: RequestCode::GetDescriptor as u8,
 		    value: 0x0200,
 		    index: 0,
 		    length: configuration_descriptor.total_length,
 		}),
+		endpoint: 0,
 		speed: port.speed,
 		poll: true,
 	    };
@@ -238,6 +253,21 @@ pub fn register_hci(locked_hci: Arc<Mutex<Box<dyn UsbHCI>>>) {
 
 	    // Effectively treat each interface as its own device, which it more or less is
 	    let (_, (configuration_descriptor, interface_descriptors)) = protocol::parse_configuration_descriptors(&descriptors).unwrap();
+
+	    let set_configuration = UsbTransfer {
+		transfer_type: TransferType::ControlNoData(SetupPacket {
+		    request_type: write_request_type,
+		    request: RequestCode::SetConfiguration as u8,
+		    value: configuration_descriptor.configuration_value as u16,
+		    index: 0,
+		    length: 0,
+		}),
+		endpoint: 0,
+		speed: port.speed,
+		poll: true,
+	    };
+	    hci.transfer(device_address, set_configuration);
+	    
 	    for interface_descriptor in interface_descriptors {
 		let device = UsbDevice {
 		    configuration_descriptor: configuration_descriptor.clone(),

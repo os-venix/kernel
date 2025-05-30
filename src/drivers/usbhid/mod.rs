@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use crate::driver;
 use crate::drivers::usb::protocol as usb_protocol;
@@ -34,12 +35,80 @@ impl Keyboard {
 	    .nth(0)
 	    .unwrap();
 
+	let mut write_request_type = usb::SetupPacketRequestType::default();
+	write_request_type.set_direction_from_enum(usb::SetupPacketRequestTypeDirection::HostToDevice);
+	write_request_type.set_request_type_from_enum(usb::SetupPacketRequestTypeRequestType::Standard);
+	write_request_type.set_recipient_from_enum(usb::SetupPacketRequestTypeRecipient::Endpoint);
+
+	// let unhalt_endpoint_descriptor = usb::UsbTransfer {
+	//     transfer_type: usb::TransferType::ControlNoData(usb::SetupPacket {
+	// 	request_type: write_request_type.clone(),
+	// 	request: usb::RequestCode::ClearFeature,
+	// 	value: 0,  // ENDPOINT_HALT
+	// 	index: 0x80 | (*endpoint_num) as u16,
+	// 	length: 0,
+	//     }),
+	//     endpoint: 0,
+	//     speed: device_info.speed,
+	//     poll: true,
+	// };
+	// {
+	//     device_info.hci.lock().transfer(device_info.address, unhalt_endpoint_descriptor);
+	// }
+
+	let set_protocol = usb::UsbTransfer {
+	    transfer_type: usb::TransferType::ControlNoData(usb::SetupPacket {
+		request_type: {
+		    let mut t = usb::SetupPacketRequestType::default();
+		    t.set_direction_from_enum(usb::SetupPacketRequestTypeDirection::HostToDevice);
+		    t.set_request_type_from_enum(usb::SetupPacketRequestTypeRequestType::Class);
+		    t.set_recipient_from_enum(usb::SetupPacketRequestTypeRecipient::Interface);
+		    t
+		},
+		request: 0x0b,  // SET_PROTOCOL
+		value: 0,  // Boot protocol
+		index: device_info.interface_descriptor.interface_number as u16,
+		length: 0,
+	    }),
+	    endpoint: 0,
+	    speed: device_info.speed,
+	    poll: true,
+	};
+	{
+	    device_info.hci.lock().transfer(device_info.address, set_protocol);
+	}
+
+	let set_report = usb::UsbTransfer {
+	    transfer_type: usb::TransferType::ControlWrite(usb::WriteSetupPacket {
+		setup_packet: usb::SetupPacket {
+		    request_type: {
+			let mut t = usb::SetupPacketRequestType::default();
+			t.set_direction_from_enum(usb::SetupPacketRequestTypeDirection::HostToDevice);
+			t.set_request_type_from_enum(usb::SetupPacketRequestTypeRequestType::Class);
+			t.set_recipient_from_enum(usb::SetupPacketRequestTypeRecipient::Interface);
+			t
+		    },
+		    request: 0x09,  // SET_REPORT
+		    value: 0x0200,  // Output report (set LEDs)
+		    index: device_info.interface_descriptor.interface_number as u16,
+		    length: 1,
+		},
+		buf: Vec::from([0x00]),
+	    }),
+	    endpoint: 0,
+	    speed: device_info.speed,
+	    poll: true,
+	};
+	{
+	    device_info.hci.lock().transfer(device_info.address, set_report);
+	}
+
 	let xfer_config_descriptor = usb::UsbTransfer {
 	    transfer_type: usb::TransferType::InterruptIn(usb::InterruptTransferDescriptor {
-		endpoint: *endpoint_num,
 		frequency_in_ms: endpoint.interval,
 		length: 8,
 	    }),
+	    endpoint: *endpoint_num,
 	    speed: device_info.speed,
 	    poll: false,
 	};
@@ -47,6 +116,7 @@ impl Keyboard {
 	    device_info.hci.lock().transfer(device_info.address, xfer_config_descriptor);
 	}
 
+	loop {}
 	Keyboard {
 	    device_info,
 	    protocol,

@@ -103,7 +103,7 @@ impl Default for FrameListPointer {
 }
 
 bitfield! {
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     pub struct TransferDescriptor(u128);
 
     link_pointer, set_link_pointer: 31, 4;
@@ -144,6 +144,25 @@ impl TransferDescriptor {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+enum TransferStatus {
+    Active,
+    Done,
+    Stalled,
+    DataBufferError,
+    Babble,
+    Nak,
+    CrcTimeout,
+    Bitstuff,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum TransferDescriptorType {
+    Setup,
+    Status,
+    Data,
+}
+
 struct UhciTransfer {
     pub arena: arena::Arena,
     queue_head: arena::ArenaTag,
@@ -173,9 +192,39 @@ impl UhciTransfer {
     pub fn is_complete(&self) -> bool {
 	self.transfer_descriptors.iter()
 	    .all(|td| {
-		log::info!("  {}", self.arena.tag_to_ptr::<TransferDescriptor>(*td).status_active());
 		!self.arena.tag_to_ptr::<TransferDescriptor>(*td).status_active()
 	    })
+    }
+
+    pub fn get_status(&self) -> (TransferStatus, usize) {
+	let mut any_active = false;
+
+	for (n, td_tag) in self.transfer_descriptors.iter().enumerate() {
+	    let td = self.arena.tag_to_ptr::<TransferDescriptor>(*td_tag);
+	    if td.status_active() {
+		any_active = true;
+	    }
+
+	    if td.status_buffer_error() {
+		return (TransferStatus::DataBufferError, n);
+	    } else if td.status_babble() {
+		return (TransferStatus::Babble, n);
+	    } else if td.status_nak() && !td.status_active() {
+		return (TransferStatus::Nak, n);
+	    } else if td.status_crc_timeout() {
+		return (TransferStatus::CrcTimeout, n);
+	    } else if td.status_bitstuff_error() {
+		return (TransferStatus::Bitstuff, n);
+	    } else if td.status_stalled() {
+		return (TransferStatus::Stalled, n);
+	    }
+	}
+
+	if any_active {
+	    (TransferStatus::Active, 0 as usize)
+	} else {
+	    (TransferStatus::Done, 0 as usize)
+	}
     }
 
     pub fn reset_tds(&mut self) {
@@ -187,6 +236,8 @@ impl UhciTransfer {
 	    self.arena.tag_to_ptr::<TransferDescriptor>(*td).set_status_crc_timeout(false);
 	    self.arena.tag_to_ptr::<TransferDescriptor>(*td).set_status_bitstuff_error(false);
 	}
+
+	fence(Ordering::SeqCst);
 
 	// Do this in reverse order, so that the last TD to be marked active is the first in the queue.
 	// This will mean the controller still sees the queue as inactive, and won't try to execute it,
@@ -206,7 +257,7 @@ impl UhciTransfer {
 	buffer_phys
     }
 
-    pub fn create_transfer_descriptor(&mut self, is_low_speed: bool, len: u8, endpoint: u8, address: u8, packet_id: u8, buf: PhysAddr) {
+    pub fn create_transfer_descriptor(&mut self, is_low_speed: bool, len: u8, endpoint: u8, address: u8, packet_id: u8, buf: PhysAddr, td_type: TransferDescriptorType) {
 	let (td, td_tag, td_phys) = self.arena.acquire_default_by_tag::<TransferDescriptor>(0x10).unwrap();
 
 	if self.transfer_descriptors.len() == 0 {
@@ -221,9 +272,16 @@ impl UhciTransfer {
 		.set_link_pointer_phys_addr(td_phys);
 	};
 
-	let toggle = if self.transfer_descriptors.len() == 0 { true } else {
-	    !self.arena.tag_to_ptr::<TransferDescriptor>(*self.transfer_descriptors.iter_mut().rev().nth(0).unwrap())
-		.toggle()
+	let toggle = match td_type {
+	    TransferDescriptorType::Setup => false,
+	    TransferDescriptorType::Status => true,
+	    TransferDescriptorType::Data => if self.transfer_descriptors.len() == 0 {
+		false
+	    } else {
+		!self.arena.tag_to_ptr::<TransferDescriptor>(
+		    *self.transfer_descriptors.iter_mut().rev().nth(0).unwrap())
+		    .toggle()
+	    },
 	};
 	let length: u16 = if len != 0 { (len - 1).into() } else { 0x7FF };
 
@@ -257,6 +315,12 @@ impl UhciTransfer {
 	    Some(self.arena.tag_to_slice(buf_tag, self.buf_length).to_vec().into_boxed_slice())
 	} else {
 	    None
+	}
+    }
+
+    pub fn output_tds(&self) {
+	for td in self.transfer_descriptors.iter() {
+	    log::info!("  {:#?}", self.arena.tag_to_ptr::<TransferDescriptor>(*td));
 	}
     }
 }
@@ -439,8 +503,8 @@ impl<'a> UhciBus<'a> {
 	Ok(())
     }
 
-    fn handle_transfer(&mut self, address: u8, transfer: usb::UsbTransfer, index: usize) -> Option<Box<[u8]>> {
-	let uhci_transfer = &mut self.recurring_transfers[index];
+    fn build_transfer(&self, address: u8, transfer: usb::UsbTransfer) -> UhciTransfer {
+	let mut uhci_transfer = UhciTransfer::new();
 
 	let (data_per_xfer, is_low_speed) = match transfer.speed {
 	    usb::PortSpeed::LowSpeed => (8, true),
@@ -452,7 +516,8 @@ impl<'a> UhciBus<'a> {
 		let (_, packet_phys) = uhci_transfer.arena.acquire::<usb::SetupPacket>(0, &setup_packet).unwrap();
 		let buffer_phys = uhci_transfer.create_transfer_buffer(setup_packet.length as usize);
 
-		uhci_transfer.create_transfer_descriptor(is_low_speed, 8 /* len */, 0 /* endpoint */, address, 0x2d /* packet_id = SETUP */, packet_phys);
+		uhci_transfer.create_transfer_descriptor(
+		    is_low_speed, 8 /* len */, transfer.endpoint, address, 0x2d /* packet_id = SETUP */, packet_phys, TransferDescriptorType::Setup);
 
 		for offset in (0 .. setup_packet.length).step_by(data_per_xfer as usize) {
 		    let length = if setup_packet.length - offset < data_per_xfer {
@@ -462,28 +527,67 @@ impl<'a> UhciBus<'a> {
 		    };
 
 		    uhci_transfer.create_transfer_descriptor(
-			is_low_speed, length.try_into().unwrap(), 0 /* endpoint */, address, 0x69 /* packet_id = IN */, buffer_phys + offset.into());
+			is_low_speed, length.try_into().unwrap(), transfer.endpoint, address,
+			0x69 /* packet_id = IN */, buffer_phys + offset.into(), TransferDescriptorType::Data);
 		}
 
-		uhci_transfer.create_transfer_descriptor(is_low_speed, 0 /* len */, 0 /* endpoint */, address, 0xe1 /* packet_id = OUT */, PhysAddr::new(0));
+		uhci_transfer.create_transfer_descriptor(
+		    is_low_speed, 0 /* len */, transfer.endpoint, address,
+		    0xe1 /* packet_id = OUT */, PhysAddr::new(0), TransferDescriptorType::Status);
+	    },
+	    usb::TransferType::ControlWrite(ref write_setup_packet) => {
+		let (_, packet_phys) = uhci_transfer.arena.acquire::<usb::SetupPacket>(0, &write_setup_packet.setup_packet).unwrap();
+		let (_, data_phys) = uhci_transfer.arena.acquire_slice_buffer(
+		    0, &write_setup_packet.buf.as_slice(), write_setup_packet.setup_packet.length as usize).unwrap();
+
+		uhci_transfer.create_transfer_descriptor(
+		    is_low_speed, 8 /* len */, transfer.endpoint, address, 0x2d /* packet_id = SETUP */, packet_phys, TransferDescriptorType::Setup);
+
+		for offset in (0 .. write_setup_packet.setup_packet.length).step_by(data_per_xfer as usize) {
+		    let length = if write_setup_packet.setup_packet.length - offset < data_per_xfer {
+			write_setup_packet.setup_packet.length - offset
+		    } else {
+			data_per_xfer
+		    };
+
+		    uhci_transfer.create_transfer_descriptor(
+			is_low_speed, length.try_into().unwrap(), transfer.endpoint, address,
+			0xe1 /* packet_id = OUT */, data_phys + offset.into(), TransferDescriptorType::Data);
+		}
+
+		uhci_transfer.create_transfer_descriptor(
+		    is_low_speed, 0 /* len */, transfer.endpoint, address,
+		    0x69 /* packet_id = IN */, PhysAddr::new(0), TransferDescriptorType::Status);
 	    },
 	    usb::TransferType::ControlNoData(ref setup_packet) => {
 		let (_, packet_phys) = uhci_transfer.arena.acquire::<usb::SetupPacket>(0, &setup_packet).unwrap();
-		uhci_transfer.create_transfer_descriptor(is_low_speed, 8 /* len */, 0 /* endpoint */, address, 0x2d /* packet_id = SETUP */, packet_phys);
-		uhci_transfer.create_transfer_descriptor(is_low_speed, 0 /* len */, 0 /* endpoint */, address, 0x69 /* packet_id = IN */, PhysAddr::new(0));
+		log::info!("{:x}", packet_phys.as_u64());
+		uhci_transfer.create_transfer_descriptor(
+		    is_low_speed, 8 /* len */, transfer.endpoint.into(), address, 0x2d /* packet_id = SETUP */, packet_phys, TransferDescriptorType::Setup);
+		uhci_transfer.create_transfer_descriptor(
+		    is_low_speed, 0 /* len */, transfer.endpoint.into(), address, 0x69 /* packet_id = IN */, PhysAddr::new(0), TransferDescriptorType::Status);
 	    },
 	    usb::TransferType::InterruptIn(ref interrupt_transfer_descriptor) => {
 		let buffer_phys = uhci_transfer.create_transfer_buffer(interrupt_transfer_descriptor.length as usize);
 		uhci_transfer.create_transfer_descriptor(
-		    is_low_speed, interrupt_transfer_descriptor.length.into(), interrupt_transfer_descriptor.endpoint.into(),
-		    address, 0x69 /* packet_id = IN */, buffer_phys);
-		uhci_transfer.create_transfer_descriptor(
-		    is_low_speed, 0, interrupt_transfer_descriptor.endpoint.into(),
-		    address, 0xe1 /* packet_id = OUT */, PhysAddr::new(0));
+		    is_low_speed, interrupt_transfer_descriptor.length.into(), transfer.endpoint.into(),
+		    address, 0x69 /* packet_id = IN */, buffer_phys, TransferDescriptorType::Data);
+		// uhci_transfer.create_transfer_descriptor(
+		//     is_low_speed, 0, transfer.endpoint.into(),
+		//     address, 0xe1 /* packet_id = OUT */, PhysAddr::new(0), TransferDescriptorType::Status);
 	    },
 	    _ => unimplemented!(),
 	}
-	
+
+	uhci_transfer
+    }
+
+    fn handle_oneshot(&mut self, mut uhci_transfer: UhciTransfer, transfer: usb::UsbTransfer) -> Option<Box<[u8]>> {
+	// One shots should always be polling (for now, anyway)
+	if !transfer.poll {
+	    return None;
+	}
+
 	// Clear any lingering interrupts
 	unsafe {
 	    let mut port_sts = Port::<u16>::new(self.base_io + USBSTS);
@@ -492,84 +596,49 @@ impl<'a> UhciBus<'a> {
 
 	let queue_head_phys = uhci_transfer.finalise_and_get_qh(transfer.poll);
 
-	if let usb::TransferType::InterruptIn(interrupt_transfer_descriptor) = transfer.transfer_type {
-	    for i in (0 .. 1024).step_by(interrupt_transfer_descriptor.frequency_in_ms as usize) {
-		// First, ensure the frame pointer is terminated, so that the controller will not attempt to run
-		// a partially updated frame pointer
-		self.frame_list[i].set_terminate(true);
-		fence(Ordering::SeqCst);
+	for i in 0 .. 1024 {
+	    // First, ensure the frame pointer is terminated, so that the controller will not attempt to run
+	    // a partially updated frame pointer
+	    self.frame_list[i].set_terminate(true);
+	    fence(Ordering::SeqCst);
 
-		// Next, update the pointer to the Queue Head
-		self.frame_list[i].set_qh_td_select(true);  // Entry is a QH
-		self.frame_list[i].set_frame_list_pointer_phys(queue_head_phys);
+	    // Next, update the pointer to the Queue Head
+	    self.frame_list[i].set_qh_td_select(true);  // Entry is a QH
+	    self.frame_list[i].set_frame_list_pointer_phys(queue_head_phys);
 
-		// Lastly, allow the controller to go ahead and execute
-		fence(Ordering::SeqCst);
-		self.frame_list[i].set_terminate(false);
-	    }
-	} else {
-	    for i in 0 .. 1024 {
-		// First, ensure the frame pointer is terminated, so that the controller will not attempt to run
-		// a partially updated frame pointer
-		self.frame_list[i].set_terminate(true);
-		fence(Ordering::SeqCst);
-
-		// Next, update the pointer to the Queue Head
-		self.frame_list[i].set_qh_td_select(true);  // Entry is a QH
-		self.frame_list[i].set_frame_list_pointer_phys(queue_head_phys);
-
-		// Lastly, allow the controller to go ahead and execute
-		fence(Ordering::SeqCst);
-		self.frame_list[i].set_terminate(false);
-	    }
+	    // Lastly, allow the controller to go ahead and execute
+	    fence(Ordering::SeqCst);
+	    self.frame_list[i].set_terminate(false);
 	}
 
-	if transfer.poll {
-	    while !uhci_transfer.is_complete() {
-		unsafe {
-		    asm!("pause");
-		}
+	while !uhci_transfer.is_complete() {
+	    let (ts, n) = uhci_transfer.get_status();
+	    if ts != TransferStatus::Done && ts != TransferStatus::Active {
+		log::info!("  TD {} - Transfer status {:?}", n, ts);
 	    }
 
-	    // TODO - if this is a one-time transfer, remove it from the list
-
-	    let halted = unsafe {
-		let mut port_sts = Port::<u16>::new(self.base_io + USBSTS);
-		(port_sts.read() & STATUS_HALTED) != 0
-	    };
-
-	    if halted {
-		log::info!("A fatal error occurred");
-
-		// for (i, td) in uhci_transfer.transfer_descriptors.iter().enumerate() {
-		//     log::info!("{} - length {:x}, pid {:x}, active = {}", i, td.max_length(), td.packet_identification(), td.status_active());
-		//     if td.status_stalled() {
-		// 	log::info!("  Stalled");
-		//     }
-		//     if td.status_buffer_error() {
-		// 	log::info!("  Buffer error");
-		//     }
-		//     if td.status_babble() {
-		// 	log::info!("  Babble");
-		//     }
-		//     if td.status_nak() {
-		// 	log::info!("  Nak");
-		//     }
-		//     if td.status_crc_timeout() {
-		// 	log::info!("  CRC/Timeout");
-		//     }
-		//     if td.status_bitstuff_error() {
-		// 	log::info!("  Bitstuff error");
-		//     }
-		// }
-		panic!("Status is halted");
+	    unsafe {
+		asm!("pause");
 	    }
-
-	    self.frame_list.fill_with(Default::default);
-	    return uhci_transfer.get_owned_buf();
+	}
+	
+	let (ts, n) = uhci_transfer.get_status();
+	if ts != TransferStatus::Done && ts != TransferStatus::Active {
+	    log::info!("  TD {} - Transfer status {:?}", n, ts);
 	}
 
-	None
+	let halted = unsafe {
+	    let mut port_sts = Port::<u16>::new(self.base_io + USBSTS);
+	    (port_sts.read() & STATUS_HALTED) != 0
+	};
+
+	if halted {
+	    log::info!("A fatal error occurred");
+	    panic!("Status is halted");
+	}
+
+	self.frame_list.fill_with(Default::default);
+	return uhci_transfer.get_owned_buf();
     }
 }
     
@@ -604,16 +673,37 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 
     fn transfer(&mut self, address: u8, transfer: usb::UsbTransfer) -> Option<Box<[u8]>> {
 	match transfer.transfer_type {
-	    usb::TransferType::InterruptIn(_) => {
-		self.recurring_transfers.push(UhciTransfer::new());
-		let index = self.recurring_transfers.len() - 1;
-		self.handle_transfer(address, transfer, index)
+	    usb::TransferType::InterruptIn(ref interrupt_transfer_descriptor) => {
+		// Clear li'ngering interrupts ready for transfer
+		unsafe {
+		    let mut port_sts = Port::<u16>::new(self.base_io + USBSTS);
+		    port_sts.write(STATUS_INT);
+		}
+
+		for i in (0 .. 1024).step_by(interrupt_transfer_descriptor.frequency_in_ms as usize) {
+		    let mut uhci_transfer = self.build_transfer(address, transfer.clone());
+		    let queue_head_phys = uhci_transfer.finalise_and_get_qh(transfer.poll);
+		    self.recurring_transfers.push(uhci_transfer);
+
+		    // First, ensure the frame pointer is terminated, so that the controller will not attempt to run
+		    // a partially updated frame pointer
+		    self.frame_list[i].set_terminate(true);
+		    fence(Ordering::SeqCst);
+
+		    // Next, update the pointer to the Queue Head
+		    self.frame_list[i].set_qh_td_select(true);  // Entry is a QH
+		    self.frame_list[i].set_frame_list_pointer_phys(queue_head_phys);
+
+		    // Lastly, allow the controller to go ahead and execute
+		    fence(Ordering::SeqCst);
+		    self.frame_list[i].set_terminate(false);
+		}
+
+		None
 	    },
 	    _ => {
-		// TODO - these should be one time transfers, not recurring transfers, but we don't have those yet
-		self.recurring_transfers.push(UhciTransfer::new());
-		let index = self.recurring_transfers.len() - 1;
-		self.handle_transfer(address, transfer, index)
+		let uhci_transfer = self.build_transfer(address, transfer.clone());
+		self.handle_oneshot(uhci_transfer, transfer)
 	    },
 	}
     }
@@ -625,20 +715,38 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
     }
     
     fn interrupt(&mut self) {
-	unsafe {
+	let (usbint, usberr) = unsafe {
 	    let mut port_sts = Port::<u16>::new(self.base_io + USBSTS);
-	    log::info!("{:x}", port_sts.read());
-	    port_sts.write(STATUS_INT);
+	    let current_status = port_sts.read();
+
+	    ((current_status & 1) == 1, (current_status & 2) == 2)
+	};
+
+	if usbint && !usberr {
+	    for transfer in self.recurring_transfers.iter_mut() {
+		if transfer.is_complete() {
+		    transfer.reset_tds();
+		}
+	    }
+	} else if usbint && usberr {
+	    for transfer in self.recurring_transfers.iter_mut() {
+		let (ts, n) = transfer.get_status();
+		if ts != TransferStatus::Done && ts != TransferStatus::Active {
+		    log::info!("  TD {} - Transfer status {:?}", n, ts);
+		    transfer.output_tds();
+		}
+	    }
+
+	    loop {}
+	} else if usberr && !usbint {
+	    log::info!("USB Error - not set on transaction");
 	    loop {}
 	}
 
-	for transfer in self.recurring_transfers.iter_mut() {
-	    if transfer.is_complete() {
-		log::info!("Hi!");
-		transfer.reset_tds();
-	    }
-	}
-
+	unsafe {
+	    let mut port_sts = Port::<u16>::new(self.base_io + USBSTS);
+	    port_sts.write(STATUS_INT);
+	};
 	log::info!("UHCI Interrupt!");
     }
 }
