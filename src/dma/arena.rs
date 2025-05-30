@@ -166,7 +166,7 @@ impl<'a> Arena {
 
     /// get a pointer to memory pointed to by tag
     pub fn tag_to_ptr<T: Default>(&'a self, tag: ArenaTag) -> &'a mut T {
-        let (virt_page, phys_page) = self.backing_store[tag.0 / 4096];
+        let (virt_page, _) = self.backing_store[tag.0 / 4096];
 	let virt_addr = virt_page + (tag.0 as u64 % 4096);
 
 	unsafe {
@@ -176,7 +176,7 @@ impl<'a> Arena {
 
     /// get a slice to memory pointed to by tag
     pub fn tag_to_slice(&'a self, tag: ArenaTag, length: usize) -> &'a [u8] {
-        let (virt_page, phys_page) = self.backing_store[tag.0 / 4096];
+        let (virt_page, _) = self.backing_store[tag.0 / 4096];
 	let virt_addr = virt_page + (tag.0 as u64 % 4096);
 
 	unsafe {

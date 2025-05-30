@@ -52,7 +52,7 @@ impl vfs::FileSystem for DevFS {
 	    None => return Err(()),
 	};
 	let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
-	let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist");
+	let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist").lock();
 
 	// TODO: Set the values here after seeking is supported
 	match device.read(0, 0, memory::MemoryAccessRestriction::User) {
@@ -73,7 +73,7 @@ impl vfs::FileSystem for DevFS {
 	    None => return Err(()),
 	};
 	let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
-	let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist");
+	let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist").lock();
 
 	device.write(buf, len as u64)
     }
@@ -98,7 +98,7 @@ impl vfs::FileSystem for DevFS {
 }
 
 static DRIVER_TABLE: Once<RwLock<Vec<Box<dyn Driver + Send + Sync>>>> = Once::new();
-static DEVICE_TABLE: Once<RwLock<Vec<Arc<dyn Device + Send + Sync>>>> = Once::new();
+static DEVICE_TABLE: Once<RwLock<Vec<Arc<Mutex<dyn Device + Send + Sync>>>>> = Once::new();
 static BUS_TABLE: Once<RwLock<Vec<Arc<Mutex<dyn Bus + Send + Sync>>>>> = Once::new();
 static DEVFS: Once<Arc<RwLock<DevFS>>> = Once::new();
 
@@ -126,7 +126,7 @@ pub fn register_driver(driver: Box<dyn Driver + Send + Sync>) {
     driver_table.push(driver);
 }
 
-pub fn register_device(device: Arc<dyn Device + Send + Sync>) -> u64 {
+pub fn register_device(device: Arc<Mutex<dyn Device + Send + Sync>>) -> u64 {
     let mut device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
     device_tbl.push(device);
     (device_tbl.len() - 1) as u64

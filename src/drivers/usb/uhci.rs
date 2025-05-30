@@ -3,6 +3,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use anyhow::{anyhow, Result};
 use bitfield::bitfield;
+use bytes;
 use core::arch::asm;
 use core::ptr;
 use core::ops::BitOr;
@@ -170,6 +171,7 @@ struct UhciTransfer {
     transfer_descriptors: Vec<arena::ArenaTag>,
     buffer: Option<arena::ArenaTag>,
     buf_length: usize,
+    callback: Option<Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>>,
 }
 
 unsafe impl Send for UhciTransfer { }
@@ -186,6 +188,7 @@ impl UhciTransfer {
 	    transfer_descriptors: Vec::new(),
 	    buffer: None,
 	    buf_length: 0,
+	    callback: None,
 	}
     }
 
@@ -194,6 +197,22 @@ impl UhciTransfer {
 	    .all(|td| {
 		!self.arena.tag_to_ptr::<TransferDescriptor>(*td).status_active()
 	    })
+    }
+
+    pub fn set_callback(&mut self, callback: Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>) {
+	self.callback = Some(callback);
+    }
+
+    pub fn get_callback(&self) -> Option<Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>> {
+	self.callback.clone()
+    }
+
+    pub fn get_buffer(&self) -> Option<bytes::Bytes> {
+	if self.buf_length == 0 {
+	    None
+	} else {
+	    Some(bytes::Bytes::copy_from_slice(self.arena.tag_to_slice(self.buffer.unwrap(), self.buf_length)))
+	}
     }
 
     pub fn get_status(&self) -> (TransferStatus, usize) {
@@ -505,6 +524,9 @@ impl<'a> UhciBus<'a> {
 
     fn build_transfer(&self, address: u8, transfer: usb::UsbTransfer) -> UhciTransfer {
 	let mut uhci_transfer = UhciTransfer::new();
+	if let Some(c) = transfer.callback {
+	    uhci_transfer.set_callback(c);
+	}
 
 	let (data_per_xfer, is_low_speed) = match transfer.speed {
 	    usb::PortSpeed::LowSpeed => (8, true),
@@ -572,9 +594,6 @@ impl<'a> UhciBus<'a> {
 		uhci_transfer.create_transfer_descriptor(
 		    is_low_speed, interrupt_transfer_descriptor.length.into(), transfer.endpoint.into(),
 		    address, 0x69 /* packet_id = IN */, buffer_phys, TransferDescriptorType::Data);
-		// uhci_transfer.create_transfer_descriptor(
-		//     is_low_speed, 0, transfer.endpoint.into(),
-		//     address, 0xe1 /* packet_id = OUT */, PhysAddr::new(0), TransferDescriptorType::Status);
 	    },
 	    _ => unimplemented!(),
 	}
@@ -714,7 +733,10 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 	addr
     }
     
-    fn interrupt(&mut self) {
+    fn interrupt(&mut self) -> (Option<Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>>, Option<bytes::Bytes>) {
+	let mut callback: Option<Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>> = None;
+	let mut buffer: Option<bytes::Bytes> = None;
+
 	let (usbint, usberr) = unsafe {
 	    let mut port_sts = Port::<u16>::new(self.base_io + USBSTS);
 	    let current_status = port_sts.read();
@@ -722,10 +744,13 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 	    ((current_status & 1) == 1, (current_status & 2) == 2)
 	};
 
+	// TODO: Proper error and Result handling here
 	if usbint && !usberr {
 	    for transfer in self.recurring_transfers.iter_mut() {
 		if transfer.is_complete() {
 		    transfer.reset_tds();
+		    callback = transfer.get_callback();
+		    buffer = transfer.get_buffer();
 		}
 	    }
 	} else if usbint && usberr {
@@ -747,7 +772,8 @@ impl<'a> usb::UsbHCI for UhciBus<'a> {
 	    let mut port_sts = Port::<u16>::new(self.base_io + USBSTS);
 	    port_sts.write(STATUS_INT);
 	};
-	log::info!("UHCI Interrupt!");
+
+	(callback, buffer)
     }
 }
 
@@ -801,5 +827,12 @@ impl driver::Driver for UhciDriver {
 }
 
 fn handle_uhci_interrupts(hci: &Arc<Mutex<Box<dyn usb::UsbHCI>>>) {
-    hci.lock().interrupt();
+    let (callback, buffer) = hci.lock().interrupt();
+
+    // This has to be done outside of the lock, in case it results in more USB traffic
+    if let Some(c) = callback {
+	if let Some(b) = buffer {
+	    c(b);
+	}
+    }
 }

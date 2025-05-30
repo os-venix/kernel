@@ -3,7 +3,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::sync::Arc;
 use alloc::boxed::Box;
-use spin::{Once, RwLock};
+use spin::{Mutex, Once, RwLock};
 use core::ptr::{read_volatile, write_volatile};
 
 use crate::sys::acpi::{namespace, resources};
@@ -279,7 +279,7 @@ impl driver::Driver for HpetDriver {
 		_ => panic!("This shouldn't happen"),
 	    }).nth(0).expect("No memory ranges returned for HPET");
 
-	let device = Arc::new(HpetDevice {});
+	let device = Arc::new(Mutex::new(HpetDevice {}));
 	driver::register_device(device);
 
 	HPET.call_once(|| RwLock::new(Hpet::new(*base_address, *range_length)));

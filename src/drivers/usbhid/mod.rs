@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use spin::Mutex;
 
 use crate::driver;
 use crate::drivers::usb::protocol as usb_protocol;
@@ -20,6 +21,11 @@ struct Keyboard {
     device_info: usb::UsbDevice,
     protocol: HidProtocol,
     hid_descriptor: protocol::HidDescriptor,
+    poll_interval: u8,
+    endpoint_num: u8,
+
+    // Current state
+    current_active_key: Option<protocol::Key>,
 }
 
 impl Keyboard {
@@ -28,33 +34,12 @@ impl Keyboard {
 	    unimplemented!()
 	}
 
-	let (endpoint_num, endpoint) = device_info.interface_descriptor.endpoints.iter()
+	let (endpoint_num, endpoint) = device_info.interface_descriptor.endpoints.clone().into_iter()
 	    .filter(|(_, endpoint)|
 		    endpoint.direction == usb_protocol::EndpointDirection::In &&
 		    endpoint.transfer_type == usb_protocol::EndpointTransferType::Interrupt)
 	    .nth(0)
 	    .unwrap();
-
-	let mut write_request_type = usb::SetupPacketRequestType::default();
-	write_request_type.set_direction_from_enum(usb::SetupPacketRequestTypeDirection::HostToDevice);
-	write_request_type.set_request_type_from_enum(usb::SetupPacketRequestTypeRequestType::Standard);
-	write_request_type.set_recipient_from_enum(usb::SetupPacketRequestTypeRecipient::Endpoint);
-
-	// let unhalt_endpoint_descriptor = usb::UsbTransfer {
-	//     transfer_type: usb::TransferType::ControlNoData(usb::SetupPacket {
-	// 	request_type: write_request_type.clone(),
-	// 	request: usb::RequestCode::ClearFeature,
-	// 	value: 0,  // ENDPOINT_HALT
-	// 	index: 0x80 | (*endpoint_num) as u16,
-	// 	length: 0,
-	//     }),
-	//     endpoint: 0,
-	//     speed: device_info.speed,
-	//     poll: true,
-	// };
-	// {
-	//     device_info.hci.lock().transfer(device_info.address, unhalt_endpoint_descriptor);
-	// }
 
 	let set_protocol = usb::UsbTransfer {
 	    transfer_type: usb::TransferType::ControlNoData(usb::SetupPacket {
@@ -73,6 +58,7 @@ impl Keyboard {
 	    endpoint: 0,
 	    speed: device_info.speed,
 	    poll: true,
+	    callback: None,
 	};
 	{
 	    device_info.hci.lock().transfer(device_info.address, set_protocol);
@@ -98,29 +84,51 @@ impl Keyboard {
 	    endpoint: 0,
 	    speed: device_info.speed,
 	    poll: true,
+	    callback: None,
 	};
 	{
 	    device_info.hci.lock().transfer(device_info.address, set_report);
 	}
 
-	let xfer_config_descriptor = usb::UsbTransfer {
-	    transfer_type: usb::TransferType::InterruptIn(usb::InterruptTransferDescriptor {
-		frequency_in_ms: endpoint.interval,
-		length: 8,
-	    }),
-	    endpoint: *endpoint_num,
-	    speed: device_info.speed,
-	    poll: false,
-	};
-	{
-	    device_info.hci.lock().transfer(device_info.address, xfer_config_descriptor);
-	}
-
-	loop {}
 	Keyboard {
 	    device_info,
 	    protocol,
 	    hid_descriptor,
+	    poll_interval: endpoint.interval,
+	    endpoint_num: endpoint_num.clone(),
+	    current_active_key: None,
+	}
+    }
+
+    pub fn start_with_callback(&self, callback: Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>) {
+	let xfer_config_descriptor = usb::UsbTransfer {
+	    transfer_type: usb::TransferType::InterruptIn(usb::InterruptTransferDescriptor {
+		frequency_in_ms: self.poll_interval,
+		length: 8,
+	    }),
+	    endpoint: self.endpoint_num,
+	    speed: self.device_info.speed,
+	    poll: false,
+	    callback: Some(callback),
+	};
+	{
+	    self.device_info.hci.lock().transfer(self.device_info.address, xfer_config_descriptor);
+	}
+    }
+
+    pub fn keypresses(&mut self, kp: protocol::BootKeyPresses) {
+	let most_recent_key: Option<protocol::Key> = kp.keys.into_iter()
+	    .filter(|key| *key != protocol::Key::Unknown)
+	    .collect::<Vec<_>>()
+	    .last()
+	    .copied();
+
+	if most_recent_key != self.current_active_key {
+	    match most_recent_key {
+		Some(protocol::Key::AsciiKey(mrk)) => log::info!("{}", mrk),
+		_ => (),
+	    }
+	    self.current_active_key = most_recent_key;
 	}
     }
 }
@@ -158,12 +166,17 @@ impl driver::Driver for HidDriver {
 	    }
 
 	    if usb_info.interface_descriptor.protocol == 1 {
-		let device = Arc::new(Keyboard::new(
+		let device = Arc::new(Mutex::new(Keyboard::new(
 		    usb_info.clone(),
 		    protocol,
 		    hid_descriptor,
-		));
-		driver::register_device(device);
+		)));
+		let dc = device.clone();
+		device.clone().lock().start_with_callback(Arc::new(move |buf| {
+		    let (_, keypresses) = protocol::parse_boot_buffer(buf.as_ref()).unwrap();
+		    dc.lock().keypresses(keypresses);
+		}));
+		driver::register_device(device.clone());
 	    } else if usb_info.interface_descriptor.protocol == 2 {
 		log::info!("  Mouse");
 	    }

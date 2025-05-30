@@ -1,4 +1,4 @@
-use spin::{Once, RwLock};
+use spin::{Mutex, Once, RwLock};
 use alloc::vec::Vec;
 use alloc::sync::Arc;
 use alloc::string::String;
@@ -73,72 +73,77 @@ pub struct GptDevice {
     mbr: Mbr,
     pth: PartitionTableHeader,
     pt: Vec<PartitionEntry>,
-    dev: Arc<dyn driver::Device + Send + Sync>,
+    dev: Arc<Mutex<dyn driver::Device + Send + Sync>>,
 }
 
 impl GptDevice {
-    fn new(dev: Arc<dyn driver::Device + Send + Sync>) -> Option<Arc<GptDevice>> {
-	let mbr_buf_ptr = match dev.read(0, 1, memory::MemoryAccessRestriction::Kernel) {
-	    Ok(a) => a,
-	    Err(()) => {
-		log::info!("Read went wrong");
-		return None;
-	    }
-	};
-	let mbr = unsafe {
-	    ptr::read(mbr_buf_ptr as *const Mbr)
-	};
-
-	if mbr.partitions[0].system_id != 0xEE {
-	    return None;
-	}
-
-	let pth_buf_ptr = dev.read(1, 1, memory::MemoryAccessRestriction::Kernel).expect("Read went wrong");
-	let pth = unsafe {
-	    ptr::read(pth_buf_ptr as *const PartitionTableHeader)
-	};
-
-	let sig = pth.signature.iter()
-	    .map(|c| c.to_char())
-	    .collect::<String>();
-	if sig != "EFI PART" {
-	    return None;
-	}
-
-	let pt_size_in_sector_bytes = pth.partition_entry_array_size + (512 - (pth.partition_entry_array_size % 512));  // Total amount, aligned to page boundaries
-	let pt_size_in_sectors = pt_size_in_sector_bytes / 512;
-	let pt_buf = dev.read(2, pt_size_in_sectors as u64, memory::MemoryAccessRestriction::Kernel).expect("Could not read Partition Entry table");
-
-	let mut partition_entries: Vec<PartitionEntry> = Vec::new();
-
-	for p in 0 .. (pth.partition_entry_array_size / 128) {
-	    let partition = unsafe {
-		ptr::read(pt_buf.wrapping_add(p as usize * 128) as *const PartitionEntry)
+    fn new(device: Arc<Mutex<dyn driver::Device + Send + Sync>>) -> Option<Arc<GptDevice>> {
+	let (mbr, pth, partition_entries) = {
+	    let dev = device.lock();
+	    let mbr_buf_ptr = match dev.read(0, 1, memory::MemoryAccessRestriction::Kernel) {
+		Ok(a) => a,
+		Err(()) => {
+		    log::info!("Read went wrong");
+		    return None;
+		}
+	    };
+	    let mbr = unsafe {
+		ptr::read(mbr_buf_ptr as *const Mbr)
 	    };
 
-	    partition_entries.push(partition);
+	    if mbr.partitions[0].system_id != 0xEE {
+		return None;
+	    }
 
-	    let partition_name_utf16 = partition_entries[p as usize].partition_name;
-	    let partition_name = String::from_utf16(
-		partition_name_utf16.iter()
-		    .map(|i| *i)
-		    .filter(|i| *i != 0)
-		    .collect::<Vec<u16>>()
-		    .as_slice())
-		.expect("Malformed partition name");
-	    let partition_uuid = Uuid::from_fields(
-		partition_entries[p as usize].partition_type_guid.d1,
-		partition_entries[p as usize].partition_type_guid.d2,
-		partition_entries[p as usize].partition_type_guid.d3,
-		&partition_entries[p as usize].partition_type_guid.d4);
-	    log::info!("Found partition {}, type = {}", partition_name, partition_uuid);
-	}
+	    let pth_buf_ptr = dev.read(1, 1, memory::MemoryAccessRestriction::Kernel).expect("Read went wrong");
+	    let pth = unsafe {
+		ptr::read(pth_buf_ptr as *const PartitionTableHeader)
+	    };
+
+	    let sig = pth.signature.iter()
+		.map(|c| c.to_char())
+		.collect::<String>();
+	    if sig != "EFI PART" {
+		return None;
+	    }
+
+	    let pt_size_in_sector_bytes = pth.partition_entry_array_size + (512 - (pth.partition_entry_array_size % 512));  // Total amount, aligned to page boundaries
+	    let pt_size_in_sectors = pt_size_in_sector_bytes / 512;
+	    let pt_buf = dev.read(2, pt_size_in_sectors as u64, memory::MemoryAccessRestriction::Kernel).expect("Could not read Partition Entry table");
+
+	    let mut partition_entries: Vec<PartitionEntry> = Vec::new();
+
+	    for p in 0 .. (pth.partition_entry_array_size / 128) {
+		let partition = unsafe {
+		    ptr::read(pt_buf.wrapping_add(p as usize * 128) as *const PartitionEntry)
+		};
+
+		partition_entries.push(partition);
+
+		let partition_name_utf16 = partition_entries[p as usize].partition_name;
+		let partition_name = String::from_utf16(
+		    partition_name_utf16.iter()
+			.map(|i| *i)
+			.filter(|i| *i != 0)
+			.collect::<Vec<u16>>()
+			.as_slice())
+		    .expect("Malformed partition name");
+		let partition_uuid = Uuid::from_fields(
+		    partition_entries[p as usize].partition_type_guid.d1,
+		    partition_entries[p as usize].partition_type_guid.d2,
+		    partition_entries[p as usize].partition_type_guid.d3,
+		    &partition_entries[p as usize].partition_type_guid.d4);
+		log::info!("Found partition {}, type = {}", partition_name, partition_uuid);
+	    }
+
+	    (mbr, pth, partition_entries)
+	};
 
 	let device_arc = Arc::new(GptDevice {
 	    mbr: mbr,
 	    pth: pth,
 	    pt: partition_entries.clone(),
-	    dev: dev,
+	    dev: device,
 	});
 
 	for partition in 0 .. partition_entries.len() {
@@ -163,7 +168,7 @@ impl GptDevice {
 	    return Err(());
 	}
 
-	self.dev.read(adjusted_start, size, access_restriction)
+	self.dev.lock().read(adjusted_start, size, access_restriction)
     }
 }
 
@@ -176,7 +181,7 @@ pub fn init() {
     BLOCK_DEVICE_TABLE.call_once(|| RwLock::new(Vec::new()));
 }
 
-pub fn register_block_device(dev: Arc<dyn driver::Device + Send + Sync>) {
+pub fn register_block_device(dev: Arc<Mutex<dyn driver::Device + Send + Sync>>) {
     if let Some(gpt_device) = GptDevice::new(dev) {
 	let mut device_tbl = BLOCK_DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
 	device_tbl.push(gpt_device);

@@ -3,6 +3,7 @@ use alloc::fmt;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitfield::bitfield;
+use bytes;
 use core::any::Any;
 use spin::Mutex;
 
@@ -152,13 +153,14 @@ pub struct UsbTransfer {
     pub endpoint: u8,
     pub speed: PortSpeed,
     pub poll: bool,
+    pub callback: Option<Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>>,
 }
 
 pub trait UsbHCI: Send + Sync {
     fn get_ports(&self) -> Vec<Port>;
     fn transfer(&mut self, address: u8, transfer: UsbTransfer) -> Option<Box<[u8]>>;
     fn get_free_address(&mut self) -> u8;
-    fn interrupt(&mut self);
+    fn interrupt(&mut self) -> (Option<Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>>, Option<bytes::Bytes>);
 }
 
 #[derive(Clone)]
@@ -217,6 +219,7 @@ pub fn register_hci(locked_hci: Arc<Mutex<Box<dyn UsbHCI>>>) {
 		endpoint: 0,
 		speed: port.speed,
 		poll: true,
+		callback: None,
 	    };
 	    let configuration_descriptor_slice = hci.transfer(0, xfer_config_descriptor).unwrap();
 	    let (_, configuration_descriptor) = protocol::parse_configuration_descriptor(&configuration_descriptor_slice).unwrap();
@@ -234,6 +237,7 @@ pub fn register_hci(locked_hci: Arc<Mutex<Box<dyn UsbHCI>>>) {
 		endpoint: 0,
 		speed: port.speed,
 		poll: true,
+		callback: None,
 	    };
 	    hci.transfer(0, set_addr);
 
@@ -248,6 +252,7 @@ pub fn register_hci(locked_hci: Arc<Mutex<Box<dyn UsbHCI>>>) {
 		endpoint: 0,
 		speed: port.speed,
 		poll: true,
+		callback: None,
 	    };
 	    let descriptors = hci.transfer(device_address, xfer_descriptors).unwrap();
 
@@ -265,6 +270,7 @@ pub fn register_hci(locked_hci: Arc<Mutex<Box<dyn UsbHCI>>>) {
 		endpoint: 0,
 		speed: port.speed,
 		poll: true,
+		callback: None,
 	    };
 	    hci.transfer(device_address, set_configuration);
 	    

@@ -4,6 +4,7 @@ use alloc::sync::Arc;
 use core::ascii;
 use core::slice;
 use alloc::string::String;
+use spin::Mutex;
 
 pub struct ConsoleDevice {}
 unsafe impl Send for ConsoleDevice { }
@@ -25,7 +26,7 @@ impl driver::Device for ConsoleDevice {
 }
 
 pub fn init() {
-    let device = Arc::new(ConsoleDevice {});
+    let device = Arc::new(Mutex::new(ConsoleDevice {}));
     let devid = driver::register_device(device);
     driver::register_devfs(String::from("console"), devid);
 }

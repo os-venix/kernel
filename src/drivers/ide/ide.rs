@@ -283,7 +283,7 @@ impl IdeController<'_> {
 	    let size = ide_drive.ident.get_size_in_sectors();
 
 	    log::info!("Drive 0: {} - {} MiB", model, size / (1024 * 2));
-	    let device_arc = Arc::new(ide_drive);
+	    let device_arc = Arc::new(Mutex::new(ide_drive));
 	    driver::register_device(device_arc.clone());
 	    block::register_block_device(device_arc);
 	}
@@ -292,7 +292,7 @@ impl IdeController<'_> {
 	    let size = ide_drive.ident.get_size_in_sectors();
 	    log::info!("Drive 1: {} - {} MiB", model, size / (1024 * 2));
 
-	    let device_arc = Arc::new(ide_drive);
+	    let device_arc = Arc::new(Mutex::new(ide_drive));
 	    driver::register_device(device_arc.clone());
 	    block::register_block_device(device_arc);
 	}
