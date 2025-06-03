@@ -14,6 +14,7 @@ use bytes::Bytes;
 use crate::driver;
 use crate::memory;
 use crate::sys::block;
+use crate::sys::syscall;
 
 const IDE_CTL_REG: u16 = 0;
 const IDE_CTL_NIEN: u8 = 1 << 1;
@@ -325,9 +326,9 @@ unsafe impl Send for IdeDrive<'_> { }
 unsafe impl Sync for IdeDrive<'_> { }
 
 impl driver::Device for IdeDrive<'_> {
-    fn read(&mut self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, ()> {
+    fn read(&mut self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, syscall::CanonicalError> {
 	if self.drive_type != DriveType::ATA {
-	    return Err(());
+	    return Err(syscall::CanonicalError::EIO);
 	}
 	let mode = self.ident.get_mode();
 
@@ -465,7 +466,7 @@ impl IdeDrive<'_> {
 	};
     }
     
-    fn pio_read(&self, offset: u64, size: u64) -> Result<Bytes, ()> {
+    fn pio_read(&self, offset: u64, size: u64) -> Result<Bytes, syscall::CanonicalError> {
 	let ctl = self.controller.lock();
 	self.select_drive_and_set_xfer_params(&ctl, offset, size);
 
@@ -522,7 +523,7 @@ impl IdeDrive<'_> {
 	}
     }
 
-    fn dma_read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, ()> {
+    fn dma_read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, syscall::CanonicalError> {
 	let mut ctl = self.controller.lock();
 
 	// We don't (yet) support multiple PRDs per transfer

@@ -4,6 +4,7 @@ use x86_64::structures::gdt::{GlobalDescriptorTable, Descriptor, SegmentSelector
 use x86_64::instructions::tables::load_tss;
 use x86_64::instructions::segmentation::{CS, DS, ES, FS, GS, SS, Segment};
 use x86_64::registers::model_specific::Msr;
+use spin::Once;
 
 use crate::memory;
 
@@ -12,6 +13,8 @@ pub const KERNEL_IST_INDEX: u16 = 1;
 const IA32_FSBASE_MSR: u32 = 0xC0000100;
 const IA32_GSBASE_MSR: u32 = 0xC0000101;
 const IA32_KERNELGSBASE_MSR: u32 = 0xC0000102;
+
+pub static IST_FRAME: Once<u64> = Once::new();
 
 pub struct Selectors {
     code_selector: SegmentSelector,
@@ -66,6 +69,8 @@ pub fn init() {
     // Both syscalls and interrupts can use the same stack, as only one will ever be running at once - syscalls disable interrupts, and interrupt handlers do too
     pcb.tss.privilege_stack_table[0] = stack_start + (1024 * 1024 * 8);
     pcb.tss.interrupt_stack_table[KERNEL_IST_INDEX as usize] = stack_start + (1024 * 1024 * 8);
+
+    IST_FRAME.call_once(|| stack_start.as_u64());
 
     pcb.gdt = GlobalDescriptorTable::new();
     let code_selector = pcb.gdt.append(Descriptor::kernel_code_segment());

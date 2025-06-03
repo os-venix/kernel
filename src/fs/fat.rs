@@ -9,6 +9,7 @@ use bytes;
 use alloc::slice;
 
 use crate::sys::block;
+use crate::sys::syscall;
 use crate::sys::vfs;
 use crate::memory;
 
@@ -377,7 +378,7 @@ impl vfs::FileSystem for Fat16Fs {
 	Err(())
     }
 
-    fn read(&self, path: String, offset: u64, len: u64) -> Result<bytes::Bytes, ()> {
+    fn read(&self, path: String, offset: u64, len: u64) -> Result<bytes::Bytes, syscall::CanonicalError> {
 	let parts = path.split("/")
 	    .filter(|s| s.len() != 0)
 	    .collect::<Vec<&str>>();

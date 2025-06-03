@@ -6,11 +6,31 @@ use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{FsBase, Efer, EferFlags, SFMask, Star, LStar};
 use x86_64::registers::rflags::RFlags;
 use alloc::vec::Vec;
+use core::error::Error;
+use alloc::fmt;
 
 use crate::gdt;
 use crate::scheduler;
 use crate::sys::vfs;
 use crate::memory;
+
+#[repr(u64)]
+#[derive(Debug)]
+pub enum CanonicalError {
+    EIO = 5,
+    EBADF = 9,
+    EAGAIN = 11,
+    EACCESS = 13,
+    EINVAL = 22,
+}
+
+impl fmt::Display for CanonicalError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+	write!(f, "Got error {:?}", self)
+    }
+}
+
+impl Error for CanonicalError { }
 
 pub fn init() {
     let (kernel_code, kernel_data, user_code, user_data) = gdt::get_code_selectors();
@@ -52,14 +72,8 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 	    };
 
 	    match vfs::read_by_fd(/* file descriptor= */ actual_fd, /* buf= */ rsi, /* count= */ rdx) {
-		Ok(len) => {
-		    log::info!("Len {}", len);
-		    (len, 0)
-		},
-		Err(_) => {
-		    log::info!(":(");
-		    (0xFFFF_FFFF_FFFF_FFFF, 5)  // -1 error, EIO
-		}
+		Ok(len) => (len, 0),
+		Err(e) => (0xFFFF_FFFF_FFFF_FFFF, e as u64)  // -1 error, EIO
 	    }
 	},
 	0x02 => {  // open

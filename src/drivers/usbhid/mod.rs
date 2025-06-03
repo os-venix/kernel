@@ -9,6 +9,7 @@ use crate::driver;
 use crate::drivers::usb::protocol as usb_protocol;
 use crate::drivers::usb::usb;
 use crate::memory;
+use crate::sys::syscall;
 
 mod protocol;
 
@@ -139,7 +140,7 @@ unsafe impl Send for Keyboard {}
 unsafe impl Sync for Keyboard {}
 
 impl driver::Device for Keyboard {
-    fn read(&mut self, _offset: u64, _size: u64, _access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, ()> {
+    fn read(&mut self, _offset: u64, _size: u64, _access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, syscall::CanonicalError> {
 	unimplemented!();
     }
     fn write(&mut self, _buf: *const u8, _size: u64) -> Result<u64, ()> {

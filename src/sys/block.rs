@@ -83,7 +83,7 @@ impl GptDevice {
 	    let mut dev = device.lock();
 	    let mbr_buf = match dev.read(0, 1, memory::MemoryAccessRestriction::Kernel) {
 		Ok(a) => a,
-		Err(()) => {
+		Err(_) => {
 		    log::info!("Read went wrong");
 		    return None;
 		}
@@ -169,7 +169,10 @@ impl GptDevice {
 	    return Err(());
 	}
 
-	self.dev.lock().read(adjusted_start, size, access_restriction)
+	match self.dev.lock().read(adjusted_start, size, access_restriction) {
+	    Ok(a) => Ok(a),
+	    Err(_) => Err(())
+	}
     }
 }
 

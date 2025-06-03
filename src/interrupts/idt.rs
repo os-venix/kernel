@@ -26,8 +26,14 @@ macro_rules! irq_handler_def {
 		    // We don't (yet) have kthreads. Only save if coming from ring 3
 		    if stack_frame.stack_frame.code_segment.rpl() == PrivilegeLevel::Ring3 {
 			scheduler::set_registers_for_current_process(
-			    stack_frame.stack_frame.stack_pointer.as_u64(), stack_frame.stack_frame.instruction_pointer.as_u64(), &stack_frame.registers);
+			    stack_frame.stack_frame.stack_pointer.as_u64(),
+			    stack_frame.stack_frame.instruction_pointer.as_u64(), &stack_frame.registers);
 		    }
+
+		    if stack_frame.stack_frame.stack_pointer.as_u64() >= *gdt::IST_FRAME.get().expect(":(") &&
+			stack_frame.stack_frame.stack_pointer.as_u64() <= *gdt::IST_FRAME.get().expect(":(") + (1024 * 1024 * 8) {
+			    panic!("Re-entrant IRQ");
+			}
 
 		    local_apic::ack_apic($irq);
 
@@ -35,12 +41,18 @@ macro_rules! irq_handler_def {
 			let handler_funcs = HANDLER_FUNCS.get().expect("Handler funcs not initialised").read();
 			match handler_funcs.get(&$irq) {
 			    Some(h) => for func in h.iter() {
+				let func_ptr = &*func as *const _ as *const () as usize;
+
+				if func_ptr < 0x1000 {
+				    panic!("Bad IRQ handler");
+				}
+
 				(func)();
 			    },
 			    None => (),
 			}
 		    }
-		    
+
 		    if stack_frame.stack_frame.code_segment.rpl() == PrivilegeLevel::Ring3 {
 			let (rsp, rip) = scheduler::get_registers_for_current_process(&mut stack_frame.registers);
 			unsafe {
@@ -50,6 +62,8 @@ macro_rules! irq_handler_def {
 			    });
 			}
 		    }
+
+//		    log::info!("EOI");
 		}
 
 		unsafe {
@@ -76,10 +90,12 @@ macro_rules! irq_handler_def {
 			"push r13",
 			"push r14",
 			"push r15",
+			"push r15",  // Extra push for alignment
 
 			"mov rdi, rsp",
 			"call {inner}",
 
+			"pop r15",
 			"pop r15",
 			"pop r14",
 			"pop r13",

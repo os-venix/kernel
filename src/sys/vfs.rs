@@ -5,6 +5,10 @@ use alloc::collections::btree_map::BTreeMap;
 use anyhow::{anyhow, Result};
 use alloc::slice;
 use bytes;
+use x86_64;
+use core::arch::asm;
+
+use crate::sys::syscall;
 
 const SEEK_SET: u64 = 3;
 const SEEK_CUR: u64 = 1;
@@ -16,7 +20,7 @@ pub struct Stat {
 }
 
 pub trait FileSystem {
-    fn read(&self, path: String, offset: u64, len: u64) -> Result<bytes::Bytes, ()>;
+    fn read(&self, path: String, offset: u64, len: u64) -> Result<bytes::Bytes, syscall::CanonicalError>;
     fn write(&self, path: String, buf: *const u8, len: usize) -> Result<u64, ()>;
     fn stat(&self, path: String) -> Result<Stat, ()>;
     fn ioctl(&self, path: String, ioctl: u64) -> Result<(bytes::Bytes, usize, u64), ()>;
@@ -52,7 +56,7 @@ pub fn mount(mount_point: String, fs: Arc<RwLock<dyn FileSystem + Send + Sync>>)
     mount_table.insert(mount_point, fs);
 }
 
-fn get_mount_point(path: &String) -> Result<(Arc<RwLock<dyn FileSystem + Send + Sync>>, String)> {
+fn get_mount_point(path: &String) -> Result<(Arc<RwLock<dyn FileSystem + Send + Sync>>, String), syscall::CanonicalError> {
     let mut fs: Option<Arc<RwLock<dyn FileSystem + Send + Sync>>> = None;
     let mut file_name: String = String::new();
     let mut current_mount_point = String::new();
@@ -71,16 +75,11 @@ fn get_mount_point(path: &String) -> Result<(Arc<RwLock<dyn FileSystem + Send + 
     Ok((fs.expect("Couldn't find an FS"), file_name))
 }
 
-pub fn read(file: String, offset: u64, len: u64) -> Result<bytes::Bytes> {
+pub fn read(file: String, offset: u64, len: u64) -> Result<bytes::Bytes, syscall::CanonicalError> {
     let (fs, file_name) = get_mount_point(&file)?;
 
-    {
-	let fs_to = fs.read();
-	return match fs_to.read(file_name, offset, len) {
-	    Ok(f) => Ok(f),
-	    Err(_) => Err(anyhow!("Unable to load {}", file)),
-	};
-    }
+    let fs_to = fs.read();
+    fs_to.read(file_name.clone(), offset, len)
 }
 
 pub fn write(file: String, buf: *const u8, len: usize) -> Result<u64> {
@@ -125,7 +124,7 @@ pub fn write_by_fd(fd: Arc<RwLock<FileDescriptor>>, buf: u64, len: u64) -> Resul
     write(file, buf as *const u8, len as usize)
 }
 
-pub fn read_by_fd(fd: Arc<RwLock<FileDescriptor>>, buf: u64, len: u64) -> Result<u64> {
+pub fn read_by_fd(fd: Arc<RwLock<FileDescriptor>>, buf: u64, len: u64) -> Result<u64, syscall::CanonicalError> {
     let mut w = fd.write();
     let file = w.get_file_name();
 

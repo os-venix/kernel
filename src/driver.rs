@@ -9,6 +9,7 @@ use alloc::collections::BTreeMap;
 use bytes;
 
 use crate::sys::acpi;
+use crate::sys::syscall;
 use crate::sys::vfs;
 use crate::memory;
 
@@ -28,7 +29,7 @@ pub trait Bus {
 }
 
 pub trait Device {
-    fn read(&mut self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<bytes::Bytes, ()>;
+    fn read(&mut self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<bytes::Bytes, syscall::CanonicalError>;
     fn write(&mut self, buf: *const u8, size: u64) -> Result<u64, ()>;
     fn ioctl(&self, ioctl: u64) -> Result<(bytes::Bytes, usize, u64), ()>;
 }
@@ -48,17 +49,17 @@ impl DevFS {
     }
 }
 impl vfs::FileSystem for DevFS {
-    fn read(&self, path: String, offset: u64, len: u64) -> Result<bytes::Bytes, ()> {
+    fn read(&self, path: String, offset: u64, len: u64) -> Result<bytes::Bytes, syscall::CanonicalError> {
 	let parts = path.split("/")
 	    .filter(|s| s.len() != 0)
 	    .collect::<Vec<&str>>();
 	if parts.len() != 1 {
-	    return Err(());
+	    return Err(syscall::CanonicalError::EINVAL);
 	}
 
 	let device_id = match self.file_table.get(parts[0]) {
 	    Some(id) => id.clone(),
-	    None => return Err(()),
+	    None => return Err(syscall::CanonicalError::EACCESS),
 	};
 	let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
 	let mut device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist").lock();

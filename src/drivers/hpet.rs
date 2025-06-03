@@ -10,6 +10,7 @@ use bytes::Bytes;
 use crate::sys::acpi::{namespace, resources};
 use crate::memory;
 use crate::interrupts;
+use crate::sys::syscall;
 
 const LEG_RT_CNF: u64 = 0x02;
 const ENABLE_CNF: u64 = 0x01;
@@ -249,7 +250,7 @@ pub struct HpetDevice {}
 unsafe impl Send for HpetDevice { }
 unsafe impl Sync for HpetDevice { }
 impl driver::Device for HpetDevice {
-    fn read(&mut self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, ()> {
+    fn read(&mut self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, syscall::CanonicalError> {
 	panic!("Shouldn't have attempted to read from the HPET. That makes no sense.");
     }
     fn write(&mut self, buf: *const u8, size: u64) -> Result<u64, ()> {

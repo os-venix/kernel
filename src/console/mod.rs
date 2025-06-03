@@ -6,8 +6,10 @@ use core::slice;
 use alloc::string::String;
 use spin::{Once, Mutex};
 use bytes::Bytes;
+use core::cmp;
 
 use crate::sys::ioctl;
+use crate::sys::syscall;
 
 // Although strictly speaking a subsystem, not a device, this is implemented as a device. This allows us to make use of devfs,
 // allowing for reading and writing from usermode.
@@ -30,11 +32,16 @@ impl ConsoleDevice {
 }
 
 impl driver::Device for ConsoleDevice {
-    fn read(&mut self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, ()> {
-	if self.key_buffer.len() < size as usize {
-	    Ok(self.key_buffer.split_to(self.key_buffer.len()))
+    fn read(&mut self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, syscall::CanonicalError> {
+	// Check for a complete line (canonical mode)
+	if let Some(pos) = self.key_buffer.iter().position(|&b| b == b'\n') {
+            // Include the newline character
+            let line_len = pos + 1;
+            let to_read = cmp::min(line_len, size as usize);
+            Ok(self.key_buffer.split_to(to_read))
 	} else {
-	    Ok(self.key_buffer.split_to(size as usize))
+            // No full line available yet
+            Err(syscall::CanonicalError::EAGAIN)
 	}
     }
 

@@ -831,6 +831,11 @@ fn handle_uhci_interrupts(hci: &Arc<Mutex<Box<dyn usb::UsbHCI>>>) {
 
     // This has to be done outside of the lock, in case it results in more USB traffic
     if let Some(c) = callback {
+	let fn_ptr = &*c as *const _ as *const () as usize;
+	if fn_ptr < 0x1_0000_0000 {
+            panic!("Invalid USB callback pointer: 0x{:x}", fn_ptr);
+	}
+
 	if let Some(b) = buffer {
 	    c(b);
 	}
