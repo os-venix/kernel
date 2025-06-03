@@ -4,6 +4,7 @@ pub mod acpi;
 pub mod block;
 pub mod syscall;
 pub mod vfs;
+pub mod ioctl;
 
 // CPU init
 pub fn init() {

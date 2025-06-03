@@ -52,8 +52,14 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 	    };
 
 	    match vfs::read_by_fd(/* file descriptor= */ actual_fd, /* buf= */ rsi, /* count= */ rdx) {
-		Ok(len) => (len, 0),
-		Err(_) => (0xFFFF_FFFF_FFFF_FFFF, 5),  // -1 error, EIO
+		Ok(len) => {
+		    log::info!("Len {}", len);
+		    (len, 0)
+		},
+		Err(_) => {
+		    log::info!(":(");
+		    (0xFFFF_FFFF_FFFF_FFFF, 5)  // -1 error, EIO
+		}
 	    }
 	},
 	0x02 => {  // open
@@ -87,6 +93,19 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 	    return match scheduler::close_fd(rdi) {
 		Ok(_) => (0, 0),
 		Err(_) => (0xFFFF_FFFF_FFFF_FFFF, 9),  // -1 error, EBADF
+	    }
+	},
+	0x04 => {  // ioctl
+	    let actual_fd = match scheduler::get_actual_fd(rdi) {
+		Ok(fd) => fd,
+		Err(_) => {
+		    return (0xFFFF_FFFF_FFFF_FFFF, 9);  // -1 error, EBADF
+		},
+	    };
+
+	    match vfs::ioctl_by_fd(/* file descriptor= */ actual_fd, /* ioctl= */ rsi, /* buf= */ rdx) {
+		Ok(ret) => (0, 0),
+		Err(_) => (0xFFFF_FFFF_FFFF_FFFF, 5),  // -1 error, EIO
 	    }
 	},
 	0x08 => {  // seek
@@ -224,7 +243,7 @@ unsafe extern "C" fn syscall_inner(mut stack_frame: scheduler::GeneralPurposeReg
 	stack_frame.r8,
 	stack_frame.r9,
 	stack_frame.rcx);
-    
+
     let (rsp, rip) = scheduler::get_registers_for_current_process(&mut stack_frame);
     core::arch::asm!(
 	"mov gs:[{sp}], {rsp}",

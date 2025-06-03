@@ -5,6 +5,7 @@ use alloc::sync::Arc;
 use alloc::boxed::Box;
 use spin::{Mutex, Once, RwLock};
 use core::ptr::{read_volatile, write_volatile};
+use bytes::Bytes;
 
 use crate::sys::acpi::{namespace, resources};
 use crate::memory;
@@ -248,11 +249,14 @@ pub struct HpetDevice {}
 unsafe impl Send for HpetDevice { }
 unsafe impl Sync for HpetDevice { }
 impl driver::Device for HpetDevice {
-    fn read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()> {
+    fn read(&mut self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, ()> {
 	panic!("Shouldn't have attempted to read from the HPET. That makes no sense.");
     }
-    fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()> {
+    fn write(&mut self, buf: *const u8, size: u64) -> Result<u64, ()> {
 	panic!("Shouldn't have attempted to write to the HPET. That makes no sense.");
+    }
+    fn ioctl(&self, ioctl: u64) -> Result<(Bytes, usize, u64), ()> {
+	panic!("Shouldn't have attempted to ioctl to the HPET. That makes no sense.");
     }
 }
 

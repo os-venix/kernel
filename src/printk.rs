@@ -58,6 +58,27 @@ impl LockedPrintk {
 	    write!(printk, "{}", s).unwrap();
 	});
     }
+
+    pub fn write_char(&self, s: char) {
+	without_interrupts(|| {
+            let mut printk = self.0.write();
+	    write!(printk, "{}", s).unwrap();
+	});
+    }
+
+    pub fn get_rows(&self) -> u8 {
+	without_interrupts(|| {
+            let mut printk = self.0.write();
+	    (printk.height() / 16) as u8
+	})
+    }
+
+    pub fn get_cols(&self) -> u8 {
+	without_interrupts(|| {
+            let mut printk = self.0.write();
+	    (printk.width() / get_raster_width(FontWeight::Regular, RasterHeight::Size16)) as u8
+	})
+    }
 }
 
 impl log::Log for LockedPrintk {

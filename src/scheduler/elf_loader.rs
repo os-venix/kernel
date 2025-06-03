@@ -17,19 +17,15 @@ pub struct Elf {
 
 impl Elf {
     pub fn new(file_name: String) -> Result<Elf> {
-	let (file_contents, file_size) = match sys::vfs::read(file_name.clone()) {
+	let stat = sys::vfs::stat(file_name.clone())?;
+	let file_contents = match sys::vfs::read(file_name.clone(), /* offset= */ 0, /* size= */ stat.size.unwrap()) {
 	    Ok(f) => f,
 	    Err(_) => {
-		log::info!("1a");
 		return Err(anyhow!("Could not load /init/init"));
 	    }
 	};
 
-	let file_contents_slice = unsafe {
-	    slice::from_raw_parts(file_contents, file_size)
-	};
-
-	let elf = match ElfFile::new(file_contents_slice) {
+	let elf = match ElfFile::new(&file_contents[..]) {
 	    Ok(f) => f,
 	    Err(e) => {
 		return Err(anyhow!("Could not initialise /init/init: {}", e));

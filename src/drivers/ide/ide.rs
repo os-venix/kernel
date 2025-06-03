@@ -9,6 +9,7 @@ use itertools::Itertools;
 use alloc::vec;
 use core::ptr;
 use bit_field::BitField;
+use bytes::Bytes;
 
 use crate::driver;
 use crate::memory;
@@ -324,7 +325,7 @@ unsafe impl Send for IdeDrive<'_> { }
 unsafe impl Sync for IdeDrive<'_> { }
 
 impl driver::Device for IdeDrive<'_> {
-    fn read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()> {
+    fn read(&mut self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, ()> {
 	if self.drive_type != DriveType::ATA {
 	    return Err(());
 	}
@@ -336,8 +337,12 @@ impl driver::Device for IdeDrive<'_> {
 	}
     }
 
-    fn write(&self, _buf: *const u8, _size: u64) -> Result<u64, ()> {
+    fn write(&mut self, _buf: *const u8, _size: u64) -> Result<u64, ()> {
 	panic!("Attempted to write to IDE drive. Not yet implemented");
+    }
+
+    fn ioctl(&self, ioctl: u64) -> Result<(Bytes, usize, u64), ()> {
+	panic!("Shouldn't have attempted to ioctl to the IDE drive. That makes no sense.");
     }
 }
     
@@ -460,7 +465,7 @@ impl IdeDrive<'_> {
 	};
     }
     
-    fn pio_read(&self, offset: u64, size: u64) -> Result<*const u8, ()> {
+    fn pio_read(&self, offset: u64, size: u64) -> Result<Bytes, ()> {
 	let ctl = self.controller.lock();
 	self.select_drive_and_set_xfer_params(&ctl, offset, size);
 
@@ -509,11 +514,15 @@ impl IdeDrive<'_> {
 		buf_u16[i as usize] = data_reg.read();
 	    }
 
-	    Ok(buf_ptr as *const u8)
+	    // Marshall into a Bytes
+	    let data_from = unsafe {
+		slice::from_raw_parts(buf_ptr as *const u8, size as usize)
+	    };
+	    Ok(bytes::Bytes::from(data_from))
 	}
     }
 
-    fn dma_read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()> {
+    fn dma_read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, ()> {
 	let mut ctl = self.controller.lock();
 
 	// We don't (yet) support multiple PRDs per transfer
@@ -663,7 +672,11 @@ impl IdeDrive<'_> {
 	    prdt_status_reg.write(status);
 	}
 
-	Ok(buf_virt.as_ptr::<u8>())
+	// Marshall into a Bytes
+	let data_from = unsafe {
+	    slice::from_raw_parts(buf_virt.as_ptr::<u8>(), size as usize)
+	};
+	Ok(bytes::Bytes::from(data_from))
     }
 
     fn select_drive_and_set_xfer_params(&self, ctl: &MutexGuard<'_, IdeController>, offset: u64, size: u64) {

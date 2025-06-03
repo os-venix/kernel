@@ -39,6 +39,7 @@ mod fs;
 mod scheduler;
 mod dma;
 mod utils;
+mod console;
 
 #[used]
 #[link_section = ".requests"]
@@ -153,6 +154,7 @@ fn init() {
 
     sys::vfs::init();
     driver::init();
+    console::init();
     sys::block::init();
     drivers::init();
 

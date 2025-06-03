@@ -6,6 +6,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use bytes;
 
 use crate::sys::acpi;
 use crate::sys::vfs;
@@ -27,8 +28,9 @@ pub trait Bus {
 }
 
 pub trait Device {
-    fn read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()>;
-    fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()>;
+    fn read(&mut self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<bytes::Bytes, ()>;
+    fn write(&mut self, buf: *const u8, size: u64) -> Result<u64, ()>;
+    fn ioctl(&self, ioctl: u64) -> Result<(bytes::Bytes, usize, u64), ()>;
 }
 
 struct DevFS {
@@ -46,19 +48,23 @@ impl DevFS {
     }
 }
 impl vfs::FileSystem for DevFS {
-    fn read(&self, path: String) -> Result<(*const u8, usize), ()> {
-	let device_id = match self.file_table.get(&path) {
+    fn read(&self, path: String, offset: u64, len: u64) -> Result<bytes::Bytes, ()> {
+	let parts = path.split("/")
+	    .filter(|s| s.len() != 0)
+	    .collect::<Vec<&str>>();
+	if parts.len() != 1 {
+	    return Err(());
+	}
+
+	let device_id = match self.file_table.get(parts[0]) {
 	    Some(id) => id.clone(),
 	    None => return Err(()),
 	};
 	let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
-	let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist").lock();
+	let mut device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist").lock();
 
 	// TODO: Set the values here after seeking is supported
-	match device.read(0, 0, memory::MemoryAccessRestriction::User) {
-	    Ok(buf) => Ok((buf, 0)),
-	    Err(()) => Err(()),
-	}
+	device.read(offset, len, memory::MemoryAccessRestriction::User)
     }
     fn write(&self, path: String, buf: *const u8, len: usize) -> Result<u64, ()> {
 	let parts = path.split("/")
@@ -73,7 +79,7 @@ impl vfs::FileSystem for DevFS {
 	    None => return Err(()),
 	};
 	let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
-	let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist").lock();
+	let mut device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist").lock();
 
 	device.write(buf, len as u64)
     }
@@ -92,8 +98,25 @@ impl vfs::FileSystem for DevFS {
 
 	Ok(vfs::Stat {
 	    file_name: path,
-	    size: 0,
+	    size: None,
 	})
+    }
+    fn ioctl(&self, path: String, ioctl: u64) -> Result<(bytes::Bytes, usize, u64), ()> {
+	let parts = path.split("/")
+	    .filter(|s| s.len() != 0)
+	    .collect::<Vec<&str>>();
+	if parts.len() != 1 {
+	    return Err(());
+	}
+
+	let device_id = match self.file_table.get(parts[0]) {
+	    Some(id) => id.clone(),
+	    None => return Err(()),
+	};
+	let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
+	let mut device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist").lock();
+
+	device.ioctl(ioctl)
     }
 }
 

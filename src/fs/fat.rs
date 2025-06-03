@@ -5,6 +5,8 @@ use core::ascii;
 use core::ptr;
 use spin::RwLock;
 use alloc::format;
+use bytes;
+use alloc::slice;
 
 use crate::sys::block;
 use crate::sys::vfs;
@@ -151,7 +153,7 @@ impl Fat16Fs {
 	})
     }
 
-    fn get_root_directory(&self) -> *const u8 {
+    fn get_root_directory(&self) -> bytes::Bytes {
 	let sectors_per_lba = self.boot_record.bytes_per_sector / 512;
 
 	let root_directory_sect = self.boot_record.reserved_sectors +
@@ -175,7 +177,8 @@ impl Fat16Fs {
 	let fat_size_lba = fat_size_sectors / sectors_per_lba;
 
 	let fat_buf_ptr = self.dev.read(
-	    self.partition, fat_lba as u64, fat_size_lba as u64, memory::MemoryAccessRestriction::Kernel).expect("Couldn't read FAT");
+	    self.partition, fat_lba as u64, fat_size_lba as u64, memory::MemoryAccessRestriction::Kernel).expect("Couldn't read FAT")
+	    .as_ptr();
 
 	let mut table: Vec<u16> = Vec::new();
 	for entry in 0 .. self.boot_record.sectors_per_fat * self.boot_record.bytes_per_sector / 2 {
@@ -270,17 +273,17 @@ impl Fat16Fs {
 	    panic!("Attempted to read from non-root directory. Not implemented.");
 	}
 
-	let root_dir_buf_ptr = self.get_root_directory();
+	let root_dir_buf = self.get_root_directory();
 
 	let mut ptr = 0;
 	let mut files: Vec<Entry> = Vec::new();
 	while ptr < self.boot_record.root_directory_entries {
-	    let (maybe_fn, offset) = self.get_filename(root_dir_buf_ptr, ptr as usize);
+	    let (maybe_fn, offset) = self.get_filename(root_dir_buf.as_ptr(), ptr as usize);
 	    ptr += offset as u16;
 
 	    if let Some(file_name) = maybe_fn {
 		let directory_entry = unsafe {
-		    ptr::read(root_dir_buf_ptr.wrapping_add(ptr as usize * 32) as *const DirectoryEntry)
+		    ptr::read(root_dir_buf.as_ptr().wrapping_add(ptr as usize * 32) as *const DirectoryEntry)
 		};
 
 		if directory_entry.attributes & 0x10 != 0 {
@@ -300,7 +303,7 @@ impl Fat16Fs {
 		ptr += 1;
 	    } else {
 		let directory_entry = unsafe {
-		    ptr::read(root_dir_buf_ptr.wrapping_add(ptr as usize * 32) as *const DirectoryEntry)
+		    ptr::read(root_dir_buf.as_ptr().wrapping_add(ptr as usize * 32) as *const DirectoryEntry)
 		};
 
 		if directory_entry.file_name[0].to_u8() == 0x00 {
@@ -369,12 +372,17 @@ impl Fat16Fs {
 }
 
 impl vfs::FileSystem for Fat16Fs {
-    fn read(&self, path: String) -> Result<(*const u8, usize), ()> {
+    fn ioctl(&self, path: String, ioctl: u64) -> Result<(bytes::Bytes, usize, u64), ()> {
+	// ioctls are devices only
+	Err(())
+    }
+
+    fn read(&self, path: String, offset: u64, len: u64) -> Result<bytes::Bytes, ()> {
 	let parts = path.split("/")
 	    .filter(|s| s.len() != 0)
 	    .collect::<Vec<&str>>();
 
-	let mut current_buf_ptr = self.get_root_directory();
+	let mut current_buf_ptr = self.get_root_directory().as_ptr();
 	let mut file_size: usize = 0 as usize;
 
 	for path_part in parts {
@@ -438,7 +446,8 @@ impl vfs::FileSystem for Fat16Fs {
 
 		current_buf_ptr = self.dev.read(
 		    self.partition, cluster_lba as u64,
-		    (size_lba as u64) * cluster_strings_to_read[0].1, access).expect("Couldn't read file");
+		    (size_lba as u64) * cluster_strings_to_read[0].1, access).expect("Couldn't read file")
+		    .as_ptr();
 
 		file_size = inode.file_size as usize;
 	    } else {
@@ -447,8 +456,12 @@ impl vfs::FileSystem for Fat16Fs {
 //		return Err(());
 	    }
 	}
-	
-	Ok((current_buf_ptr, file_size))
+
+	// Marshall into a Bytes
+	let data_from = unsafe {
+	    slice::from_raw_parts(current_buf_ptr, file_size)
+	};
+	Ok(bytes::Bytes::from_static(&data_from[offset as usize .. (offset + len) as usize]))
     }
 
     fn write(&self, path: String, buf: *const u8, len: usize) -> Result<u64, ()> {
@@ -460,7 +473,7 @@ impl vfs::FileSystem for Fat16Fs {
 	    .filter(|s| s.len() != 0)
 	    .collect::<Vec<&str>>();
 
-	let mut current_buf_ptr = self.get_root_directory();
+	let mut current_buf_ptr = self.get_root_directory().as_ptr();
 	let mut file_size: usize = 0 as usize;
 
 	for path_part in parts {
@@ -527,7 +540,8 @@ impl vfs::FileSystem for Fat16Fs {
 		current_buf_ptr = self.dev.read(
 		    self.partition, cluster_lba as u64,
 		    (size_lba as u64) * cluster_strings_to_read[0].1,
-		    memory::MemoryAccessRestriction::Kernel).expect("Couldn't read file");
+		    memory::MemoryAccessRestriction::Kernel).expect("Couldn't read file")
+		    .as_ptr();
 	    } else {
 		// Not supported
 		panic!("More than one cluster string attempted to be loaded: {:?}", cluster_strings_to_read);
@@ -537,7 +551,7 @@ impl vfs::FileSystem for Fat16Fs {
 
 	Ok(vfs::Stat {
 	    file_name: path,
-	    size: file_size as u64,
+	    size: Some(file_size as u64),
 	})
     }
 }
@@ -576,7 +590,7 @@ fn detect_fat_fs(boot_record: BootRecord) -> FatFsType {
 }
 
 pub fn register_fat_fs(dev: Arc<block::GptDevice>, partition: u32) {    
-    let boot_record_buf_ptr = dev.read(partition, 0, 1, memory::MemoryAccessRestriction::Kernel).expect("Read went wrong");
+    let boot_record_buf_ptr = dev.read(partition, 0, 1, memory::MemoryAccessRestriction::Kernel).expect("Read went wrong").as_ptr();
     let boot_record = unsafe {
 	ptr::read(boot_record_buf_ptr as *const BootRecord)
     };

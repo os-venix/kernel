@@ -5,6 +5,7 @@ use alloc::string::String;
 use core::ptr;
 use core::ascii;
 use uuid::Uuid;
+use bytes::Bytes;
 
 use crate::driver;
 use crate::fs::fat;
@@ -79,8 +80,8 @@ pub struct GptDevice {
 impl GptDevice {
     fn new(device: Arc<Mutex<dyn driver::Device + Send + Sync>>) -> Option<Arc<GptDevice>> {
 	let (mbr, pth, partition_entries) = {
-	    let dev = device.lock();
-	    let mbr_buf_ptr = match dev.read(0, 1, memory::MemoryAccessRestriction::Kernel) {
+	    let mut dev = device.lock();
+	    let mbr_buf = match dev.read(0, 1, memory::MemoryAccessRestriction::Kernel) {
 		Ok(a) => a,
 		Err(()) => {
 		    log::info!("Read went wrong");
@@ -88,16 +89,16 @@ impl GptDevice {
 		}
 	    };
 	    let mbr = unsafe {
-		ptr::read(mbr_buf_ptr as *const Mbr)
+		ptr::read(mbr_buf.as_ptr() as *const Mbr)
 	    };
 
 	    if mbr.partitions[0].system_id != 0xEE {
 		return None;
 	    }
 
-	    let pth_buf_ptr = dev.read(1, 1, memory::MemoryAccessRestriction::Kernel).expect("Read went wrong");
+	    let pth_buf = dev.read(1, 1, memory::MemoryAccessRestriction::Kernel).expect("Read went wrong");
 	    let pth = unsafe {
-		ptr::read(pth_buf_ptr as *const PartitionTableHeader)
+		ptr::read(pth_buf.as_ptr() as *const PartitionTableHeader)
 	    };
 
 	    let sig = pth.signature.iter()
@@ -115,7 +116,7 @@ impl GptDevice {
 
 	    for p in 0 .. (pth.partition_entry_array_size / 128) {
 		let partition = unsafe {
-		    ptr::read(pt_buf.wrapping_add(p as usize * 128) as *const PartitionEntry)
+		    ptr::read(pt_buf.as_ptr().wrapping_add(p as usize * 128) as *const PartitionEntry)
 		};
 
 		partition_entries.push(partition);
@@ -153,7 +154,7 @@ impl GptDevice {
 	Some(device_arc)
     }
 
-    pub fn read(&self, partition: u32, starting_block: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()> {
+    pub fn read(&self, partition: u32, starting_block: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, ()> {
 	if partition as usize >= self.pt.len() {
 	    return Err(());
 	}

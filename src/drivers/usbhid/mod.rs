@@ -2,7 +2,9 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::Mutex;
+use bytes::Bytes;
 
+use crate::console;
 use crate::driver;
 use crate::drivers::usb::protocol as usb_protocol;
 use crate::drivers::usb::usb;
@@ -125,7 +127,7 @@ impl Keyboard {
 
 	if most_recent_key != self.current_active_key {
 	    match most_recent_key {
-		Some(protocol::Key::AsciiKey(mrk)) => log::info!("{}", mrk),
+		Some(protocol::Key::AsciiKey(mrk)) => console::register_keypress(mrk),
 		_ => (),
 	    }
 	    self.current_active_key = most_recent_key;
@@ -137,10 +139,13 @@ unsafe impl Send for Keyboard {}
 unsafe impl Sync for Keyboard {}
 
 impl driver::Device for Keyboard {
-    fn read(&self, _offset: u64, _size: u64, _access_restriction: memory::MemoryAccessRestriction) -> Result<*const u8, ()> {
+    fn read(&mut self, _offset: u64, _size: u64, _access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, ()> {
 	unimplemented!();
     }
-    fn write(&self, _buf: *const u8, _size: u64) -> Result<u64, ()> {
+    fn write(&mut self, _buf: *const u8, _size: u64) -> Result<u64, ()> {
+	unimplemented!();
+    }
+    fn ioctl(&self, ioctl: u64) -> Result<(Bytes, usize, u64), ()> {
 	unimplemented!();
     }
 }
