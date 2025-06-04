@@ -273,6 +273,7 @@ unsafe extern "C" fn syscall_inner(mut stack_frame: scheduler::GeneralPurposeReg
     stack_frame.rax = rax;
     stack_frame.rcx = rip;
     stack_frame.rdx = rdx;
+    scheduler::set_registers_for_current_process(rsp, rip, &mut stack_frame);
 }
 
 // TODO - load kernel stack; may need to use swapgs for that

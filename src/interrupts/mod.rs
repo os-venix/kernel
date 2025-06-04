@@ -49,7 +49,6 @@ pub fn init_bsp_apic() {
 
 pub fn enable_interrupts() {
     acpi::set_interrupt_model(acpi::InterruptModel::IoApic).expect("Unable to switch into IO APIC mode");    
-    x86_64::instructions::interrupts::enable();
 }
 
 pub fn enable_gsi(gsi: u32, handler: &'static (dyn Fn() + Send + Sync)) {

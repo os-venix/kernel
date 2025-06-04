@@ -11,6 +11,7 @@ use crate::gdt;
 use crate::scheduler;
 
 #[repr(C)]
+#[derive(Debug)]
 struct StackFrame {
     registers: scheduler::GeneralPurposeRegisters,
     stack_frame: InterruptStackFrame,
@@ -22,7 +23,7 @@ macro_rules! irq_handler_def {
 	    #[naked]
 	    #[allow(named_asm_labels)]
 	    extern "x86-interrupt" fn [<irq_ $irq >] (stack_frame: InterruptStackFrame) {
-		extern "C" fn inner(mut stack_frame: StackFrame) {
+		extern "C" fn inner(stack_frame: &StackFrame) -> ! {
 		    // We don't (yet) have kthreads. Only save if coming from ring 3
 		    if stack_frame.stack_frame.code_segment.rpl() == PrivilegeLevel::Ring3 {
 			scheduler::set_registers_for_current_process(
@@ -53,17 +54,7 @@ macro_rules! irq_handler_def {
 			}
 		    }
 
-		    if stack_frame.stack_frame.code_segment.rpl() == PrivilegeLevel::Ring3 {
-			let (rsp, rip) = scheduler::get_registers_for_current_process(&mut stack_frame.registers);
-			unsafe {
-			    stack_frame.stack_frame.as_mut().update(|frame| {
-				frame.stack_pointer = VirtAddr::new(rsp);
-				frame.instruction_pointer = VirtAddr::new(rip);
-			    });
-			}
-		    }
-
-//		    log::info!("EOI");
+		    scheduler::schedule_next();
 		}
 
 		unsafe {
@@ -90,34 +81,9 @@ macro_rules! irq_handler_def {
 			"push r13",
 			"push r14",
 			"push r15",
-			"push r15",  // Extra push for alignment
 
 			"mov rdi, rsp",
 			"call {inner}",
-
-			"pop r15",
-			"pop r15",
-			"pop r14",
-			"pop r13",
-			"pop r12",
-			"pop r11",
-			"pop r10",
-			"pop r9",
-			"pop r8",
-			"pop rbp",
-			"pop rdi",
-			"pop rsi",
-			"pop rdx",
-			"pop rcx",
-			"pop rbx",
-			"pop rax",
-
-			"test qword ptr [rsp + 0x08], 0x03",
-			"je 3f",
-			"swapgs",
-			"3:",
-
-			"iretq",
 
 			inner = sym inner,
 			options(noreturn),

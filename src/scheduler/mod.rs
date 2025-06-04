@@ -17,6 +17,7 @@ use crate::memory;
 use crate::sys::vfs;
 use crate::drivers::hpet;
 use crate::sys::syscall;
+use crate::gdt;
 
 mod elf_loader;
 
@@ -28,7 +29,7 @@ const AT_BASE: u64 = 7;
 const AT_ENTRY: u64 = 9;
 
 #[repr(C)]
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, Debug)]
 pub struct GeneralPurposeRegisters {
     pub r15: u64,
     pub r14: u64,
@@ -47,14 +48,24 @@ pub struct GeneralPurposeRegisters {
     pub rax: u64,
 }
 
+#[derive(Copy, Clone, Default)]
+struct ProcessContext {
+    gprs: GeneralPurposeRegisters,
+    rflags: u64,
+    rip: u64,
+    rsp: u64,
+    cs: u64,
+    ss: u64,
+}
+
 #[derive(Clone)]
 struct AuxVector {
     auxv_type: u64,
     value: u64,
 }
 
-//#[derive(Clone)]
 pub enum TaskState {
+    Setup,
     Running,
     AsyncSyscall {
 	future: Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + Sync + 'static>>,
@@ -62,7 +73,11 @@ pub enum TaskState {
     },
 }
 
-//#[derive(Clone)]
+pub enum TaskType {
+    User,
+    Kernel,
+}
+
 pub struct Process {
     pub address_space: Arc<RwLock<memory::user_address_space::AddressSpace>>,
     file_descriptors: BTreeMap<u64, Arc<RwLock<vfs::FileDescriptor>>>,
@@ -71,10 +86,9 @@ pub struct Process {
     envvars: Vec<String>,
     auxvs: Vec<AuxVector>,
     stack_bottom: VirtAddr,
-    rip: u64,
-    rsp: u64,
-    registers: GeneralPurposeRegisters,
+    context: ProcessContext,
     state: TaskState,
+    task_type: TaskType,
 }
 
 impl Process {
@@ -83,6 +97,8 @@ impl Process {
 	unsafe {
 	    address_space.switch_to();
 	}
+	
+	let (_, _, user_code, user_data) = gdt::get_code_selectors();
 
 	Process {
 	    address_space: Arc::new(RwLock::new(address_space)),
@@ -92,10 +108,16 @@ impl Process {
 	    envvars: vec!(String::from("PATH=/bin:/usr/bin")),
 	    auxvs: Vec::new(),
 	    stack_bottom: VirtAddr::new(0),
-	    rip: 0,
-	    rsp: 0,
-	    registers: GeneralPurposeRegisters::default(),
-	    state: TaskState::Running,
+	    context: ProcessContext {
+		gprs: GeneralPurposeRegisters::default(),
+		rflags: 0x202,
+		rip: 0,
+		rsp: 0,
+		cs: user_code.0 as u64,
+		ss: user_data.0 as u64,
+	    },
+	    state: TaskState::Setup,
+	    task_type: TaskType::User,
 	}
     }
 
@@ -110,10 +132,16 @@ impl Process {
 	    envvars: self.envvars.clone(),
 	    auxvs: self.auxvs.clone(),
 	    stack_bottom: self.stack_bottom,
-	    rip: rip,
-	    rsp: self.rsp,
-	    registers: self.registers.clone(),
-	    state: TaskState::Running,
+	    context: ProcessContext {
+		gprs: GeneralPurposeRegisters::default(),
+		rflags: 0x202,
+		rip: 0,
+		rsp: 0,
+		cs: self.context.cs,
+		ss: self.context.ss,
+	    },
+	    state: TaskState::Setup,
+	    task_type: TaskType::User,
 	}
     }
 
@@ -125,8 +153,8 @@ impl Process {
 
 	self.args = args;
 	self.envvars = envvars;
-	self.registers = GeneralPurposeRegisters::default();
-	self.registers.r11 = 0x202;
+	self.context.gprs = GeneralPurposeRegisters::default();
+	self.context.rflags = 0x202;
 	self.auxvs = Vec::new();
     }
 
@@ -142,7 +170,7 @@ impl Process {
 	};
 
 	self.stack_bottom = rsp;
-	self.rsp = rsp.as_u64() + 8 * 1024 * 1024;  // Start at the end of the stack and grow down
+	self.context.rsp = rsp.as_u64() + 8 * 1024 * 1024;  // Start at the end of the stack and grow down
     }
 
     pub fn attach_loaded_elf(&mut self, elf: elf_loader::Elf, ld_so: elf_loader::Elf) {
@@ -171,7 +199,7 @@ impl Process {
 	    value: 0
 	});
 
-	self.rip = ld_so.entry;
+	self.context.rip = ld_so.entry;
     }
 
     pub fn init_stack_and_start(&mut self) {
@@ -182,8 +210,8 @@ impl Process {
 	    .map(|arg| arg.len() + 1)
 	    .sum();
 	
-	self.rsp -= envvars_buf_size as u64 + args_buf_size as u64;
-	let stack_ptr = VirtAddr::new(self.rsp);
+	self.context.rsp -= envvars_buf_size as u64 + args_buf_size as u64;
+	let stack_ptr = VirtAddr::new(self.context.rsp);
 	let data_to = unsafe {
 	    slice::from_raw_parts_mut(
 		stack_ptr.as_mut_ptr::<u8>(),
@@ -198,7 +226,7 @@ impl Process {
 	    data_to[current_offs - envvar_len..current_offs].copy_from_slice(envvar_cstring.as_bytes_with_nul());
 	    current_offs -= envvar_len;
 
-	    envvar_p.push(self.rsp + current_offs as u64);
+	    envvar_p.push(self.context.rsp + current_offs as u64);
 	}
 	let mut args_p: Vec<u64> = Vec::new();
 	for arg in self.args.clone() {
@@ -207,14 +235,14 @@ impl Process {
 	    data_to[current_offs - arg_len..current_offs].copy_from_slice(arg_cstring.as_bytes_with_nul());
 
 	    current_offs -= arg_len;
-	    args_p.push(self.rsp + current_offs as u64);
+	    args_p.push(self.context.rsp + current_offs as u64);
 	}
 
-	self.rsp -= /* auxv = */(self.auxvs.len() as u64 * 16) +
+	self.context.rsp -= /* auxv = */(self.auxvs.len() as u64 * 16) +
 	    (self.envvars.len() as u64 * 8) +
 	    (self.args.len() as u64 * 8) +
 	/* padding = */(3 * 8);
-	let stack_ptr = VirtAddr::new(self.rsp);
+	let stack_ptr = VirtAddr::new(self.context.rsp);
 
 	let ptrs_to = unsafe {
 	    slice::from_raw_parts_mut(
@@ -236,17 +264,19 @@ impl Process {
 	    ptrs_to[3 + args_p.len() + envvar_p.len() + (i * 2)] = auxv.auxv_type;
 	    ptrs_to[4 + args_p.len() + envvar_p.len() + (i * 2)] = auxv.value;
 	}
+
+	self.state = TaskState::Running;
     }
 
     pub fn get_registers(&self, registers: &mut GeneralPurposeRegisters) -> (u64, u64) {
-	*registers = self.registers;
-	(self.rsp, self.rip)
+	*registers = self.context.gprs;
+	(self.context.rsp, self.context.rip)
     }
 
     pub fn set_registers(&mut self, rsp: u64, rip: u64, registers: &GeneralPurposeRegisters) {
-	self.rsp = rsp;
-	self.rip = rip;
-	self.registers = *registers;
+	self.context.rsp = rsp;
+	self.context.rip = rip;
+	self.context.gprs = *registers;
     }
 }
 
@@ -336,7 +366,7 @@ pub fn execve(filename: String, args: Vec<String>, envvars: Vec<String>) {
     }
 }
 
-pub fn exit() -> (u64, u64) {
+pub fn exit() -> ! {
     {
 	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
 	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
@@ -351,18 +381,6 @@ pub fn exit() -> (u64, u64) {
     }
 
     schedule_next();
-    
-    {
-	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-	if let Some(pid) = *running_process {
-	    // Set syscall return registers to the value of the associated registers in the newly scheduled task
-	    (process_tbl[&pid].registers.rax, process_tbl[&pid].registers.rdx)
-	} else {
-	    panic!("Attempted to access user address space when no process is running");
-	}
-    }
 }
 
 pub fn set_registers_for_current_process(rsp: u64, rip: u64, registers: &GeneralPurposeRegisters) {
@@ -387,8 +405,7 @@ pub fn get_registers_for_current_process(registers: &mut GeneralPurposeRegisters
     }
 }
 
-// TODO: use waker-based queues to avoid the need to continually poll.
-pub fn schedule_next() {
+fn next_task() -> ProcessContext {
     loop {
 	{
             let mut running_process = RUNNING_PROCESS
@@ -421,6 +438,7 @@ pub fn schedule_next() {
 		let (pid, process) = &mut tasks[(start_idx + i) % tasks_len];
 
 		match &mut process.state {
+		    TaskState::Setup => {},
                     TaskState::Running => {
 			*running_process = Some(*pid);
 
@@ -430,7 +448,7 @@ pub fn schedule_next() {
                             address_space.switch_to();
 			}
 
-			return;
+			return process.context;
                     }
                     TaskState::AsyncSyscall { future, waker } => {
 			use core::task::{RawWaker, RawWakerVTable, Context};
@@ -453,13 +471,13 @@ pub fn schedule_next() {
 			match future.as_mut().poll(&mut ctx) {
                             core::task::Poll::Ready(result) => {
 				process.state = TaskState::Running;
-				process.registers.rax = result.return_value as u64;
-				process.registers.rdx = result.err_num;
+				process.context.gprs.rax = result.return_value as u64;
+				process.context.gprs.rdx = result.err_num;
 
 				*running_process = Some(*pid);
 				let address_space = process.address_space.read();
 				unsafe { address_space.switch_to(); }
-				return;
+				return process.context;
                             }
                             core::task::Poll::Pending => { }
 			}
@@ -473,6 +491,62 @@ pub fn schedule_next() {
         unsafe { core::arch::asm!("hlt"); }
 	x86_64::instructions::interrupts::disable();
     }
+}
+
+#[naked]
+#[allow(named_asm_labels)]
+extern "C" fn context_switch(context: &ProcessContext) -> ! {
+    unsafe {
+	core::arch::asm!(
+	    // First, build up the stack frame for the iret
+	    "mov rcx, [rdi + 0x98]",  // SS
+	    "mov rbx, [rdi + 0x90]",  // CS
+	    "mov rax, [rdi + 0x88]",  // RSP
+	    "mov rdx, [rdi + 0x80]",  // RIP
+	    "mov rsi, [rdi + 0x78]",  // RFLAGS
+
+	    "push rcx",
+	    "push rax",
+	    "push rsi",
+	    "push rbx",
+	    "push rdx",
+
+	    // Next, restore the registers themselves
+	    "mov r15, [rdi + 0x00]",
+	    "mov r14, [rdi + 0x08]",
+	    "mov r13, [rdi + 0x10]",
+	    "mov r12, [rdi + 0x18]",
+	    "mov r11, [rdi + 0x20]",
+	    "mov r10, [rdi + 0x28]",
+	    "mov r9, [rdi + 0x30]",
+	    "mov r8, [rdi + 0x38]",
+	    "mov rbp, [rdi + 0x40]",
+	    // RDI would go here, but has to be done at the end
+	    "mov rsi, [rdi + 0x50]",
+	    "mov rdx, [rdi + 0x58]",
+	    "mov rcx, [rdi + 0x60]",
+	    "mov rbx, [rdi + 0x68]",
+	    "mov rax, [rdi + 0x70]",
+	    "mov rdi, [rdi + 0x48]",
+
+	    // Next, swap GS if needed
+	    "test qword ptr [rsp + 0x08], 0x03",
+	    "je 3f",
+	    "swapgs",
+	    "3:",
+
+	    // Lastly, iret to the process
+	    "iretq",
+
+	    options(noreturn),
+	);
+    }
+}
+
+// TODO: use waker-based queues to avoid the need to continually poll.
+pub fn schedule_next() -> ! {
+    let context = next_task();
+    context_switch(&context);
 }
 
 pub fn switch_to_process(pid: u64) {
@@ -550,9 +624,12 @@ pub fn start_active_process() -> ! {
 	}
     };
 
+    // This function doesn't actually need to do anything at all. This provides a stable, monotonic tick to the kernel.
+    // By virtue of the fact that interrutps all return via the scheduler, a new process will always be scheduled as appropriate.
+    hpet::add_periodic(1, Box::new(|| {}));
+
     // This is the entry point for init, and init alone. Only start the scheduler when we won't be messing about
     // with the scheduler any longer - for a start, we don't need to, and for two, we risk causing lock contention
-    hpet::add_periodic(1, Box::new(&schedule_next));
     unsafe {
 	core::arch::asm!(
 	    "swapgs",
