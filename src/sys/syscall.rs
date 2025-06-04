@@ -8,6 +8,9 @@ use x86_64::registers::rflags::RFlags;
 use alloc::vec::Vec;
 use core::error::Error;
 use alloc::fmt;
+use alloc::boxed::Box;
+use core::future::Future;
+use core::pin::Pin;
 
 use crate::gdt;
 use crate::scheduler;
@@ -17,6 +20,7 @@ use crate::memory;
 #[repr(u64)]
 #[derive(Debug)]
 pub enum CanonicalError {
+    EOK = 0,
     EIO = 5,
     EBADF = 9,
     EAGAIN = 11,
@@ -53,186 +57,280 @@ pub fn init() {
 		  RFlags::ALIGNMENT_CHECK);
 }
 
-fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u64, rcx: u64) -> (u64, u64) {
+async fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
+    let actual_fd = match scheduler::get_actual_fd(fd) {
+	Ok(fd) => fd,
+	Err(_) => {
+	    return SyscallResult {
+		return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		err_num: CanonicalError::EBADF as u64
+	    };
+	},
+    };
+
+    match vfs::write_by_fd(actual_fd, buf, count) {
+	Ok(len) => SyscallResult {
+	    return_value: len,
+	    err_num: CanonicalError::EOK as u64,
+	},
+	Err(_) => SyscallResult {
+	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    err_num: CanonicalError::EIO as u64
+	},
+    }
+}
+
+async fn sys_read(fd: u64, buf: u64, count: u64) -> SyscallResult {
+    let actual_fd = match scheduler::get_actual_fd(fd) {
+	Ok(fd) => fd,
+	Err(_) => {
+	    return SyscallResult {
+		return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		err_num: CanonicalError::EBADF as u64
+	    };
+	},
+    };
+
+    match vfs::read_by_fd(actual_fd, buf, count) {
+	Ok(len) => SyscallResult {
+	    return_value: len,
+	    err_num: CanonicalError::EOK as u64,
+	},
+	Err(_) => SyscallResult {
+	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    err_num: CanonicalError::EIO as u64
+	},
+    }
+}
+
+async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
+    // TODO - this does not check that the file actually exists
+    let path = unsafe {
+	match CStr::from_ptr(path_ptr as *const i8).to_str() {
+	    Ok(path) => String::from(path),
+	    Err(_) => {
+		return SyscallResult {
+		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		    err_num: CanonicalError::EINVAL as u64
+		};
+	    },
+	}
+    };
+
+    // Bottom 3 bits are mode. We don't currently enforce mode, but in order to progress, let's strip it out
+    // TODO - support read/write/exec/etc modes
+    if flags & 0xFFFF_FFFF_FFFF_FFF8 != 0 {
+	log::info!("Open flags are 0x{:x}", flags);
+	unimplemented!();
+    }
+
+    if let Err(_) = vfs::stat(path.clone()) {
+	// File does not exist
+	log::info!("Could not stat {}", path);
+	return SyscallResult {
+	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    err_num: CanonicalError::EACCESS as u64
+	};
+    }
+
+    let fd = scheduler::open_fd(path);
+    SyscallResult {
+	return_value: fd,
+	err_num: CanonicalError::EOK as u64,
+    }
+}
+
+async fn sys_close(fd: u64) -> SyscallResult {
+    return match scheduler::close_fd(fd) {
+	Ok(_) => SyscallResult {
+	    return_value: 0,
+	    err_num: 0,
+	},
+	Err(_) => SyscallResult {
+	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    err_num: CanonicalError::EBADF as u64
+	}
+    }
+}
+
+async fn sys_ioctl(fd_num: u64, ioctl: u64, buf: u64) -> SyscallResult {
+    let actual_fd = match scheduler::get_actual_fd(fd_num) {
+	Ok(fd) => fd,
+	Err(_) => {
+	    return SyscallResult {
+		return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		err_num: CanonicalError::EBADF as u64
+	    };
+	},
+    };
+
+    match vfs::ioctl_by_fd(actual_fd, ioctl, buf) {
+	Ok(ret) => SyscallResult {
+	    return_value: ret,
+	    err_num: CanonicalError::EOK as u64,
+	},
+	Err(_) => SyscallResult {
+	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    err_num: CanonicalError::EIO as u64
+	},
+    }
+}
+
+async fn sys_seek(fd_num: u64, offset: u64, whence: u64) -> SyscallResult {
+    let actual_fd = match scheduler::get_actual_fd(fd_num) {
+	Ok(fd) => fd,
+	Err(_) => {
+	    return SyscallResult {
+		return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		err_num: CanonicalError::EBADF as u64
+	    };
+	},
+    };
+
+    // Valid values are SEEK_SET, SEEK_CUR, or SEEK_END
+    if whence > 3 || whence == 0 {
+	return SyscallResult {
+	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    err_num: CanonicalError::EINVAL as u64
+	};
+    }
+
+    match vfs::seek_fd(actual_fd, offset, whence) {
+	Ok(offs) => SyscallResult {
+	    return_value: offs,
+	    err_num: CanonicalError::EOK as u64,
+	},
+	Err(_) => SyscallResult {
+	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    err_num: CanonicalError::EINVAL as u64
+	},
+    }
+}
+
+async fn sys_mmap(start_val: u64, count: u64, r8: u64) -> SyscallResult {
+    // TODO: properly pass parameters, and properly name them. There's a lot of unimplemented stuff here
+    if r8 != 0xFFFF_FFFF_FFFF_FFFF {
+	unimplemented!();
+    }
+
+    let (start, _) = if start_val == 0 {
+	match memory::kernel_allocate(
+	    count,
+	    memory::MemoryAllocationType::RAM,
+	    memory::MemoryAllocationOptions::Arbitrary,
+	    memory::MemoryAccessRestriction::User) {
+	    Ok(i) => i,
+	    Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),
+	}
+    } else {
+	match memory::kernel_allocate(
+	    count,
+	    memory::MemoryAllocationType::RAM,
+	    memory::MemoryAllocationOptions::Arbitrary,
+	    memory::MemoryAccessRestriction::UserByStart(VirtAddr::new(start_val))) {
+	    Ok(i) => i,
+	    Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),
+	}		
+    };
+
+    SyscallResult {
+	return_value: start.as_u64(),
+	err_num: CanonicalError::EOK as u64,
+    }
+}
+
+async fn sys_fork(start: u64) -> SyscallResult {
+    let pid = scheduler::fork_current_process(start);
+    SyscallResult {
+	return_value: pid,
+	err_num: CanonicalError::EOK as u64,
+    }
+}
+
+async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> SyscallResult {
+    let path = unsafe {
+	match CStr::from_ptr(path_ptr as *const i8).to_str() {
+	    Ok(path) => String::from(path),
+	    Err(_) => {
+		return SyscallResult {
+		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		    err_num: CanonicalError::EINVAL as u64
+		};
+	    },
+	}
+    };
+    let args = unsafe {
+	let mut args: Vec<String> = Vec::new();
+	let mut argc_ptr = args_ptr as *const u64;
+	while *argc_ptr != 0 {
+	    let arg = CStr::from_ptr(*argc_ptr as u64 as *const i8);
+
+	    match arg.to_str() {
+		Ok(a) => args.push(String::from(a)),
+		Err(_) => {
+		    return SyscallResult {
+			return_value: 0xFFFF_FFFF_FFFF_FFFF,
+			err_num: CanonicalError::EINVAL as u64
+		    };
+		},
+	    }
+
+	    argc_ptr = (args_ptr + 8) as *const u64;
+	}
+
+	args
+    };
+    let envvars = unsafe {
+	let mut envvars: Vec<String> = Vec::new();
+
+	let mut envvar_ptr = envvars_ptr as *const u64;
+	while *envvar_ptr != 0 {
+	    let envvar = CStr::from_ptr(*envvar_ptr as u64 as *const i8);
+
+	    match envvar.to_str() {
+		Ok(a) => envvars.push(String::from(a)),
+		Err(_) => {
+		    return SyscallResult {
+			return_value: 0xFFFF_FFFF_FFFF_FFFF,
+			err_num: CanonicalError::EINVAL as u64
+		    };
+		},
+	    }
+
+	    envvar_ptr = (args_ptr + 8) as *const u64;
+	}
+
+	envvars
+    };
+    scheduler::execve(path, args, envvars);
+
+    SyscallResult {
+	return_value: 0,
+	err_num: CanonicalError::EOK as u64,
+    }
+}
+
+async fn sys_tcb_set(new_fs: u64) -> SyscallResult {
+    FsBase::write(VirtAddr::new(new_fs));
+    SyscallResult {
+	return_value: 0,
+	err_num: 0,
+    }
+}
+
+fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u64, rcx: u64) -> Pin<Box<dyn Future<Output = SyscallResult> + Send + Sync + 'static>> {
     match rax {
-	0x00 => {  // write
-	    let actual_fd = match scheduler::get_actual_fd(rdi) {
-		Ok(fd) => fd,
-		Err(_) => {
-		    return (0xFFFF_FFFF_FFFF_FFFF, 9);  // -1 error, EBADF
-		},
-	    };
-
-	    match vfs::write_by_fd(/* file descriptor= */ actual_fd, /* buf= */ rsi, /* count= */ rdx) {
-		Ok(len) => (len, 0),
-		Err(_) => (0xFFFF_FFFF_FFFF_FFFF, 5),  // -1 error, EIO
-	    }
-	},
-	0x01 => {  // read
-	    let actual_fd = match scheduler::get_actual_fd(rdi) {
-		Ok(fd) => fd,
-		Err(_) => {
-		    return (0xFFFF_FFFF_FFFF_FFFF, 9);  // -1 error, EBADF
-		},
-	    };
-
-	    match vfs::read_by_fd(/* file descriptor= */ actual_fd, /* buf= */ rsi, /* count= */ rdx) {
-		Ok(len) => (len, 0),
-		Err(e) => (0xFFFF_FFFF_FFFF_FFFF, e as u64)  // -1 error, EIO
-	    }
-	},
-	0x02 => {  // open
-	    // TODO - this does not check that the file actually exists
-	    let path = unsafe {
-		match CStr::from_ptr(rdi as *const i8).to_str() {
-		    Ok(path) => String::from(path),
-		    Err(_) => {
-			return (0xFFFF_FFFF_FFFF_FFFF, 22)  // -1 error, EINVAL
-		    },
-		}
-	    };
-
-	    // Bottom 3 bits are mode. We don't currently enforce mode, but in order to progress, let's strip it out
-	    // TODO - support read/write/exec/etc modes
-	    if rsi & 0xFFFF_FFFF_FFFF_FFF8 != 0 {
-		log::info!("Open flags are 0x{:x}", rsi);
-		unimplemented!();
-	    }
-
-	    if let Err(_) = vfs::stat(path.clone()) {
-		// File does not exist
-		log::info!("Could not stat {}", path);
-		return (0xFFFF_FFFF_FFFF_FFFF, 13)  // -1 error, EACCESS
-	    }
-
-	    let fd = scheduler::open_fd(path);
-	    (fd, 0)
-	},
-	0x03 => {  // close
-	    return match scheduler::close_fd(rdi) {
-		Ok(_) => (0, 0),
-		Err(_) => (0xFFFF_FFFF_FFFF_FFFF, 9),  // -1 error, EBADF
-	    }
-	},
-	0x04 => {  // ioctl
-	    let actual_fd = match scheduler::get_actual_fd(rdi) {
-		Ok(fd) => fd,
-		Err(_) => {
-		    return (0xFFFF_FFFF_FFFF_FFFF, 9);  // -1 error, EBADF
-		},
-	    };
-
-	    match vfs::ioctl_by_fd(/* file descriptor= */ actual_fd, /* ioctl= */ rsi, /* buf= */ rdx) {
-		Ok(ret) => (0, 0),
-		Err(_) => (0xFFFF_FFFF_FFFF_FFFF, 5),  // -1 error, EIO
-	    }
-	},
-	0x08 => {  // seek
-	    let actual_fd = match scheduler::get_actual_fd(rdi) {
-		Ok(fd) => fd,
-		Err(_) => {
-		    return (0xFFFF_FFFF_FFFF_FFFF, 9);  // -1 error, EBADF
-		},
-	    };
-
-	    // Valid values are SEEK_SET, SEEK_CUR, or SEEK_END
-	    if rdx > 3 || rdx == 0 {
-		return (0xFFFF_FFFF_FFFF_FFFF, 22);  // -1 error, EINVAL
-	    }
-
-	    match vfs::seek_fd(/* file descriptor= */ actual_fd, /* offset= */ rsi, /* whence= */ rdx) {
-		Ok(offs) => (offs, 0),
-		Err(_) => (0xFFFF_FFFF_FFFF_FFFF, 22)  // -1 error, EINVAL
-	    }
-	},
-	0x09 => {  // mmap
-	    if r8 != 0xFFFF_FFFF_FFFF_FFFF {
-		unimplemented!();
-	    }
-
-	    let (start, _) = if rdi == 0 {
-		match memory::kernel_allocate(
-		    rsi,
-		    memory::MemoryAllocationType::RAM,
-		    memory::MemoryAllocationOptions::Arbitrary,
-		    memory::MemoryAccessRestriction::User) {
-		    Ok(i) => i,
-		    Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),
-		}
-	    } else {
-		match memory::kernel_allocate(
-		    rsi,
-		    memory::MemoryAllocationType::RAM,
-		    memory::MemoryAllocationOptions::Arbitrary,
-		    memory::MemoryAccessRestriction::UserByStart(VirtAddr::new(rdi))) {
-		    Ok(i) => i,
-		    Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),
-		}		
-	    };
-
-	    (start.as_u64(), 0)
-	},
-	0x0c => {  // exit
-	    scheduler::exit()	    
-	},
-	0x39 => {  // fork
-	    let pid = scheduler::fork_current_process(rcx);
-	    (pid, 0)
-	},
-	0x3b => {  // execve
-	    let path = unsafe {
-		match CStr::from_ptr(rdi as *const i8).to_str() {
-		    Ok(path) => String::from(path),
-		    Err(_) => {
-			return (0xFFFF_FFFF_FFFF_FFFF, 22)  // -1 error, EINVAL
-		    },
-		}
-	    };
-	    let args = unsafe {
-		let mut args: Vec<String> = Vec::new();
-		let mut argc_ptr = rsi as *const u64;
-		while *argc_ptr != 0 {
-		    let arg = CStr::from_ptr(*argc_ptr as u64 as *const i8);
-
-		    match arg.to_str() {
-			Ok(a) => args.push(String::from(a)),
-			Err(_) => {
-			    return (0xFFFF_FFFF_FFFF_FFFF, 22)  // -1 error, EINVAL
-			},
-		    }
-
-		    argc_ptr = (rsi + 8) as *const u64;
-		}
-
-		args
-	    };
-	    let envvars = unsafe {
-		let mut envvars: Vec<String> = Vec::new();
-
-		let mut envvar_ptr = rdx as *const u64;
-		while *envvar_ptr != 0 {
-		    let envvar = CStr::from_ptr(*envvar_ptr as u64 as *const i8);
-
-		    match envvar.to_str() {
-			Ok(a) => envvars.push(String::from(a)),
-			Err(_) => {
-			    return (0xFFFF_FFFF_FFFF_FFFF, 22)  // -1 error, EINVAL
-			},
-		    }
-
-		    envvar_ptr = (rdx + 8) as *const u64;
-		}
-
-		envvars
-	    };
-	    scheduler::execve(path, args, envvars);
-
-	    (0, 0)
-	},
-	0x12c => {  // tcb_set
-	    FsBase::write(VirtAddr::new(rdi));
-	    (0, 0)
-	},
+	0x00 => Box::pin(sys_write(rdi, rsi, rdx)),
+	0x01 => Box::pin(sys_read(rdi, rsi, rdx)),
+	0x02 => Box::pin(sys_open(rdi, rsi)),
+	0x03 => Box::pin(sys_close(rdi)),
+	0x04 => Box::pin(sys_ioctl(rdi, rsi, rdx)),
+	0x08 => Box::pin(sys_seek(rdi, rsi, rdx)),
+	0x09 => Box::pin(sys_mmap(rdi, rsi, r8)),
+	0x0c => scheduler::exit(),  // Doesn't return, so no need for async fn here
+	0x39 => Box::pin(sys_fork(rcx)),
+	0x3b => Box::pin(sys_execve(rdi, rsi, rdx)),
+	0x12c => Box::pin(sys_tcb_set(rdi)),
 	_ => panic!("Invalid syscall 0x{:X}", rax),
     }
 }
@@ -250,7 +348,7 @@ unsafe extern "C" fn syscall_inner(mut stack_frame: scheduler::GeneralPurposeReg
     let rdx = stack_frame.rdx;
     let rip = stack_frame.rcx;
 
-    let (rax, rdx) = do_syscall(
+    let fut = do_syscall(
 	rax,
 	stack_frame.rdi,
 	stack_frame.rsi,
@@ -259,10 +357,13 @@ unsafe extern "C" fn syscall_inner(mut stack_frame: scheduler::GeneralPurposeReg
 	stack_frame.r8,
 	stack_frame.r9,
 	stack_frame.rcx);
-    
-    stack_frame.rax = rax;
+
+    scheduler::set_task_state(scheduler::TaskState::AsyncSyscall {
+	future: fut,
+	waker: None,
+    });
+
     stack_frame.rcx = rip;
-    stack_frame.rdx = rdx;
 
     scheduler::set_registers_for_current_process(rsp, rip, &mut stack_frame);
     scheduler::schedule_next();

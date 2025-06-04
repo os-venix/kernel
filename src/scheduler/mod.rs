@@ -444,6 +444,76 @@ pub fn set_registers_for_current_process(rsp: u64, rip: u64, registers: &General
     }
 }
 
+fn get_futures_to_poll() -> BTreeMap<u64, (Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + Sync + 'static>>, Option<Waker>)> {
+    let mut r: BTreeMap<u64, (Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + Sync + 'static>>, Option<Waker>)> = BTreeMap::new();
+    let mut process_tbl = PROCESS_TABLE
+	.get()
+	.expect("PROCESS_TABLE not initialized")
+	.write();
+
+    for (pid, process) in process_tbl.iter_mut() {
+	match &mut process.state {
+	    TaskState::Setup => {},
+	    TaskState::Running => {},
+	    TaskState::AsyncSyscall { future, waker } => {
+		let dummy: Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + Sync + 'static>> = Box::pin(async {		
+		    syscall::SyscallResult {
+			return_value: 0,
+			err_num: syscall::CanonicalError::EOK as u64,
+		    }
+		});
+		let future_taken = core::mem::replace(future, dummy);
+		r.insert(*pid, (future_taken, waker.take()));
+	    }
+	}
+    }
+
+    r
+}
+
+fn poll_process_future(pid: u64, mut future: Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + Sync + 'static>>, waker: Option<Waker>) {
+    use core::task::{RawWaker, RawWakerVTable, Context};
+
+    fn dummy_raw_waker() -> RawWaker {
+        fn clone(_: *const ()) -> RawWaker { dummy_raw_waker() }
+        fn wake(_: *const ()) {}
+        fn wake_by_ref(_: *const ()) {}
+        fn drop(_: *const ()) {}
+
+        RawWaker::new(core::ptr::null(), &RawWakerVTable::new(clone, wake, wake_by_ref, drop))
+    }
+
+    let waker = waker
+        .unwrap_or_else(|| unsafe { Waker::from_raw(dummy_raw_waker()) });
+
+    let mut ctx = Context::from_waker(&waker);
+
+    match future.as_mut().poll(&mut ctx) {
+        core::task::Poll::Ready(result) => {
+	    let mut process_tbl = PROCESS_TABLE
+		.get()
+		.expect("PROCESS_TABLE not initialized")
+		.write();
+	    let mut process = process_tbl.get_mut(&pid).unwrap();
+
+	    process.state = TaskState::Running;
+	    process.context.gprs.rax = result.return_value as u64;
+	    process.context.gprs.rdx = result.err_num;
+        }
+        core::task::Poll::Pending => {	    
+	    let mut process_tbl = PROCESS_TABLE
+		.get()
+		.expect("PROCESS_TABLE not initialized")
+		.write();
+	    let mut process = process_tbl.get_mut(&pid).unwrap();
+	    process.state = TaskState::AsyncSyscall {
+                future,
+                waker: Some(waker),
+            };
+	}
+    }
+}
+
 fn next_task() -> ProcessContext {
     let mut running_process = RUNNING_PROCESS
 	.get()
@@ -493,38 +563,7 @@ fn next_task() -> ProcessContext {
 
 		return process.context;
             }
-            TaskState::AsyncSyscall { future, waker } => {
-		use core::task::{RawWaker, RawWakerVTable, Context};
-
-		fn dummy_raw_waker() -> RawWaker {
-                    fn clone(_: *const ()) -> RawWaker { dummy_raw_waker() }
-                    fn wake(_: *const ()) {}
-                    fn wake_by_ref(_: *const ()) {}
-                    fn drop(_: *const ()) {}
-
-                    RawWaker::new(core::ptr::null(), &RawWakerVTable::new(clone, wake, wake_by_ref, drop))
-		}
-
-		let waker = waker
-                    .take()
-                    .unwrap_or_else(|| unsafe { Waker::from_raw(dummy_raw_waker()) });
-
-		let mut ctx = Context::from_waker(&waker);
-
-		match future.as_mut().poll(&mut ctx) {
-                    core::task::Poll::Ready(result) => {
-			process.state = TaskState::Running;
-			process.context.gprs.rax = result.return_value as u64;
-			process.context.gprs.rdx = result.err_num;
-
-			*running_process = Some(*pid);
-			let address_space = process.address_space.read();
-			unsafe { address_space.switch_to(); }
-			return process.context;
-                    }
-                    core::task::Poll::Pending => { }
-		}
-            }
+            TaskState::AsyncSyscall { future: _, waker: _ } => { },
 	}
     }
 
@@ -583,6 +622,10 @@ extern "C" fn context_switch(context: &ProcessContext) -> ! {
 
 // TODO: use waker-based queues to avoid the need to continually poll.
 pub fn schedule_next() -> ! {
+    let futures = get_futures_to_poll();
+    for (pid, f) in futures {
+	poll_process_future(pid, f.0, f.1);
+    }
     let context = next_task();
     context_switch(&context);
 }
@@ -632,6 +675,17 @@ pub fn close_fd(fd: u64) -> Result<()> {
 	    Some(_) => Ok(()),
 	    None => Err(anyhow!("No open FD found")),
 	}
+    } else {
+	panic!("Attempted to open a file on a nonexistent process");
+    }
+}
+
+pub fn set_task_state(state: TaskState) {
+    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+    if let Some(pid) = *running_process {
+	process_tbl.get_mut(&pid).unwrap().state = state;
     } else {
 	panic!("Attempted to open a file on a nonexistent process");
     }
