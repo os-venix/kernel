@@ -238,7 +238,7 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 }
 
 #[no_mangle]
-unsafe extern "C" fn syscall_inner(mut stack_frame: scheduler::GeneralPurposeRegisters) {
+unsafe extern "C" fn syscall_inner(mut stack_frame: scheduler::GeneralPurposeRegisters) -> ! {
     let rsp: u64;
     core::arch::asm!(
 	"mov {rsp}, gs:[{sp}]",
@@ -248,10 +248,7 @@ unsafe extern "C" fn syscall_inner(mut stack_frame: scheduler::GeneralPurposeReg
 
     let rax = stack_frame.rax;
     let rdx = stack_frame.rdx;
-    stack_frame.rax = 0;
-    stack_frame.rdx = 0;
-
-    scheduler::set_registers_for_current_process(rsp, stack_frame.rcx, &mut stack_frame);
+    let rip = stack_frame.rcx;
 
     let (rax, rdx) = do_syscall(
 	rax,
@@ -262,18 +259,13 @@ unsafe extern "C" fn syscall_inner(mut stack_frame: scheduler::GeneralPurposeReg
 	stack_frame.r8,
 	stack_frame.r9,
 	stack_frame.rcx);
-
-    let (rsp, rip) = scheduler::get_registers_for_current_process(&mut stack_frame);
-    core::arch::asm!(
-	"mov gs:[{sp}], {rsp}",
-	sp = const(offset_of!(gdt::ProcessorControlBlock, tmp_user_stack_ptr)),
-	rsp = in(reg) rsp,
-    );
     
     stack_frame.rax = rax;
     stack_frame.rcx = rip;
     stack_frame.rdx = rdx;
+
     scheduler::set_registers_for_current_process(rsp, rip, &mut stack_frame);
+    scheduler::schedule_next();
 }
 
 // TODO - load kernel stack; may need to use swapgs for that
@@ -303,26 +295,6 @@ unsafe extern "C" fn syscall_enter () -> ! {
 
 	"mov rdi, rsp",
 	"call syscall_inner",
-
-	"pop r15",
-	"pop r14",
-	"pop r13",
-	"pop r12",
-	"pop r11",
-	"pop r10",
-	"pop r9",
-	"pop r8",
-	"pop rbp",
-	"pop rdi",
-	"pop rsi",
-	"pop rdx",
-	"pop rcx",
-	"pop rbx",
-	"pop rax",
-
-	"mov rsp, gs:[{sp}]",
-	"swapgs",
-	"sysretq",
 
 	options(noreturn),
 	sp = const(offset_of!(gdt::ProcessorControlBlock, tmp_user_stack_ptr)),

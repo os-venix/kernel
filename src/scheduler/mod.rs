@@ -394,17 +394,6 @@ pub fn set_registers_for_current_process(rsp: u64, rip: u64, registers: &General
     }
 }
 
-pub fn get_registers_for_current_process(registers: &mut GeneralPurposeRegisters) -> (u64, u64) {
-    let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
-    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-    if let Some(pid) = *running_process {
-	process_tbl[&pid].get_registers(registers)
-    } else {
-	panic!("Attempted to access user address space when no process is running");
-    }
-}
-
 fn next_task() -> ProcessContext {
     loop {
 	{
