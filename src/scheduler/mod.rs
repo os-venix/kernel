@@ -9,10 +9,14 @@ use alloc::slice;
 use alloc::vec;
 use alloc::collections::BTreeMap;
 use alloc::boxed::Box;
+use core::pin::Pin;
+use core::future::Future;
+use core::task::Waker;
 
 use crate::memory;
 use crate::sys::vfs;
 use crate::drivers::hpet;
+use crate::sys::syscall;
 
 mod elf_loader;
 
@@ -49,7 +53,16 @@ struct AuxVector {
     value: u64,
 }
 
-#[derive(Clone)]
+//#[derive(Clone)]
+pub enum TaskState {
+    Running,
+    AsyncSyscall {
+	future: Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + Sync + 'static>>,
+	waker: Option<Waker>,
+    },
+}
+
+//#[derive(Clone)]
 pub struct Process {
     pub address_space: Arc<RwLock<memory::user_address_space::AddressSpace>>,
     file_descriptors: BTreeMap<u64, Arc<RwLock<vfs::FileDescriptor>>>,
@@ -61,6 +74,7 @@ pub struct Process {
     rip: u64,
     rsp: u64,
     registers: GeneralPurposeRegisters,
+    state: TaskState,
 }
 
 impl Process {
@@ -81,23 +95,25 @@ impl Process {
 	    rip: 0,
 	    rsp: 0,
 	    registers: GeneralPurposeRegisters::default(),
+	    state: TaskState::Running,
 	}
     }
 
-    pub fn from_existing(existing: &Self, rip: u64) -> Self {
-	let address_space = existing.address_space.read();
+    pub fn from_existing(&self, rip: u64) -> Self {
+	let address_space = self.address_space.read();
 
 	Process {
 	    address_space: Arc::new(RwLock::new(address_space.create_copy_of_address_space())),
-	    file_descriptors: existing.file_descriptors.clone(),
-	    next_fd: existing.next_fd,
-	    args: existing.args.clone(),
-	    envvars: existing.envvars.clone(),
-	    auxvs: existing.auxvs.clone(),
-	    stack_bottom: existing.stack_bottom,
+	    file_descriptors: self.file_descriptors.clone(),
+	    next_fd: self.next_fd,
+	    args: self.args.clone(),
+	    envvars: self.envvars.clone(),
+	    auxvs: self.auxvs.clone(),
+	    stack_bottom: self.stack_bottom,
 	    rip: rip,
-	    rsp: existing.rsp,
-	    registers: existing.registers.clone(),
+	    rsp: self.rsp,
+	    registers: self.registers.clone(),
+	    state: TaskState::Running,
 	}
     }
 
@@ -283,9 +299,9 @@ pub fn fork_current_process(rip: u64) -> u64 {
 	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
 
-	let existing_process = process_tbl[&running_process.expect("No running process")].clone();
+	let new_process = process_tbl[&running_process.expect("No running process")].from_existing(rip);
 
-	process_tbl.insert(pid, Process::from_existing(&existing_process, rip));
+	process_tbl.insert(pid, new_process);
     };
 
     pid
@@ -371,30 +387,91 @@ pub fn get_registers_for_current_process(registers: &mut GeneralPurposeRegisters
     }
 }
 
+// TODO: use waker-based queues to avoid the need to continually poll.
 pub fn schedule_next() {
-    let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
-    let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
+    loop {
+	{
+            let mut running_process = RUNNING_PROCESS
+		.get()
+		.expect("RUNNING_PROCESS not initialized")
+		.write();
 
-    let mut running_pids = process_tbl.keys();
-    let next_pid = if let Some(pid) = *running_process {
-	if let Some(current_pid_idx) = running_pids.clone().position(|tbl_pid| *tbl_pid == pid) {
-	    if current_pid_idx + 1 != running_pids.len() {
-		running_pids.nth(current_pid_idx + 1).unwrap()
-	    } else {
-		running_pids.nth(0).unwrap()
-	    }
-	} else {
-	    running_pids.nth(0).unwrap()
+            let mut process_tbl = PROCESS_TABLE
+		.get()
+		.expect("PROCESS_TABLE not initialized")
+		.write();
+
+            // Convert to vector to allow indexed wraparound search
+            let mut tasks: Vec<(u64, &mut Process)> = process_tbl.iter_mut().map(|(pid, p)| (*pid, p)).collect();
+            tasks.sort_by_key(|(pid, _)| *pid); // Ensure stable order
+
+            // Get current PID
+            let current_pid = running_process.clone();
+
+            // Find index of current process (if any)
+            let start_idx = current_pid
+		.and_then(|pid| tasks.iter().position(|(p, _)| *p == pid))
+		.map(|i| (i + 1) % tasks.len()) // Start just after current PID
+		.unwrap_or(0);
+
+            let mut found = false;
+
+	    let tasks_len = tasks.len();
+            for i in 0..tasks_len {
+		let (pid, process) = &mut tasks[(start_idx + i) % tasks_len];
+
+		match &mut process.state {
+                    TaskState::Running => {
+			*running_process = Some(*pid);
+
+			// Switch to address space
+			let address_space = process.address_space.read();
+			unsafe {
+                            address_space.switch_to();
+			}
+
+			return;
+                    }
+                    TaskState::AsyncSyscall { future, waker } => {
+			use core::task::{RawWaker, RawWakerVTable, Context};
+
+			fn dummy_raw_waker() -> RawWaker {
+                            fn clone(_: *const ()) -> RawWaker { dummy_raw_waker() }
+                            fn wake(_: *const ()) {}
+                            fn wake_by_ref(_: *const ()) {}
+                            fn drop(_: *const ()) {}
+
+                            RawWaker::new(core::ptr::null(), &RawWakerVTable::new(clone, wake, wake_by_ref, drop))
+			}
+
+			let waker = waker
+                            .take()
+                            .unwrap_or_else(|| unsafe { Waker::from_raw(dummy_raw_waker()) });
+
+			let mut ctx = Context::from_waker(&waker);
+
+			match future.as_mut().poll(&mut ctx) {
+                            core::task::Poll::Ready(result) => {
+				process.state = TaskState::Running;
+				process.registers.rax = result.return_value as u64;
+				process.registers.rdx = result.err_num;
+
+				*running_process = Some(*pid);
+				let address_space = process.address_space.read();
+				unsafe { address_space.switch_to(); }
+				return;
+                            }
+                            core::task::Poll::Pending => { }
+			}
+                    }
+		}
+            }
 	}
-    } else {
-	running_pids.nth(0).unwrap()
-    };
 
-    *running_process = Some(*next_pid);
-    
-    let address_space = process_tbl[&next_pid].address_space.read();
-    unsafe {
-	address_space.switch_to();
+	// If no process was found, do nothing until the next interrupt
+        x86_64::instructions::interrupts::enable();
+        unsafe { core::arch::asm!("hlt"); }
+	x86_64::instructions::interrupts::disable();
     }
 }
 

@@ -32,6 +32,11 @@ impl fmt::Display for CanonicalError {
 
 impl Error for CanonicalError { }
 
+pub struct SyscallResult {
+    pub return_value: u64,
+    pub err_num: u64,
+}
+
 pub fn init() {
     let (kernel_code, kernel_data, user_code, user_data) = gdt::get_code_selectors();
 
