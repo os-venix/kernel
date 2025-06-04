@@ -121,6 +121,44 @@ impl Process {
 	}
     }
 
+    pub fn new_kthread(rip: u64) -> Self {
+	let mut address_space = memory::user_address_space::AddressSpace::new();
+	unsafe {
+	    address_space.switch_to();
+	}
+	
+	let (kernel_code, kernel_data, _, _) = gdt::get_code_selectors();
+	
+	let (rsp, _) = match memory::kernel_allocate(
+	    8 * 1024 * 1024,  // 8MiB
+	    memory::MemoryAllocationType::RAM,
+	    memory::MemoryAllocationOptions::Arbitrary,
+	    memory::MemoryAccessRestriction::UserByAddressSpace(&mut address_space)) {
+	    Ok(i) => i,
+	    Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
+	};
+
+	Process {
+	    address_space: Arc::new(RwLock::new(address_space)),
+	    file_descriptors: BTreeMap::new(),
+	    next_fd: 0,
+	    args: vec!(String::from("init")),
+	    envvars: vec!(String::from("PATH=/bin:/usr/bin")),
+	    auxvs: Vec::new(),
+	    stack_bottom: rsp,
+	    context: ProcessContext {
+		gprs: GeneralPurposeRegisters::default(),
+		rflags: 0x202,
+		rip: rip,
+		rsp: rsp.as_u64() + (8 * 1024 * 1024),
+		cs: kernel_code.0 as u64,
+		ss: kernel_data.0 as u64,
+	    },
+	    state: TaskState::Running,
+	    task_type: TaskType::Kernel,
+	}
+    }
+
     pub fn from_existing(&self, rip: u64) -> Self {
 	let address_space = self.address_space.read();
 
@@ -135,7 +173,7 @@ impl Process {
 	    context: ProcessContext {
 		gprs: GeneralPurposeRegisters::default(),
 		rflags: 0x202,
-		rip: 0,
+		rip: rip,
 		rsp: 0,
 		cs: self.context.cs,
 		ss: self.context.ss,
@@ -284,10 +322,22 @@ pub static PROCESS_TABLE: Once<RwLock<BTreeMap<u64, Process>>> = Once::new();
 pub static RUNNING_PROCESS: Once<RwLock<Option<u64>>> = Once::new();
 pub static NEXT_PID: Once<Mutex<u64>> = Once::new();
 
+fn idle_thread() -> ! {
+    // TODO: this WILL cause the kernel to deadlock; this is here solely to prove that idle gets called at the proper time.
+    // Once this has been proven, remove it
+    log::info!("idle");
+    loop {
+        unsafe { core::arch::asm!("hlt"); }
+    }
+}
+
 pub fn init() {
     PROCESS_TABLE.call_once(|| RwLock::new(BTreeMap::new()));
     RUNNING_PROCESS.call_once(|| RwLock::new(None));
-    NEXT_PID.call_once(|| Mutex::new(1));  // Don't use PID 0
+    NEXT_PID.call_once(|| Mutex::new(1));  // PID 0 is idle thread
+
+    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+    process_tbl.insert(0, Process::new_kthread(idle_thread as usize as u64));
 }
 
 pub fn start_new_process(filename: String) -> u64 {
@@ -395,91 +445,90 @@ pub fn set_registers_for_current_process(rsp: u64, rip: u64, registers: &General
 }
 
 fn next_task() -> ProcessContext {
-    loop {
-	{
-            let mut running_process = RUNNING_PROCESS
-		.get()
-		.expect("RUNNING_PROCESS not initialized")
-		.write();
+    let mut running_process = RUNNING_PROCESS
+	.get()
+	.expect("RUNNING_PROCESS not initialized")
+	.write();
 
-            let mut process_tbl = PROCESS_TABLE
-		.get()
-		.expect("PROCESS_TABLE not initialized")
-		.write();
+    let mut process_tbl = PROCESS_TABLE
+	.get()
+	.expect("PROCESS_TABLE not initialized")
+	.write();
 
-            // Convert to vector to allow indexed wraparound search
-            let mut tasks: Vec<(u64, &mut Process)> = process_tbl.iter_mut().map(|(pid, p)| (*pid, p)).collect();
-            tasks.sort_by_key(|(pid, _)| *pid); // Ensure stable order
+    // Pull out idle process context; this is where we go if nothing else is currently runnable
+    let idle_ctx = process_tbl.get(&0).unwrap().context.clone();
 
-            // Get current PID
-            let current_pid = running_process.clone();
+    // Convert to vector to allow indexed wraparound search
+    let mut tasks: Vec<(u64, &mut Process)> = process_tbl.iter_mut().map(|(pid, p)| (*pid, p)).collect();
+    tasks.sort_by_key(|(pid, _)| *pid); // Ensure stable order
 
-            // Find index of current process (if any)
-            let start_idx = current_pid
-		.and_then(|pid| tasks.iter().position(|(p, _)| *p == pid))
-		.map(|i| (i + 1) % tasks.len()) // Start just after current PID
-		.unwrap_or(0);
+    // Get current PID
+    let current_pid = running_process.clone();
 
-            let mut found = false;
+    // Find index of current process (if any)
+    let start_idx = current_pid
+	.and_then(|pid| tasks.iter().position(|(p, _)| *p == pid))
+	.map(|i| (i + 1) % tasks.len()) // Start just after current PID
+	.unwrap_or(0);
 
-	    let tasks_len = tasks.len();
-            for i in 0..tasks_len {
-		let (pid, process) = &mut tasks[(start_idx + i) % tasks_len];
+    let tasks_len = tasks.len();
+    for i in 0..tasks_len {
+	let (pid, process) = &mut tasks[(start_idx + i) % tasks_len];
 
-		match &mut process.state {
-		    TaskState::Setup => {},
-                    TaskState::Running => {
+	// Idle thread is thread of last resort. Only schedule it if nothing else is found.
+	if *pid == 0 {
+	    continue;
+	}
+
+	match &mut process.state {
+	    TaskState::Setup => {},
+            TaskState::Running => {
+		*running_process = Some(*pid);
+
+		// Switch to address space
+		let address_space = process.address_space.read();
+		unsafe {
+                    address_space.switch_to();
+		}
+
+		return process.context;
+            }
+            TaskState::AsyncSyscall { future, waker } => {
+		use core::task::{RawWaker, RawWakerVTable, Context};
+
+		fn dummy_raw_waker() -> RawWaker {
+                    fn clone(_: *const ()) -> RawWaker { dummy_raw_waker() }
+                    fn wake(_: *const ()) {}
+                    fn wake_by_ref(_: *const ()) {}
+                    fn drop(_: *const ()) {}
+
+                    RawWaker::new(core::ptr::null(), &RawWakerVTable::new(clone, wake, wake_by_ref, drop))
+		}
+
+		let waker = waker
+                    .take()
+                    .unwrap_or_else(|| unsafe { Waker::from_raw(dummy_raw_waker()) });
+
+		let mut ctx = Context::from_waker(&waker);
+
+		match future.as_mut().poll(&mut ctx) {
+                    core::task::Poll::Ready(result) => {
+			process.state = TaskState::Running;
+			process.context.gprs.rax = result.return_value as u64;
+			process.context.gprs.rdx = result.err_num;
+
 			*running_process = Some(*pid);
-
-			// Switch to address space
 			let address_space = process.address_space.read();
-			unsafe {
-                            address_space.switch_to();
-			}
-
+			unsafe { address_space.switch_to(); }
 			return process.context;
                     }
-                    TaskState::AsyncSyscall { future, waker } => {
-			use core::task::{RawWaker, RawWakerVTable, Context};
-
-			fn dummy_raw_waker() -> RawWaker {
-                            fn clone(_: *const ()) -> RawWaker { dummy_raw_waker() }
-                            fn wake(_: *const ()) {}
-                            fn wake_by_ref(_: *const ()) {}
-                            fn drop(_: *const ()) {}
-
-                            RawWaker::new(core::ptr::null(), &RawWakerVTable::new(clone, wake, wake_by_ref, drop))
-			}
-
-			let waker = waker
-                            .take()
-                            .unwrap_or_else(|| unsafe { Waker::from_raw(dummy_raw_waker()) });
-
-			let mut ctx = Context::from_waker(&waker);
-
-			match future.as_mut().poll(&mut ctx) {
-                            core::task::Poll::Ready(result) => {
-				process.state = TaskState::Running;
-				process.context.gprs.rax = result.return_value as u64;
-				process.context.gprs.rdx = result.err_num;
-
-				*running_process = Some(*pid);
-				let address_space = process.address_space.read();
-				unsafe { address_space.switch_to(); }
-				return process.context;
-                            }
-                            core::task::Poll::Pending => { }
-			}
-                    }
+                    core::task::Poll::Pending => { }
 		}
             }
 	}
-
-	// If no process was found, do nothing until the next interrupt
-        x86_64::instructions::interrupts::enable();
-        unsafe { core::arch::asm!("hlt"); }
-	x86_64::instructions::interrupts::disable();
     }
+
+    idle_ctx
 }
 
 #[naked]

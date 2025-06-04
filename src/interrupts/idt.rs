@@ -4,7 +4,6 @@ use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
 use spin::{Once, RwLock};
 use alloc::boxed::Box;
-use x86_64::{PrivilegeLevel, VirtAddr};
 
 use crate::interrupts::local_apic;
 use crate::gdt;
@@ -24,12 +23,9 @@ macro_rules! irq_handler_def {
 	    #[allow(named_asm_labels)]
 	    extern "x86-interrupt" fn [<irq_ $irq >] (stack_frame: InterruptStackFrame) {
 		extern "C" fn inner(stack_frame: &StackFrame) -> ! {
-		    // We don't (yet) have kthreads. Only save if coming from ring 3
-		    if stack_frame.stack_frame.code_segment.rpl() == PrivilegeLevel::Ring3 {
-			scheduler::set_registers_for_current_process(
-			    stack_frame.stack_frame.stack_pointer.as_u64(),
-			    stack_frame.stack_frame.instruction_pointer.as_u64(), &stack_frame.registers);
-		    }
+		    scheduler::set_registers_for_current_process(
+			stack_frame.stack_frame.stack_pointer.as_u64(),
+			stack_frame.stack_frame.instruction_pointer.as_u64(), &stack_frame.registers);
 
 		    if stack_frame.stack_frame.stack_pointer.as_u64() >= *gdt::IST_FRAME.get().expect(":(") &&
 			stack_frame.stack_frame.stack_pointer.as_u64() <= *gdt::IST_FRAME.get().expect(":(") + (1024 * 1024 * 8) {
