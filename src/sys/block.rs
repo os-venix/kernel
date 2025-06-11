@@ -6,10 +6,15 @@ use core::ptr;
 use core::ascii;
 use uuid::Uuid;
 use bytes::Bytes;
+use alloc::boxed::Box;
+use core::mem::offset_of;
+use x86_64::structures::tss::TaskStateSegment;
 
 use crate::driver;
 use crate::fs::fat;
 use crate::memory;
+use crate::scheduler;
+use crate::gdt;
 
 #[repr(C, packed(1))]
 #[derive(Copy, Clone)]
@@ -74,20 +79,20 @@ pub struct GptDevice {
     mbr: Mbr,
     pth: PartitionTableHeader,
     pt: Vec<PartitionEntry>,
-    dev: Arc<Mutex<dyn driver::Device + Send + Sync>>,
+    dev: Arc<dyn driver::Device + Send + Sync>,
 }
 
 impl GptDevice {
-    fn new(device: Arc<Mutex<dyn driver::Device + Send + Sync>>) -> Option<Arc<GptDevice>> {
+    async fn new(device: Arc<dyn driver::Device + Send + Sync>) -> Option<Arc<GptDevice>> {
 	let (mbr, pth, partition_entries) = {
-	    let mut dev = device.lock();
-	    let mbr_buf = match dev.read(0, 1, memory::MemoryAccessRestriction::Kernel) {
+	    let mbr_buf = match device.clone().read(0, 1, memory::MemoryAccessRestriction::Kernel).await {
 		Ok(a) => a,
 		Err(_) => {
-		    log::info!("Read went wrong");
+		    log::info!("Failed to read boot sector");
 		    return None;
 		}
 	    };
+
 	    let mbr = unsafe {
 		ptr::read(mbr_buf.as_ptr() as *const Mbr)
 	    };
@@ -96,7 +101,7 @@ impl GptDevice {
 		return None;
 	    }
 
-	    let pth_buf = dev.read(1, 1, memory::MemoryAccessRestriction::Kernel).expect("Read went wrong");
+	    let pth_buf = device.clone().read(1, 1, memory::MemoryAccessRestriction::Kernel).await.expect("Failed to read Partition Table Header");
 	    let pth = unsafe {
 		ptr::read(pth_buf.as_ptr() as *const PartitionTableHeader)
 	    };
@@ -110,7 +115,7 @@ impl GptDevice {
 
 	    let pt_size_in_sector_bytes = pth.partition_entry_array_size + (512 - (pth.partition_entry_array_size % 512));  // Total amount, aligned to page boundaries
 	    let pt_size_in_sectors = pt_size_in_sector_bytes / 512;
-	    let pt_buf = dev.read(2, pt_size_in_sectors as u64, memory::MemoryAccessRestriction::Kernel).expect("Could not read Partition Entry table");
+	    let pt_buf = device.clone().read(2, pt_size_in_sectors as u64, memory::MemoryAccessRestriction::Kernel).await.expect("Could not read Partition Entry table");
 
 	    let mut partition_entries: Vec<PartitionEntry> = Vec::new();
 
@@ -148,13 +153,13 @@ impl GptDevice {
 	});
 
 	for partition in 0 .. partition_entries.len() {
-	    fat::register_fat_fs(device_arc.clone(), partition as u32);
+	    fat::register_fat_fs(device_arc.clone(), partition as u32).await;
 	}
 
 	Some(device_arc)
     }
 
-    pub fn read(&self, partition: u32, starting_block: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, ()> {
+    pub async fn read(&self, partition: u32, starting_block: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, ()> {
 	if partition as usize >= self.pt.len() {
 	    return Err(());
 	}
@@ -169,7 +174,7 @@ impl GptDevice {
 	    return Err(());
 	}
 
-	match self.dev.lock().read(adjusted_start, size, access_restriction) {
+	match self.dev.clone().read(adjusted_start, size, access_restriction).await {
 	    Ok(a) => Ok(a),
 	    Err(_) => Err(())
 	}
@@ -180,14 +185,59 @@ unsafe impl Send for GptDevice { }
 unsafe impl Sync for GptDevice { }
 
 static BLOCK_DEVICE_TABLE: Once<RwLock<Vec<Arc<GptDevice>>>> = Once::new();
+static UNINITIALISED_BLOCK_DEVICE_TABLE: Once<RwLock<Vec<Arc<dyn driver::Device + Send + Sync>>>> = Once::new();
 
 pub fn init() {
     BLOCK_DEVICE_TABLE.call_once(|| RwLock::new(Vec::new()));
+    UNINITIALISED_BLOCK_DEVICE_TABLE.call_once(|| RwLock::new(Vec::new()));
+
+    scheduler::kthread_start(kthread_init_block_devices);
 }
 
-pub fn register_block_device(dev: Arc<Mutex<dyn driver::Device + Send + Sync>>) {
-    if let Some(gpt_device) = GptDevice::new(dev) {
-	let mut device_tbl = BLOCK_DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
-	device_tbl.push(gpt_device);
+pub fn register_block_device(dev: Arc<dyn driver::Device + Send + Sync>) {
+    let mut device_tbl = UNINITIALISED_BLOCK_DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
+    device_tbl.push(dev);
+}
+
+fn kthread_init_block_devices() -> ! {
+    let fut = async {
+        let mut uninit_device_tbl = UNINITIALISED_BLOCK_DEVICE_TABLE
+            .get()
+            .expect("Attempted to access device table before it is initialised")
+            .write();
+
+        for dev in uninit_device_tbl.drain(..) {
+            if let Some(gpt_device) = GptDevice::new(dev).await {
+                let mut device_tbl = BLOCK_DEVICE_TABLE
+                    .get()
+                    .expect("Attempted to access device table before it is initialised")
+                    .write();
+                device_tbl.push(gpt_device);
+            }
+        }
+
+        // Once done, mark thread for exit
+	scheduler::exit();
+    };
+
+    scheduler::set_task_state(scheduler::TaskState::AsyncSyscall {
+	future: Arc::new(Mutex::new(Box::pin(fut))),
+	waker: None,
+    });
+
+    unsafe {
+	// Switch to the kernel stack before calling schedule_next, as the non-task kernel depends on a kstack
+	core::arch::asm!(
+	    // Save the stack pointer (note that, because this is a kthread, swapping gs is unnecessary)
+	    // Disable interrupts, as the kernel stack assumes no interrupts
+	    "cli",
+	    "mov gs:[{sp}], rsp",
+	    "mov rsp, gs:[{ksp}]",
+	    
+	    sp = const(offset_of!(gdt::ProcessorControlBlock, tmp_user_stack_ptr)),
+	    ksp = const(offset_of!(gdt::ProcessorControlBlock, tss) + offset_of!(TaskStateSegment, privilege_stack_table)),
+	);
     }
+
+    scheduler::schedule_next();
 }

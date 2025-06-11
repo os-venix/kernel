@@ -52,5 +52,10 @@ version = "8.0"
 default-features = false
 features = ["alloc"]
 
+[dependencies.futures-util]
+version = "0.3"
+default-features = false
+features = ["alloc"]
+
 [build-dependencies]
 cmake = "0.1"

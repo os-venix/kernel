@@ -5,8 +5,7 @@ use alloc::collections::btree_map::BTreeMap;
 use anyhow::{anyhow, Result};
 use alloc::slice;
 use bytes;
-use x86_64;
-use core::arch::asm;
+use futures_util::future::BoxFuture;
 
 use crate::sys::syscall;
 
@@ -20,9 +19,9 @@ pub struct Stat {
 }
 
 pub trait FileSystem {
-    fn read(&self, path: String, offset: u64, len: u64) -> Result<bytes::Bytes, syscall::CanonicalError>;
+    fn read(self: Arc<Self>, path: String, offset: u64, len: u64) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>>;
     fn write(&self, path: String, buf: *const u8, len: usize) -> Result<u64, ()>;
-    fn stat(&self, path: String) -> Result<Stat, ()>;
+    fn stat(self: Arc<Self>, path: String) -> BoxFuture<'static, Result<Stat, ()>>;
     fn ioctl(&self, path: String, ioctl: u64) -> Result<(bytes::Bytes, usize, u64), ()>;
 }
 
@@ -45,19 +44,19 @@ impl FileDescriptor {
     }
 }
 
-static MOUNT_TABLE: Once<RwLock<BTreeMap<String, Arc<RwLock<dyn FileSystem + Send + Sync>>>>> = Once::new();
+static MOUNT_TABLE: Once<RwLock<BTreeMap<String, Arc<dyn FileSystem + Send + Sync>>>> = Once::new();
 
 pub fn init() {
     MOUNT_TABLE.call_once(|| RwLock::new(BTreeMap::new()));
 }
 
-pub fn mount(mount_point: String, fs: Arc<RwLock<dyn FileSystem + Send + Sync>>) {
+pub fn mount(mount_point: String, fs: Arc<dyn FileSystem + Send + Sync>) {
     let mut mount_table = MOUNT_TABLE.get().expect("Attempted to access mount table before it is initialised").write();
     mount_table.insert(mount_point, fs);
 }
 
-fn get_mount_point(path: &String) -> Result<(Arc<RwLock<dyn FileSystem + Send + Sync>>, String), syscall::CanonicalError> {
-    let mut fs: Option<Arc<RwLock<dyn FileSystem + Send + Sync>>> = None;
+fn get_mount_point(path: &String) -> Result<(Arc<dyn FileSystem + Send + Sync>, String), syscall::CanonicalError> {
+    let mut fs: Option<Arc<dyn FileSystem + Send + Sync>> = None;
     let mut file_name: String = String::new();
     let mut current_mount_point = String::new();
 
@@ -72,36 +71,36 @@ fn get_mount_point(path: &String) -> Result<(Arc<RwLock<dyn FileSystem + Send + 
 	}
     }
 
-    Ok((fs.expect("Couldn't find an FS"), file_name))
+    if let Some(filesystem) = fs {
+	Ok((filesystem, file_name))
+    } else {
+	Err(syscall::CanonicalError::ENOENT)
+    }
 }
 
-pub fn read(file: String, offset: u64, len: u64) -> Result<bytes::Bytes, syscall::CanonicalError> {
+pub async fn read(file: String, offset: u64, len: u64) -> Result<bytes::Bytes, syscall::CanonicalError> {
     let (fs, file_name) = get_mount_point(&file)?;
-
-    let fs_to = fs.read();
-    fs_to.read(file_name.clone(), offset, len)
+    fs.read(file_name.clone(), offset, len).await
 }
 
 pub fn write(file: String, buf: *const u8, len: usize) -> Result<u64> {
     let (fs, file_name) = get_mount_point(&file)?;
 
     {
-	let fs_to = fs.read();
-	return match fs_to.write(file_name, buf, len) {
+	return match fs.write(file_name, buf, len) {
 	    Ok(l) => Ok(l),
 	    Err(_) => Err(anyhow!("Unable to write {}", file)),
 	};
     }
 }
 
-pub fn stat(file: String) -> Result<Stat> {
+pub async fn stat(file: String) -> Result<Stat, syscall::CanonicalError> {
     let (fs, file_name) = get_mount_point(&file)?;
 
     {
-	let fs_to = fs.read();
-	return match fs_to.stat(file_name) {
+	return match fs.stat(file_name).await {
 	    Ok(l) => Ok(l),
-	    Err(_) => Err(anyhow!("Unable to stat {}", file)),
+	    Err(_) => panic!("Unable to stat {}", file),
 	};
     }
 }
@@ -110,8 +109,7 @@ pub fn ioctl(file: String, ioctl: u64) -> Result<(bytes::Bytes, usize, u64)> {
     let (fs, file_name) = get_mount_point(&file)?;
 
     {
-	let fs_to = fs.read();
-	return match fs_to.ioctl(file_name, ioctl) {
+	return match fs.ioctl(file_name, ioctl) {
 	    Ok(l) => Ok(l),
 	    Err(_) => Err(anyhow!("Unable to write {}", file)),
 	};
@@ -124,18 +122,23 @@ pub fn write_by_fd(fd: Arc<RwLock<FileDescriptor>>, buf: u64, len: u64) -> Resul
     write(file, buf as *const u8, len as usize)
 }
 
-pub fn read_by_fd(fd: Arc<RwLock<FileDescriptor>>, buf: u64, len: u64) -> Result<u64, syscall::CanonicalError> {
-    let mut w = fd.write();
-    let file = w.get_file_name();
+pub async fn read_by_fd(fd: Arc<RwLock<FileDescriptor>>, buf: u64, len: u64) -> Result<u64, syscall::CanonicalError> {
+    let read_buffer = {
+	let w = fd.read();
+	let file = w.get_file_name();
 
-    let read_buffer = read(file, w.current_offset, len)?;
+	read(file, w.current_offset, len)
+    }.await?;
 
     let data_to = unsafe {
 	slice::from_raw_parts_mut(buf as *mut u8, read_buffer.len())
     };
     data_to.copy_from_slice(read_buffer.as_ref());
 
-    w.current_offset += len;
+    {
+	let mut w = fd.write();
+	w.current_offset += len;
+    }
     Ok(read_buffer.len() as u64)
 }
 
@@ -152,17 +155,20 @@ pub fn ioctl_by_fd(fd: Arc<RwLock<FileDescriptor>>, ioctl_num: u64, buf: u64) ->
     Ok(ret)
 }
 
-pub fn seek_fd(fd: Arc<RwLock<FileDescriptor>>, offset: u64, whence: u64) -> Result<u64> {
+pub async fn seek_fd(fd: Arc<RwLock<FileDescriptor>>, offset: u64, whence: u64) -> Result<u64> {
     let offset_signed = offset as i64;
 
-    let mut w = fd.write();
-    let file = w.get_file_name();
+    let stat = {
+	let w = fd.read();
+	let file = w.get_file_name();
 
-    let stat = stat(file)?;
+	stat(file)
+    }.await?;
     let size = if let Some(s) = stat.size { s } else {
 	return Ok(0);
     };
 
+    let mut w = fd.write();
     if whence == SEEK_SET {
 	if offset >= size || offset_signed < 0 {
 	    return Err(anyhow!("Invalid size"));

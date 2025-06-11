@@ -10,7 +10,10 @@ use alloc::vec;
 use core::ptr;
 use bit_field::BitField;
 use bytes::Bytes;
+use futures_util::future::BoxFuture;
+use alloc::boxed::Box;
 
+use crate::dma::arena;
 use crate::driver;
 use crate::memory;
 use crate::sys::block;
@@ -247,34 +250,27 @@ enum DriveType {
     SATAPI,
 }
 
-struct IdeController<'a> {
+struct IdeController {
+    arena: arena::Arena,
+    prdt: arena::ArenaTag,
     control_base: u16,
     io_base: u16,
     busmaster_base: Option<u32>,
-    prdt: &'a mut [u32],
     prdt_phys: u32,
 }
 
-impl IdeController<'_> {
-    pub fn new(control_base: u16, io_base: u16, busmaster_base: Option<u32>) {	
-	let (prdt_virt, prdt_phys) = memory::kernel_allocate(
-	    4096, memory::MemoryAllocationType::DMA, memory::MemoryAllocationOptions::Arbitrary, memory::MemoryAccessRestriction::Kernel)
-	    .expect("Unable to allocate a PDRT memory region");
-	let prdt_phys_addr = prdt_phys[0].as_u64();
-	if prdt_phys_addr >= 1 << 32 {
-	    panic!("PRDT region is out of bounds, in higher half of physical memory");
-	}
-
-	let prdt = unsafe {
-	    slice::from_raw_parts_mut (prdt_virt.as_mut_ptr::<u32>(), 1024)
-	};
+impl IdeController {
+    pub fn new(control_base: u16, io_base: u16, busmaster_base: Option<u32>) {
+	let arena = arena::Arena::new();
+	let (_, prdt, prdt_phys_addr) = arena.acquire_slice_by_tag(0, 4096).unwrap();
 
 	let ide_controller = IdeController {
+	    arena: arena,
+	    prdt: prdt,
 	    control_base: control_base,
 	    io_base: io_base,
 	    busmaster_base: busmaster_base,
-	    prdt: prdt,
-	    prdt_phys: prdt_phys[0].as_u64() as u32,
+	    prdt_phys: prdt_phys_addr.as_u64() as u32,
 	};
 
 	ide_controller.reset();
@@ -285,7 +281,7 @@ impl IdeController<'_> {
 	    let size = ide_drive.ident.get_size_in_sectors();
 
 	    log::info!("Drive 0: {} - {} MiB", model, size / (1024 * 2));
-	    let device_arc = Arc::new(Mutex::new(ide_drive));
+	    let device_arc = Arc::new(ide_drive);
 	    driver::register_device(device_arc.clone());
 	    block::register_block_device(device_arc);
 	}
@@ -294,7 +290,7 @@ impl IdeController<'_> {
 	    let size = ide_drive.ident.get_size_in_sectors();
 	    log::info!("Drive 1: {} - {} MiB", model, size / (1024 * 2));
 
-	    let device_arc = Arc::new(Mutex::new(ide_drive));
+	    let device_arc = Arc::new(ide_drive);
 	    driver::register_device(device_arc.clone());
 	    block::register_block_device(device_arc);
 	}
@@ -315,30 +311,30 @@ impl IdeController<'_> {
     }
 }
 
-struct IdeDrive<'a> {
-    controller: Arc<Mutex<IdeController<'a>>>,
+struct IdeDrive {
+    controller: Arc<Mutex<IdeController>>,
     drive_num: u8,
     ident: IdentifyStruct,
     drive_type: DriveType,
 }
 
-unsafe impl Send for IdeDrive<'_> { }
-unsafe impl Sync for IdeDrive<'_> { }
+unsafe impl Send for IdeDrive { }
+unsafe impl Sync for IdeDrive { }
 
-impl driver::Device for IdeDrive<'_> {
-    fn read(&mut self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, syscall::CanonicalError> {
+impl driver::Device for IdeDrive {
+    fn read(self: Arc<Self>, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
 	if self.drive_type != DriveType::ATA {
-	    return Err(syscall::CanonicalError::EIO);
+	    return Box::pin(async move { Err(syscall::CanonicalError::EIO) });
 	}
 	let mode = self.ident.get_mode();
 
 	match mode {
-	    Mode::PIO => self.pio_read(offset, size),
-	    _ => self.dma_read(offset, size, access_restriction),
+	    Mode::PIO => Box::pin(async move { self.clone().pio_read(offset, size).await }),
+	    _ => Box::pin(async move { self.clone().dma_read(offset, size, access_restriction).await }),
 	}
     }
 
-    fn write(&mut self, _buf: *const u8, _size: u64) -> Result<u64, ()> {
+    fn write(&self, _buf: *const u8, _size: u64) -> Result<u64, ()> {
 	panic!("Attempted to write to IDE drive. Not yet implemented");
     }
 
@@ -346,8 +342,8 @@ impl driver::Device for IdeDrive<'_> {
 	panic!("Shouldn't have attempted to ioctl to the IDE drive. That makes no sense.");
     }
 }
-    
-impl IdeDrive<'_> {
+
+impl IdeDrive {
     pub fn new(controller: Arc<Mutex<IdeController>>, drive_num: u8) -> Option<IdeDrive> {
 	let mut ide_drive = IdeDrive {
 	    controller: controller,
@@ -466,7 +462,7 @@ impl IdeDrive<'_> {
 	};
     }
     
-    fn pio_read(&self, offset: u64, size: u64) -> Result<Bytes, syscall::CanonicalError> {
+    async fn pio_read(&self, offset: u64, size: u64) -> Result<Bytes, syscall::CanonicalError> {
 	let ctl = self.controller.lock();
 	self.select_drive_and_set_xfer_params(&ctl, offset, size);
 
@@ -500,31 +496,33 @@ impl IdeDrive<'_> {
 	    }
 	}
 
-	unsafe {
-	    let buf_ptr = memory::kernel_allocate(
-		size,
-		memory::MemoryAllocationType::RAM,
-		memory::MemoryAllocationOptions::Arbitrary,
-		memory::MemoryAccessRestriction::User)
-		.expect("Unable to allocate heap").0.as_mut_ptr::<u16>();
+	let buf_ptr = memory::kernel_allocate(
+	    size,
+	    memory::MemoryAllocationType::RAM,
+	    memory::MemoryAllocationOptions::Arbitrary,
+	    memory::MemoryAccessRestriction::User)
+	    .expect("Unable to allocate heap").0.as_mut_ptr::<u16>();
 
-	    let buf_u16 = slice::from_raw_parts_mut(buf_ptr, (size / 2) as usize);
+	let buf_u16 = unsafe {
+	    slice::from_raw_parts_mut(buf_ptr, (size / 2) as usize)
+	};
 
-	    let mut data_reg = Port::<u16>::new(ctl.io_base + IDE_DATA_REG);
-	    for i in 0 .. (size / 2) {
-		buf_u16[i as usize] = data_reg.read();
-	    }
-
-	    // Marshall into a Bytes
-	    let data_from = unsafe {
-		slice::from_raw_parts(buf_ptr as *const u8, size as usize)
+	let mut data_reg = Port::<u16>::new(ctl.io_base + IDE_DATA_REG);
+	for i in 0 .. (size / 2) {
+	    buf_u16[i as usize] = unsafe {
+		data_reg.read()
 	    };
-	    Ok(bytes::Bytes::from(data_from))
 	}
+
+	// Marshall into a Bytes
+	let data_from = unsafe {
+	    slice::from_raw_parts(buf_ptr as *const u8, size as usize)
+	};
+	Ok(bytes::Bytes::from(data_from))
     }
 
-    fn dma_read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, syscall::CanonicalError> {
-	let mut ctl = self.controller.lock();
+    async fn dma_read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, syscall::CanonicalError> {
+	let ctl = self.controller.lock();
 
 	// We don't (yet) support multiple PRDs per transfer
 	if size > 65536 {
@@ -564,30 +562,33 @@ impl IdeDrive<'_> {
 	    compacted_phys_addr.last_mut().unwrap().end -= total_size - (size * 512);
 	}
 
-	for i in 0 .. 1024 {
-	    ctl.prdt[i] = 0;
-	}
+	ctl.arena.tag_to_slice(ctl.prdt, 4096).fill(0);
 
-	let mut prdt_entries = 0;
-	for current_region in compacted_phys_addr.iter() {
-	    if current_region.end >= 1 << 32 {
-		panic!("DMA region is out of bounds, in higher half of physical memory");
-	    }
-
-	    for i in (current_region.start .. current_region.end).step_by(0x10000) {
-		ctl.prdt[prdt_entries * 2] = i as u32;
-		let region_size = current_region.end - i;
-
-		if region_size >= 0x10000 {
-		    ctl.prdt[(prdt_entries * 2) + 1] = 0;
-		} else {
-		    ctl.prdt[(prdt_entries * 2) + 1] = region_size as u32 & 0xFFFF;
+	{
+	    let mut prdt_entries = 0;
+	    let (_, prdts, _) = unsafe {
+		ctl.arena.tag_to_slice(ctl.prdt, 4096).align_to_mut::<u32>()
+	    };
+	    for current_region in compacted_phys_addr.iter() {
+		if current_region.end >= 1 << 32 {
+		    panic!("DMA region is out of bounds, in higher half of physical memory");
 		}
 
-		prdt_entries += 1;
+		for i in (current_region.start .. current_region.end).step_by(0x10000) {
+		    prdts[prdt_entries * 2] = i as u32;
+		    let region_size = current_region.end - i;
+
+		    if region_size >= 0x10000 {
+			prdts[(prdt_entries * 2) + 1] = 0;
+		    } else {
+			prdts[(prdt_entries * 2) + 1] = region_size as u32 & 0xFFFF;
+		    }
+
+		    prdt_entries += 1;
+		}
 	    }
+	    prdts[(prdt_entries * 2) - 1] |= 1 << 31;
 	}
-	ctl.prdt[(prdt_entries * 2) - 1] |= 1 << 31;
 
 	let busmaster_base = ctl.busmaster_base.expect("Attempted to do DMA xfer to non-DMA controller") as u16;
 
@@ -677,6 +678,7 @@ impl IdeDrive<'_> {
 	let data_from = unsafe {
 	    slice::from_raw_parts(buf_virt.as_ptr::<u8>(), size as usize)
 	};
+	
 	Ok(bytes::Bytes::from(data_from))
     }
 

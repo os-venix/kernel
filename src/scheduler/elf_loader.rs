@@ -16,9 +16,9 @@ pub struct Elf {
 }
 
 impl Elf {
-    pub fn new(file_name: String) -> Result<Elf> {
-	let stat = sys::vfs::stat(file_name.clone())?;
-	let file_contents = match sys::vfs::read(file_name.clone(), /* offset= */ 0, /* size= */ stat.size.unwrap()) {
+    pub async fn new(file_name: String) -> Result<Elf> {
+	let stat = sys::vfs::stat(file_name.clone()).await?;
+	let file_contents = match sys::vfs::read(file_name.clone(), /* offset= */ 0, /* size= */ stat.size.unwrap()).await {
 	    Ok(f) => f,
 	    Err(_) => {
 		return Err(anyhow!("Could not load /init/init"));

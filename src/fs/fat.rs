@@ -7,6 +7,8 @@ use spin::RwLock;
 use alloc::format;
 use bytes;
 use alloc::slice;
+use futures_util::future::BoxFuture;
+use alloc::boxed::Box;
 
 use crate::sys::block;
 use crate::sys::syscall;
@@ -116,10 +118,10 @@ struct Fat12Fs {
 }
 
 struct Fat16Fs {
-    boot_record: BootRecord,
-    extended_boot_record: ExtendedBootRecord1216,
+    boot_record: RwLock<BootRecord>,
+    extended_boot_record: RwLock<ExtendedBootRecord1216>,
     dev: Arc<block::GptDevice>,
-    partition: u32,
+    partition: RwLock<u32>,
 }
 
 impl Fat16Fs {
@@ -137,56 +139,75 @@ impl Fat16Fs {
 					   (boot_record.bytes_per_sector - 1)) / boot_record.bytes_per_sector;
 	let total_sectors = if boot_record.sectors_in_volume != 0 { boot_record.sectors_in_volume as u32 } else { boot_record.large_sector_count };
 	let data_sectors = total_sectors - (boot_record.reserved_sectors as u32 + (boot_record.number_of_fats as u32 * boot_record.sectors_per_fat as u32) + root_directory_size_sectors as u32);
+	
+	let total_clusters = data_sectors / boot_record.sectors_per_cluster as u32;
 
 	if boot_record.sectors_per_fat != 0 &&
-	    data_sectors >= 4085 &&
-	    data_sectors <= 65525 {
+	    total_clusters >= 4085 &&
+	    total_clusters <= 65525 {
 		log::info!("Found FAT16 volume {}", vol);
 	    } else {
 		log::info!("Not FAT16");
+		return None;
 	    }
 
 	Some(Fat16Fs {
-	    boot_record: boot_record,
-	    extended_boot_record: extended_boot_record,
+	    boot_record: RwLock::new(boot_record),
+	    extended_boot_record: RwLock::new(extended_boot_record),
 	    dev: dev,
-	    partition: partition,
+	    partition: RwLock::new(partition),
 	})
     }
 
-    fn get_root_directory(&self) -> bytes::Bytes {
-	let sectors_per_lba = self.boot_record.bytes_per_sector / 512;
+    async fn get_root_directory(&self) -> bytes::Bytes {
+	let inner = {
+	    let boot_record = self.boot_record.read();
+	    let partition = self.partition.read();
 
-	let root_directory_sect = self.boot_record.reserved_sectors +
-	    (self.boot_record.number_of_fats as u16 * self.boot_record.sectors_per_fat);
-	let root_directory_lba = root_directory_sect * sectors_per_lba;
+	    let sectors_per_lba = boot_record.bytes_per_sector / 512;
 
-	let root_directory_size_sectors = ((self.boot_record.root_directory_entries * 32) +
-					   (self.boot_record.bytes_per_sector - 1)) / self.boot_record.bytes_per_sector;
-	let root_directory_size_lba = root_directory_size_sectors / sectors_per_lba;
+	    let root_directory_sect = boot_record.reserved_sectors +
+		(boot_record.number_of_fats as u16 * boot_record.sectors_per_fat);
+	    let root_directory_lba = root_directory_sect * sectors_per_lba;
 
-	self.dev.read(
-	    self.partition, root_directory_lba as u64, root_directory_size_lba as u64, memory::MemoryAccessRestriction::Kernel).expect("Couldn't read root directory")
+	    let root_directory_size_sectors = ((boot_record.root_directory_entries * 32) +
+					       (boot_record.bytes_per_sector - 1)) / boot_record.bytes_per_sector;
+	    let root_directory_size_lba = root_directory_size_sectors / sectors_per_lba;
+
+	    self.dev.read(
+		*partition, root_directory_lba as u64, root_directory_size_lba as u64, memory::MemoryAccessRestriction::Kernel)
+	};
+
+	inner.await.expect("Couldn't read root directory")
     }
 
-    fn get_allocation_table(&self) -> Vec<u16> {
-	let sectors_per_lba = self.boot_record.bytes_per_sector / 512;
+    async fn get_allocation_table(&self) -> Vec<u16> {
+	let inner = {
+	    let boot_record = self.boot_record.read();
+	    let partition = self.partition.read();
 
-	let fat_lba = 1 * sectors_per_lba;
+	    let sectors_per_lba = boot_record.bytes_per_sector / 512;
 
-	let fat_size_sectors = self.boot_record.sectors_per_fat;
-	let fat_size_lba = fat_size_sectors / sectors_per_lba;
+	    let fat_lba = 1 * sectors_per_lba;
 
-	let fat_buf_ptr = self.dev.read(
-	    self.partition, fat_lba as u64, fat_size_lba as u64, memory::MemoryAccessRestriction::Kernel).expect("Couldn't read FAT")
-	    .as_ptr();
+	    let fat_size_sectors = boot_record.sectors_per_fat;
+	    let fat_size_lba = fat_size_sectors / sectors_per_lba;
 
+	    self.dev.read(
+		*partition, fat_lba as u64, fat_size_lba as u64, memory::MemoryAccessRestriction::Kernel)
+	};
+
+	let fat_buf_ptr = inner.await.expect("Couldn't read FAT").as_ptr();
 	let mut table: Vec<u16> = Vec::new();
-	for entry in 0 .. self.boot_record.sectors_per_fat * self.boot_record.bytes_per_sector / 2 {
-	    unsafe {
-		table.push(
-		    ptr::read(fat_buf_ptr.wrapping_add(entry as usize * 2) as *const u16)
-		);
+
+	{
+	    let boot_record = self.boot_record.read();
+	    for entry in 0 .. boot_record.sectors_per_fat * boot_record.bytes_per_sector / 2 {
+		unsafe {
+		    table.push(
+			ptr::read(fat_buf_ptr.wrapping_add(entry as usize * 2) as *const u16)
+		    );
+		}
 	    }
 	}
 
@@ -196,8 +217,9 @@ impl Fat16Fs {
     fn get_filename(&self, dir: *const u8, index: usize) -> (Option<String>, usize) {
 	let mut file_name = String::new();
 	let mut cnt = 0;
+	let boot_record = self.boot_record.read();
 
-	for entry in index .. self.boot_record.root_directory_entries as usize {
+	for entry in index .. boot_record.root_directory_entries as usize {
 	    let directory_entry = unsafe {
 		ptr::read(dir.wrapping_add(entry as usize * 32) as *const DirectoryEntry)
 	    };
@@ -269,16 +291,19 @@ impl Fat16Fs {
 	(None, cnt)
     }
 
-    fn get_dir_entries(&self, path: String) -> Option<Vec<Entry>> {
+    async fn get_dir_entries(&self, path: String) -> Option<Vec<Entry>> {
 	if path != "/" {
 	    panic!("Attempted to read from non-root directory. Not implemented.");
 	}
 
-	let root_dir_buf = self.get_root_directory();
+	let root_dir_buf = self.get_root_directory().await;
+	let root_directory_entries = {
+	    self.boot_record.read().root_directory_entries
+	};
 
 	let mut ptr = 0;
 	let mut files: Vec<Entry> = Vec::new();
-	while ptr < self.boot_record.root_directory_entries {
+	while ptr < root_directory_entries {
 	    let (maybe_fn, offset) = self.get_filename(root_dir_buf.as_ptr(), ptr as usize);
 	    ptr += offset as u16;
 
@@ -378,181 +403,201 @@ impl vfs::FileSystem for Fat16Fs {
 	Err(())
     }
 
-    fn read(&self, path: String, offset: u64, len: u64) -> Result<bytes::Bytes, syscall::CanonicalError> {
-	let parts = path.split("/")
-	    .filter(|s| s.len() != 0)
-	    .collect::<Vec<&str>>();
+    fn read(self: Arc<Self>, path: String, offset: u64, len: u64) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>> {
+	Box::pin(async move {
+	    let parts = path.split("/")
+		.filter(|s| s.len() != 0)
+		.collect::<Vec<&str>>();
 
-	let mut current_buf_ptr = self.get_root_directory().as_ptr();
-	let mut file_size: usize = 0 as usize;
+	    let mut current_buf_ptr = self.get_root_directory().await.as_ptr();
+	    let mut file_size: usize = 0 as usize;
 
-	for path_part in parts {
-	    let (inode, access) = match self.find_dir_entry(path_part.to_string(), current_buf_ptr)
-		.expect(&format!("Could not find file {}", path)) {
-		Entry::DIRECTORY(i) => (i, memory::MemoryAccessRestriction::Kernel),
-		Entry::FILE(i) => (i, memory::MemoryAccessRestriction::User),
-	    };
+	    for path_part in parts {
+		let (inode, access) = match self.find_dir_entry(path_part.to_string(), current_buf_ptr)
+		    .expect(&format!("Could not find file {}", path)) {
+			Entry::DIRECTORY(i) => (i, memory::MemoryAccessRestriction::Kernel),
+			Entry::FILE(i) => (i, memory::MemoryAccessRestriction::User),
+		    };
 
-	    // This is FAT16, no high cluster
-	    let mut cluster = inode.start_cluster as u16;
-	    let fat = self.get_allocation_table();
+		// This is FAT16, no high cluster
+		let mut cluster = inode.start_cluster as u16;
+		let fat = self.get_allocation_table().await;
 
-	    let mut clusters_to_read: Vec<u16> = Vec::new();
-	    clusters_to_read.push(cluster);
-
-	    loop {
-		cluster = fat[cluster as usize];
-
-		if cluster >= 0xFFF8 {
-		    break;
-		}
-
+		let mut clusters_to_read: Vec<u16> = Vec::new();
 		clusters_to_read.push(cluster);
-	    }
 
-	    let mut cluster_strings_to_read: Vec<(u16, u64)> = Vec::new();
-	    let mut current_start: u16 = 0;
-	    for (idx, entry) in clusters_to_read.iter().enumerate() {
-		if idx == 0 {
-		    current_start = *entry;
-		} else if *entry != (clusters_to_read[idx - 1] + 1) {
-		    current_start = *entry;
+		loop {
+		    cluster = fat[cluster as usize];
+
+		    if cluster >= 0xFFF8 {
+			break;
+		    }
+
+		    clusters_to_read.push(cluster);
 		}
 
-		if idx == clusters_to_read.len() - 1 {
-		    cluster_strings_to_read.push((current_start, (*entry as u64 - current_start as u64) + 1));
-		} else if (*entry + 1) != clusters_to_read[idx + 1] {
-		    cluster_strings_to_read.push((current_start, (*entry as u64 - current_start as u64) + 1));
+		let mut cluster_strings_to_read: Vec<(u16, u64)> = Vec::new();
+		let mut current_start: u16 = 0;
+		for (idx, entry) in clusters_to_read.iter().enumerate() {
+		    if idx == 0 {
+			current_start = *entry;
+		    } else if *entry != (clusters_to_read[idx - 1] + 1) {
+			current_start = *entry;
+		    }
+
+		    if idx == clusters_to_read.len() - 1 {
+			cluster_strings_to_read.push((current_start, (*entry as u64 - current_start as u64) + 1));
+		    } else if (*entry + 1) != clusters_to_read[idx + 1] {
+			cluster_strings_to_read.push((current_start, (*entry as u64 - current_start as u64) + 1));
+		    }
+		}
+
+		if cluster_strings_to_read.len() == 1 {
+		    let (cluster_lba, size_lba) = {
+			let boot_record = self.boot_record.read();
+			let sectors_per_lba = boot_record.bytes_per_sector as u64 / 512;
+
+			let root_directory_size_sectors: u64 = ((boot_record.root_directory_entries as u64 * 32) +
+								(boot_record.bytes_per_sector as u64 - 1))
+			    / boot_record.bytes_per_sector as u64;
+
+			let first_data_sector: u64 = boot_record.reserved_sectors as u64 +
+			    (boot_record.number_of_fats as u64 * boot_record.sectors_per_fat as u64) +
+			    root_directory_size_sectors as u64;
+
+			let cluster_sector: u64 = ((cluster_strings_to_read[0].0 as u64 - 2) * boot_record.sectors_per_cluster as u64)
+			    + first_data_sector;
+
+			let cluster_lba = cluster_sector * sectors_per_lba;
+
+			let size_sectors = 1 * boot_record.sectors_per_cluster as u64;
+			(cluster_lba, size_sectors / sectors_per_lba)
+		    };
+
+		    let partition = {
+			let partition = self.partition.read();
+			*partition
+		    };
+
+		    current_buf_ptr = self.dev.read(
+			partition, cluster_lba as u64,
+			(size_lba as u64) * cluster_strings_to_read[0].1, access).await.expect("Couldn't read file")
+			.as_ptr();
+
+		    file_size = inode.file_size as usize;
+		} else {
+		    // Not supported
+		    panic!("More than one cluster string attempted to be loaded: {:?}", cluster_strings_to_read);
+		    //		return Err(());
 		}
 	    }
 
-	    if cluster_strings_to_read.len() == 1 {
-		let sectors_per_lba = self.boot_record.bytes_per_sector as u64 / 512;
-
-		let root_directory_size_sectors: u64 = ((self.boot_record.root_directory_entries as u64 * 32) +
-							(self.boot_record.bytes_per_sector as u64 - 1))
-		    / self.boot_record.bytes_per_sector as u64;
-
-		let first_data_sector: u64 = self.boot_record.reserved_sectors as u64 +
-		    (self.boot_record.number_of_fats as u64 * self.boot_record.sectors_per_fat as u64) +
-		    root_directory_size_sectors as u64;
-
-		let cluster_sector: u64 = ((cluster_strings_to_read[0].0 as u64 - 2) * self.boot_record.sectors_per_cluster as u64)
-		    + first_data_sector;
-
-		let cluster_lba = cluster_sector * sectors_per_lba;
-
-		let size_sectors = 1 * self.boot_record.sectors_per_cluster as u64;
-		let size_lba = size_sectors / sectors_per_lba;
-
-		current_buf_ptr = self.dev.read(
-		    self.partition, cluster_lba as u64,
-		    (size_lba as u64) * cluster_strings_to_read[0].1, access).expect("Couldn't read file")
-		    .as_ptr();
-
-		file_size = inode.file_size as usize;
-	    } else {
-		// Not supported
-		panic!("More than one cluster string attempted to be loaded: {:?}", cluster_strings_to_read);
-//		return Err(());
-	    }
-	}
-
-	// Marshall into a Bytes
-	let data_from = unsafe {
-	    slice::from_raw_parts(current_buf_ptr, file_size)
-	};
-	Ok(bytes::Bytes::from_static(&data_from[offset as usize .. (offset + len) as usize]))
+	    // Marshall into a Bytes
+	    let data_from = unsafe {
+		slice::from_raw_parts(current_buf_ptr, file_size)
+	    };
+	    Ok(bytes::Bytes::from_static(&data_from[offset as usize .. (offset + len) as usize]))
+	})
     }
-
+	
     fn write(&self, path: String, buf: *const u8, len: usize) -> Result<u64, ()> {
 	panic!("FAT write not yet implemented");
     }
 
-    fn stat(&self, path: String) -> Result<vfs::Stat, ()> {
-	let parts = path.split("/")
-	    .filter(|s| s.len() != 0)
-	    .collect::<Vec<&str>>();
+    fn stat(self: Arc<Self>, path: String) -> BoxFuture<'static, Result<vfs::Stat, ()>> {
+	Box::pin(async move {
+	    let parts = path.split("/")
+		.filter(|s| s.len() != 0)
+		.collect::<Vec<&str>>();
 
-	let mut current_buf_ptr = self.get_root_directory().as_ptr();
-	let mut file_size: usize = 0 as usize;
+	    let mut current_buf_ptr = self.get_root_directory().await.as_ptr();
+	    let mut file_size: usize = 0 as usize;
 
-	for path_part in parts {
-	    let inode = match self.find_dir_entry(path_part.to_string(), current_buf_ptr).ok_or(())? {
-		Entry::DIRECTORY(i) => i,
-		Entry::FILE(i) => {
-		    file_size = i.file_size as usize;
-		    break;
-		},
-	    };
+	    for path_part in parts {
+		let inode = match self.find_dir_entry(path_part.to_string(), current_buf_ptr).ok_or(())? {
+		    Entry::DIRECTORY(i) => i,
+		    Entry::FILE(i) => {
+			file_size = i.file_size as usize;
+			break;
+		    },
+		};
 
-	    // This is FAT16, no high cluster
-	    let mut cluster = inode.start_cluster as u16;
-	    let fat = self.get_allocation_table();
+		// This is FAT16, no high cluster
+		let mut cluster = inode.start_cluster as u16;
+		let fat = self.get_allocation_table().await;
 
-	    let mut clusters_to_read: Vec<u16> = Vec::new();
-	    clusters_to_read.push(cluster);
-
-	    loop {
-		cluster = fat[cluster as usize];
-
-		if cluster >= 0xFFF8 {
-		    break;
-		}
-
+		let mut clusters_to_read: Vec<u16> = Vec::new();
 		clusters_to_read.push(cluster);
-	    }
 
-	    let mut cluster_strings_to_read: Vec<(u16, u64)> = Vec::new();
-	    let mut current_start: u16 = 0;
-	    for (idx, entry) in clusters_to_read.iter().enumerate() {
-		if idx == 0 {
-		    current_start = *entry;
-		} else if *entry != (clusters_to_read[idx - 1] + 1) {
-		    current_start = *entry;
+		loop {
+		    cluster = fat[cluster as usize];
+
+		    if cluster >= 0xFFF8 {
+			break;
+		    }
+
+		    clusters_to_read.push(cluster);
 		}
 
-		if idx == clusters_to_read.len() - 1 {
-		    cluster_strings_to_read.push((current_start, (*entry as u64 - current_start as u64) + 1));
-		} else if (*entry + 1) != clusters_to_read[idx + 1] {
-		    cluster_strings_to_read.push((current_start, (*entry as u64 - current_start as u64) + 1));
+		let mut cluster_strings_to_read: Vec<(u16, u64)> = Vec::new();
+		let mut current_start: u16 = 0;
+		for (idx, entry) in clusters_to_read.iter().enumerate() {
+		    if idx == 0 {
+			current_start = *entry;
+		    } else if *entry != (clusters_to_read[idx - 1] + 1) {
+			current_start = *entry;
+		    }
+
+		    if idx == clusters_to_read.len() - 1 {
+			cluster_strings_to_read.push((current_start, (*entry as u64 - current_start as u64) + 1));
+		    } else if (*entry + 1) != clusters_to_read[idx + 1] {
+			cluster_strings_to_read.push((current_start, (*entry as u64 - current_start as u64) + 1));
+		    }
+		}
+
+		if cluster_strings_to_read.len() == 1 {
+		    let (cluster_lba, size_lba) = {
+			let boot_record = self.boot_record.read();
+			let sectors_per_lba = boot_record.bytes_per_sector as u64 / 512;
+
+			let root_directory_size_sectors: u64 = ((boot_record.root_directory_entries as u64 * 32) +
+								(boot_record.bytes_per_sector as u64 - 1))
+			    / boot_record.bytes_per_sector as u64;
+
+			let first_data_sector: u64 = boot_record.reserved_sectors as u64 +
+			    (boot_record.number_of_fats as u64 * boot_record.sectors_per_fat as u64) +
+			    root_directory_size_sectors as u64;
+
+			let cluster_sector: u64 = ((cluster_strings_to_read[0].0 as u64 - 2) * boot_record.sectors_per_cluster as u64)
+			    + first_data_sector;
+
+			let cluster_lba = cluster_sector * sectors_per_lba;
+
+			let size_sectors = 1 * boot_record.sectors_per_cluster as u64;
+			(cluster_lba, size_sectors / sectors_per_lba)
+		    };
+
+		    let partition = {
+			let partition = self.partition.read();
+			*partition
+		    };
+
+		    current_buf_ptr = self.dev.read(
+			partition, cluster_lba as u64,
+			(size_lba as u64) * cluster_strings_to_read[0].1,
+			memory::MemoryAccessRestriction::Kernel).await.expect("Couldn't read file")
+			.as_ptr();
+		} else {
+		    // Not supported
+		    panic!("More than one cluster string attempted to be loaded: {:?}", cluster_strings_to_read);
+		    //		return Err(());
 		}
 	    }
 
-	    if cluster_strings_to_read.len() == 1 {
-		let sectors_per_lba = self.boot_record.bytes_per_sector as u64 / 512;
-
-		let root_directory_size_sectors: u64 = ((self.boot_record.root_directory_entries as u64 * 32) +
-							(self.boot_record.bytes_per_sector as u64 - 1))
-		    / self.boot_record.bytes_per_sector as u64;
-
-		let first_data_sector: u64 = self.boot_record.reserved_sectors as u64 +
-		    (self.boot_record.number_of_fats as u64 * self.boot_record.sectors_per_fat as u64) +
-		    root_directory_size_sectors as u64;
-
-		let cluster_sector: u64 = ((cluster_strings_to_read[0].0 as u64 - 2) * self.boot_record.sectors_per_cluster as u64)
-		    + first_data_sector;
-
-		let cluster_lba = cluster_sector * sectors_per_lba;
-
-		let size_sectors = 1 * self.boot_record.sectors_per_cluster as u64;
-		let size_lba = size_sectors / sectors_per_lba;
-
-		current_buf_ptr = self.dev.read(
-		    self.partition, cluster_lba as u64,
-		    (size_lba as u64) * cluster_strings_to_read[0].1,
-		    memory::MemoryAccessRestriction::Kernel).expect("Couldn't read file")
-		    .as_ptr();
-	    } else {
-		// Not supported
-		panic!("More than one cluster string attempted to be loaded: {:?}", cluster_strings_to_read);
-//		return Err(());
-	    }
-	}
-
-	Ok(vfs::Stat {
-	    file_name: path,
-	    size: Some(file_size as u64),
+	    Ok(vfs::Stat {
+		file_name: path,
+		size: Some(file_size as u64),
+	    })
 	})
     }
 }
@@ -590,8 +635,8 @@ fn detect_fat_fs(boot_record: BootRecord) -> FatFsType {
     }
 }
 
-pub fn register_fat_fs(dev: Arc<block::GptDevice>, partition: u32) {    
-    let boot_record_buf_ptr = dev.read(partition, 0, 1, memory::MemoryAccessRestriction::Kernel).expect("Read went wrong").as_ptr();
+pub async fn register_fat_fs(dev: Arc<block::GptDevice>, partition: u32) {    
+    let boot_record_buf_ptr = dev.read(partition, 0, 1, memory::MemoryAccessRestriction::Kernel).await.expect("Failed to read (possible) FAT boot record").as_ptr();
     let boot_record = unsafe {
 	ptr::read(boot_record_buf_ptr as *const BootRecord)
     };
@@ -603,7 +648,7 @@ pub fn register_fat_fs(dev: Arc<block::GptDevice>, partition: u32) {
 	    };
 
 	    if let Some(fs) = Fat16Fs::new(dev, partition, boot_record, extended_boot_record) {
-		vfs::mount("/".to_string(), Arc::new(RwLock::new(fs)));
+		vfs::mount("/".to_string(), Arc::new(fs));
 	    }
 	},
 	_ => (),

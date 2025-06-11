@@ -1,8 +1,9 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::Mutex;
+use spin::RwLock;
 use bytes::Bytes;
+use futures_util::future::BoxFuture;
 
 use crate::console;
 use crate::driver;
@@ -28,7 +29,7 @@ struct Keyboard {
     endpoint_num: u8,
 
     // Current state
-    current_active_key: Option<protocol::Key>,
+    current_active_key: RwLock<Option<protocol::Key>>,
 }
 
 impl Keyboard {
@@ -99,7 +100,7 @@ impl Keyboard {
 	    hid_descriptor,
 	    poll_interval: endpoint.interval,
 	    endpoint_num: endpoint_num.clone(),
-	    current_active_key: None,
+	    current_active_key: RwLock::new(None),
 	}
     }
 
@@ -119,19 +120,20 @@ impl Keyboard {
 	}
     }
 
-    pub fn keypresses(&mut self, kp: protocol::BootKeyPresses) {
+    pub fn keypresses(&self, kp: protocol::BootKeyPresses) {
 	let most_recent_key: Option<protocol::Key> = kp.keys.into_iter()
 	    .filter(|key| *key != protocol::Key::Unknown)
 	    .collect::<Vec<_>>()
 	    .last()
 	    .copied();
 
-	if most_recent_key != self.current_active_key {
+	let mut current_active_key = self.current_active_key.write();
+	if most_recent_key != *current_active_key {
 	    match most_recent_key {
 		Some(protocol::Key::AsciiKey(mrk)) => console::register_keypress(mrk),
 		_ => (),
 	    }
-	    self.current_active_key = most_recent_key;
+	    *current_active_key = most_recent_key;
 	}
     }
 }
@@ -140,10 +142,10 @@ unsafe impl Send for Keyboard {}
 unsafe impl Sync for Keyboard {}
 
 impl driver::Device for Keyboard {
-    fn read(&mut self, _offset: u64, _size: u64, _access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, syscall::CanonicalError> {
+    fn read(self: Arc<Self>, _offset: u64, _size: u64, _access_restriction: memory::MemoryAccessRestriction) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
 	unimplemented!();
     }
-    fn write(&mut self, _buf: *const u8, _size: u64) -> Result<u64, ()> {
+    fn write(&self, _buf: *const u8, _size: u64) -> Result<u64, ()> {
 	unimplemented!();
     }
     fn ioctl(&self, ioctl: u64) -> Result<(Bytes, usize, u64), ()> {
@@ -172,15 +174,15 @@ impl driver::Driver for HidDriver {
 	    }
 
 	    if usb_info.interface_descriptor.protocol == 1 {
-		let device = Arc::new(Mutex::new(Keyboard::new(
+		let device = Arc::new(Keyboard::new(
 		    usb_info.clone(),
 		    protocol,
 		    hid_descriptor,
-		)));
+		));
 		let dc = device.clone();
-		device.clone().lock().start_with_callback(Arc::new(move |buf| {
+		device.clone().start_with_callback(Arc::new(move |buf| {
 		    let (_, keypresses) = protocol::parse_boot_buffer(buf.as_ref()).unwrap();
-		    dc.lock().keypresses(keypresses);
+		    dc.keypresses(keypresses);
 		}));
 		driver::register_device(device.clone());
 	    } else if usb_info.interface_descriptor.protocol == 2 {

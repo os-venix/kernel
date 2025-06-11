@@ -103,7 +103,7 @@ pub fn init() {
     }
     let mut kernelgsbase_msr = Msr::new(IA32_KERNELGSBASE_MSR);
     unsafe {
-	kernelgsbase_msr.write(0);
+	kernelgsbase_msr.write(pcb_ptr);
     }
 }
 

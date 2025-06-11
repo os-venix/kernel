@@ -11,8 +11,11 @@ extern crate alloc;
 
 use core::panic::PanicInfo;
 use fixed::{types::extra::U3, FixedU64};
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use spin::Once;
+use alloc::vec;
+use alloc::vec::Vec;
+use alloc::ffi::CString;
 
 use limine::request::{
     EntryPointRequest,
@@ -40,6 +43,8 @@ mod scheduler;
 mod dma;
 mod utils;
 mod console;
+
+use crate::sys::syscall;
 
 #[used]
 #[link_section = ".requests"]
@@ -152,6 +157,7 @@ fn init() {
     sys::acpi::init_aml(rsdp_addr - direct_map_offset);
     interrupts::enable_interrupts();
 
+    scheduler::init();
     sys::vfs::init();
     driver::init();
     console::init();
@@ -160,7 +166,6 @@ fn init() {
 
     driver::configure_drivers();
 
-    scheduler::init();
     sys::syscall::init();
 }
 
@@ -170,10 +175,66 @@ extern "C" fn kmain() -> ! {
     if let Some(printk) = PRINTK.get() {
 	printk.clear();
     }
-    let pid = scheduler::start_new_process(String::from("/init/init"));
-    scheduler::switch_to_process(pid);
-    scheduler::open_fd(String::from("/dev/console"));  // Stdin
-    scheduler::open_fd(String::from("/dev/console"));  // Stdout
-    scheduler::open_fd(String::from("/dev/console"));  // Stderr
-    scheduler::start_active_process();
+
+    scheduler::kthread_start(init_setup);
+    scheduler::start();
+}
+
+// TODO - this will need to mount the rootfs, as that can no longer happen in the boot context due to async code
+// TODO - anywhere where a syscall will write to user memory, expectations now break; before, we were snooping memory from current PID. That doens't work any more.
+fn init_setup() -> ! {
+    // First, open stdin, stdout, and stderr
+    let console_cstring = CString::new("/dev/console").unwrap();
+    let console_ptr = console_cstring.as_ptr() as u64;
+
+    unsafe {
+	syscall::do_syscall6(0x02, console_ptr, 0, 0, 0, 0, 0);  // Open stdin
+	syscall::do_syscall6(0x02, console_ptr, 0, 0, 0, 0, 0);  // Open stdout
+	syscall::do_syscall6(0x02, console_ptr, 0, 0, 0, 0, 0);  // Open stderr
+    }
+
+    // Second, actually run init
+    let path_cstring = CString::new("/init/init").unwrap();
+    let args_strs: Vec<&str> = vec![];
+    let env_strs: Vec<&str> = vec![];//vec!["PATH=/bin", "USER=root", "LD_SHOW_AUXV=1"];
+
+    let args_cstrings: Vec<CString> = args_strs.iter()
+        .map(|s| CString::new(*s).unwrap())
+        .collect();
+    let env_cstrings: Vec<CString> = env_strs.iter()
+        .map(|s| CString::new(*s).unwrap())
+        .collect();
+
+    let mut args_ptrs: Vec<u64> = args_cstrings.iter()
+        .map(|cstr| cstr.as_ptr() as u64)
+        .collect();
+    args_ptrs.push(0);
+
+    let mut env_ptrs: Vec<u64> = env_cstrings.iter()
+        .map(|cstr| cstr.as_ptr() as u64)
+        .collect();
+    env_ptrs.push(0);
+
+    // Keep all these alive while syscall runs
+    let path_ptr = path_cstring.as_ptr() as u64;
+    let args_ptr = args_ptrs.as_ptr() as u64;
+    let envvars_ptr = env_ptrs.as_ptr() as u64;
+
+    // Loop until we can stat init executable; that implies the filesystem has been successfully mounted
+    loop {
+	let (ret, err) = unsafe {
+	    syscall::do_syscall6(0x05, path_ptr, 0, 0, 0, 0, 0)
+	};
+	if ret == 0 {
+	    break;
+	}
+    }
+
+    // Actually run init
+    unsafe {
+	syscall::do_syscall6(0x3b, path_ptr, args_ptr, envvars_ptr, 0, 0, 0);
+    }
+
+    log::info!("test");
+    loop {}  // This shouldn't happen, due to the execve above. However, Rust needs it to satisfy bounds checks
 }

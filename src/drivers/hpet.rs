@@ -3,9 +3,10 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::sync::Arc;
 use alloc::boxed::Box;
-use spin::{Mutex, Once, RwLock};
+use spin::{Once, RwLock};
 use core::ptr::{read_volatile, write_volatile};
 use bytes::Bytes;
+use futures_util::future::BoxFuture;
 
 use crate::sys::acpi::{namespace, resources};
 use crate::memory;
@@ -250,10 +251,10 @@ pub struct HpetDevice {}
 unsafe impl Send for HpetDevice { }
 unsafe impl Sync for HpetDevice { }
 impl driver::Device for HpetDevice {
-    fn read(&mut self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, syscall::CanonicalError> {
+    fn read(self: Arc<Self>, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
 	panic!("Shouldn't have attempted to read from the HPET. That makes no sense.");
     }
-    fn write(&mut self, buf: *const u8, size: u64) -> Result<u64, ()> {
+    fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()> {
 	panic!("Shouldn't have attempted to write to the HPET. That makes no sense.");
     }
     fn ioctl(&self, ioctl: u64) -> Result<(Bytes, usize, u64), ()> {
@@ -284,7 +285,7 @@ impl driver::Driver for HpetDriver {
 		_ => panic!("This shouldn't happen"),
 	    }).nth(0).expect("No memory ranges returned for HPET");
 
-	let device = Arc::new(Mutex::new(HpetDevice {}));
+	let device = Arc::new(HpetDevice {});
 	driver::register_device(device);
 
 	HPET.call_once(|| RwLock::new(Hpet::new(*base_address, *range_length)));

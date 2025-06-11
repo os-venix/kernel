@@ -89,63 +89,7 @@ impl AddressSpace {
 	}
     }
 
-    pub fn create_copy_of_address_space(&self) -> Self {
-	unsafe {
-	    memory::switch_to_kernel()
-	};
-
-	let (virt, phys) = memory::kernel_allocate(
-	    4096, memory::MemoryAllocationType::RAM,
-	    memory::MemoryAllocationOptions::Arbitrary, memory::MemoryAccessRestriction::Kernel).expect("Allocation failed");
-	
-	let data_to_z = unsafe {
-	    slice::from_raw_parts_mut(virt.as_mut_ptr::<u8>(), 4096 as usize)
-	};
-	data_to_z.fill_with(Default::default);
-
-	let pt4: &mut PageTable = unsafe {
-	    &mut *virt.as_mut_ptr::<PageTable>()
-	};
-
-	let frame = PhysFrame::from_start_address(phys[0]).expect("Allocation failed");
-	let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-
-	let mut page_table_entry = PageTableEntry::new();
-	page_table_entry.set_frame(frame, flags);
-
-	let r = memory::KERNEL_PAGE_TABLE.read();
-	let p4 = r.as_ref().expect("Unable to read kernel page table");
-
-	// Map the kernel
-	for i in 256 .. 512 {
-	    let level_4_table = p4.level_4_table();
-	    pt4[i as usize] = level_4_table[i as usize].clone();
-	}
-
-	let p4_size: u64 = 1 << 39;
-	let mut new_address_space = AddressSpace {
-	    pt4: frame,
-	    free_regions: Vec::from([MemoryRegion {
-		start: 0x100000,
-		end: (p4_size as u64) * 255,  // Anywhere in the lower half
-            }]),
-	    mapped_regions: Vec::new(),
-	};
-
-	unsafe {
-	    new_address_space.switch_to();
-	}
-
-	new_address_space.copy_from(self);
-
-	unsafe {
-	    memory::switch_to_user()
-	};
-
-	new_address_space
-    }
-
-    fn copy_from(&mut self, other: &Self) {
+    pub fn create_copy_of_address_space(&mut self, other: &Self) {
 	unsafe fn inner(level: u8,
 		 offset_above: u64,
 		 page_table: *const PageTable) -> Vec<PageVirtPhys> {
@@ -195,11 +139,12 @@ impl AddressSpace {
 	};
 
 	for entry in complete_map {
-	    memory::kernel_allocate(
+	    memory::user_allocate(
 		4096,
 		memory::MemoryAllocationType::RAM,
 		memory::MemoryAllocationOptions::Arbitrary,
-		memory::MemoryAccessRestriction::UserByAddressSpaceAndStart(self, entry.virt_start)).expect("Unable to allocate to copy userspace");
+		memory::MemoryAccessRestriction::UserByStart(entry.virt_start),
+		self).expect("Unable to allocate to copy userspace");
 	    
 	    let data_to = unsafe {
 		slice::from_raw_parts_mut(entry.virt_start.as_mut_ptr::<u8>(), 4096 as usize)

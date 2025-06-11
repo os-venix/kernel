@@ -78,7 +78,7 @@ impl VenixFrameAllocator {
 
 	    free_regions.push(MemoryRegion {
 		start: region.base + (self.next as u64 * 4096),
-		end: region.base + region.length - (self.next as u64 * 4096),
+		end: region.base + region.length,
 	    });
 
 	    self.next = 0;

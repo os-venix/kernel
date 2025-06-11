@@ -68,14 +68,14 @@ impl LockedPrintk {
 
     pub fn get_rows(&self) -> u8 {
 	without_interrupts(|| {
-            let mut printk = self.0.write();
+            let printk = self.0.read();
 	    (printk.height() / 16) as u8
 	})
     }
 
     pub fn get_cols(&self) -> u8 {
 	without_interrupts(|| {
-            let mut printk = self.0.write();
+            let printk = self.0.read();
 	    (printk.width() / get_raster_width(FontWeight::Regular, RasterHeight::Size16)) as u8
 	})
     }

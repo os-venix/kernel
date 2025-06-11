@@ -25,7 +25,9 @@ macro_rules! irq_handler_def {
 		extern "C" fn inner(stack_frame: &StackFrame) -> ! {
 		    scheduler::set_registers_for_current_process(
 			stack_frame.stack_frame.stack_pointer.as_u64(),
-			stack_frame.stack_frame.instruction_pointer.as_u64(), &stack_frame.registers);
+			stack_frame.stack_frame.instruction_pointer.as_u64(),
+			stack_frame.stack_frame.cpu_flags.bits(),
+			&stack_frame.registers);
 
 		    if stack_frame.stack_frame.stack_pointer.as_u64() >= *gdt::IST_FRAME.get().expect(":(") &&
 			stack_frame.stack_frame.stack_pointer.as_u64() <= *gdt::IST_FRAME.get().expect(":(") + (1024 * 1024 * 8) {
@@ -95,6 +97,7 @@ static HANDLER_FUNCS: Once<RwLock<BTreeMap<u8, Vec<Box<(dyn Fn() + Send + Sync)>
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
 	let mut idt = InterruptDescriptorTable::new();
+
 	idt.divide_error.set_handler_fn(divide_error_handler);
 	idt.debug.set_handler_fn(debug_handler);
 	idt.non_maskable_interrupt.set_handler_fn(nmi_handler);
@@ -103,15 +106,17 @@ lazy_static! {
 	idt.device_not_available.set_handler_fn(device_not_available_handler);
 	idt.invalid_tss.set_handler_fn(invalid_tss_handler);
 	idt.breakpoint.set_handler_fn(breakpoint_handler);
-	idt.page_fault.set_handler_fn(page_fault_handler);
-	idt.general_protection_fault.set_handler_fn(gpf_handler);
 	idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
 	idt.segment_not_present.set_handler_fn(segment_not_present_handler);
 	idt.stack_segment_fault.set_handler_fn(stack_segment_handler);
 
 	unsafe {
+	    idt.general_protection_fault.set_handler_fn(gpf_handler)
+		.set_stack_index(gdt::KERNEL_IST_INDEX);
 	    idt.double_fault.set_handler_fn(double_fault_handler)
 		.set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+	    idt.page_fault.set_handler_fn(page_fault_handler)
+		.set_stack_index(gdt::KERNEL_IST_INDEX);
 
 	    // IDT interrutps
 	    idt[0x20].set_handler_fn(irq_32).set_stack_index(gdt::KERNEL_IST_INDEX);

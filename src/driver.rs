@@ -7,6 +7,7 @@ use alloc::sync::Arc;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use bytes;
+use futures_util::future::BoxFuture;
 
 use crate::sys::acpi;
 use crate::sys::syscall;
@@ -29,43 +30,55 @@ pub trait Bus {
 }
 
 pub trait Device {
-    fn read(&mut self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<bytes::Bytes, syscall::CanonicalError>;
-    fn write(&mut self, buf: *const u8, size: u64) -> Result<u64, ()>;
+    fn read(self: Arc<Self>, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>>;
+    fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()>;
     fn ioctl(&self, ioctl: u64) -> Result<(bytes::Bytes, usize, u64), ()>;
 }
 
 struct DevFS {
-    file_table: BTreeMap<String, u64>,
+    file_table: RwLock<BTreeMap<String, u64>>,
 }
 impl DevFS {
     pub fn new() -> DevFS {
 	DevFS {
-	    file_table: BTreeMap::new()
+	    file_table: RwLock::new(BTreeMap::new())
 	}
     }
 
-    pub fn add_device(&mut self, dev_id: u64, mount: String) {
-	self.file_table.insert(mount, dev_id);
+    pub fn add_device(&self, dev_id: u64, mount: String) {
+	self.file_table.write().insert(mount, dev_id);
     }
 }
 impl vfs::FileSystem for DevFS {
-    fn read(&self, path: String, offset: u64, len: u64) -> Result<bytes::Bytes, syscall::CanonicalError> {
+    fn read(self: Arc<Self>, path: String, offset: u64, len: u64) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>> {
+	// TODO: Set the values here after seeking is supported
 	let parts = path.split("/")
 	    .filter(|s| s.len() != 0)
 	    .collect::<Vec<&str>>();
 	if parts.len() != 1 {
-	    return Err(syscall::CanonicalError::EINVAL);
+	    return Box::pin(async move {
+		Err(syscall::CanonicalError::EINVAL)
+	    });
 	}
 
-	let device_id = match self.file_table.get(parts[0]) {
-	    Some(id) => id.clone(),
-	    None => return Err(syscall::CanonicalError::EACCESS),
+	let device_id = {
+	    match self.file_table.read().get(parts[0]) {
+		Some(id) => id.clone(),
+		None => return Box::pin(async move {
+		    Err(syscall::CanonicalError::EACCESS)
+		}),
+	    }
 	};
-	let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
-	let mut device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist").lock();
 
-	// TODO: Set the values here after seeking is supported
-	device.read(offset, len, memory::MemoryAccessRestriction::User)
+	Box::pin(async move {
+	    {
+		let device_tbl = DEVICE_TABLE.get()
+		    .expect("Attempted to access device table before it is initialised").write();
+		let device = device_tbl.get(device_id as usize)
+		    .expect("Attempted to access device that does not exist");
+		device.clone().read(offset, len, memory::MemoryAccessRestriction::User)
+	    }.await
+	})
     }
     fn write(&self, path: String, buf: *const u8, len: usize) -> Result<u64, ()> {
 	let parts = path.split("/")
@@ -75,31 +88,33 @@ impl vfs::FileSystem for DevFS {
 	    return Err(());
 	}
 
-	let device_id = match self.file_table.get(parts[0]) {
-	    Some(id) => id.clone(),
-	    None => return Err(()),
+	let device_id = {
+	    match self.file_table.read().get(parts[0]) {
+		Some(id) => id.clone(),
+		None => return Err(()),
+	    }
 	};
+
 	let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
-	let mut device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist").lock();
+	let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist");
 
 	device.write(buf, len as u64)
     }
-    fn stat(&self, path: String) -> Result<vfs::Stat, ()> {
+    fn stat(self: Arc<Self>, path: String) -> BoxFuture<'static, Result<vfs::Stat, ()>> {
 	let parts = path.split("/")
 	    .filter(|s| s.len() != 0)
 	    .collect::<Vec<&str>>();
 	if parts.len() != 1 {
-	    return Err(());
+	    return Box::pin(async move {
+		Err(())
+	    });
 	}
 
-	match self.file_table.get(parts[0]) {
-	    Some(id) => id.clone(),
-	    None => return Err(()),
-	};
-
-	Ok(vfs::Stat {
-	    file_name: path,
-	    size: None,
+	Box::pin(async move {
+	    Ok(vfs::Stat {
+		file_name: path,
+		size: None,
+	    })
 	})
     }
     fn ioctl(&self, path: String, ioctl: u64) -> Result<(bytes::Bytes, usize, u64), ()> {
@@ -110,28 +125,31 @@ impl vfs::FileSystem for DevFS {
 	    return Err(());
 	}
 
-	let device_id = match self.file_table.get(parts[0]) {
-	    Some(id) => id.clone(),
-	    None => return Err(()),
+	let device_id = {
+	    match self.file_table.read().get(parts[0]) {
+		Some(id) => id.clone(),
+		None => return Err(()),
+	    }
 	};
+
 	let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
-	let mut device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist").lock();
+	let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist");
 
 	device.ioctl(ioctl)
     }
 }
 
 static DRIVER_TABLE: Once<RwLock<Vec<Box<dyn Driver + Send + Sync>>>> = Once::new();
-static DEVICE_TABLE: Once<RwLock<Vec<Arc<Mutex<dyn Device + Send + Sync>>>>> = Once::new();
+static DEVICE_TABLE: Once<RwLock<Vec<Arc<dyn Device + Send + Sync>>>> = Once::new();
 static BUS_TABLE: Once<RwLock<Vec<Arc<Mutex<dyn Bus + Send + Sync>>>>> = Once::new();
-static DEVFS: Once<Arc<RwLock<DevFS>>> = Once::new();
+static DEVFS: Once<Arc<DevFS>> = Once::new();
 
 pub fn init() {
     DRIVER_TABLE.call_once(|| RwLock::new(Vec::new()));
     DEVICE_TABLE.call_once(|| RwLock::new(Vec::new()));
     BUS_TABLE.call_once(|| RwLock::new(Vec::new()));
 
-    let devfs = Arc::new(RwLock::new(DevFS::new()));
+    let devfs = Arc::new(DevFS::new());
     DEVFS.call_once(|| devfs.clone());
     vfs::mount(String::from("/dev"), devfs);
 }
@@ -141,8 +159,7 @@ pub fn configure_drivers() {
 }
 
 pub fn register_devfs(mount_point: String, dev_id: u64) {
-    let mut devfs = DEVFS.get().expect("Attempted to access devfs table before it is initialised").write();
-    devfs.add_device(dev_id, mount_point);
+    DEVFS.get().expect("Attempted to access devfs table before it is initialised").add_device(dev_id, mount_point);
 }
 
 pub fn register_driver(driver: Box<dyn Driver + Send + Sync>) {
@@ -150,13 +167,13 @@ pub fn register_driver(driver: Box<dyn Driver + Send + Sync>) {
     driver_table.push(driver);
 }
 
-pub fn register_device(device: Arc<Mutex<dyn Device + Send + Sync>>) -> u64 {
+pub fn register_device(device: Arc<dyn Device + Send + Sync>) -> u64 {
     let mut device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
     device_tbl.push(device);
     (device_tbl.len() - 1) as u64
 }
 
-pub fn register_bus_and_enumerate(mut bus: Arc<Mutex<dyn Bus + Send + Sync>>) {
+pub fn register_bus_and_enumerate(bus: Arc<Mutex<dyn Bus + Send + Sync>>) {
     let enumerated_bus_devices = {
 	let mut locked_bus = bus.lock();
 	locked_bus.enumerate()

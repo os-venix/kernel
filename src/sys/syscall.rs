@@ -11,6 +11,8 @@ use alloc::fmt;
 use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
+use alloc::sync::Arc;
+use spin::Mutex;
 
 use crate::gdt;
 use crate::scheduler;
@@ -21,6 +23,7 @@ use crate::memory;
 #[derive(Debug)]
 pub enum CanonicalError {
     EOK = 0,
+    ENOENT = 2,
     EIO = 5,
     EBADF = 9,
     EAGAIN = 11,
@@ -91,7 +94,7 @@ async fn sys_read(fd: u64, buf: u64, count: u64) -> SyscallResult {
 	},
     };
 
-    match vfs::read_by_fd(actual_fd, buf, count) {
+    match vfs::read_by_fd(actual_fd, buf, count).await {
 	Ok(len) => SyscallResult {
 	    return_value: len,
 	    err_num: CanonicalError::EOK as u64,
@@ -103,7 +106,7 @@ async fn sys_read(fd: u64, buf: u64, count: u64) -> SyscallResult {
     }
 }
 
-async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
+pub async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
     // TODO - this does not check that the file actually exists
     let path = unsafe {
 	match CStr::from_ptr(path_ptr as *const i8).to_str() {
@@ -124,7 +127,7 @@ async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
 	unimplemented!();
     }
 
-    if let Err(_) = vfs::stat(path.clone()) {
+    if let Err(_) = vfs::stat(path.clone()).await {
 	// File does not exist
 	log::info!("Could not stat {}", path);
 	return SyscallResult {
@@ -176,6 +179,31 @@ async fn sys_ioctl(fd_num: u64, ioctl: u64, buf: u64) -> SyscallResult {
     }
 }
 
+async fn sys_stat(filename: u64, buf: u64) -> SyscallResult {
+    let path = unsafe {
+	match CStr::from_ptr(filename as *const i8).to_str() {
+	    Ok(path) => String::from(path),
+	    Err(_) => {
+		return SyscallResult {
+		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		    err_num: CanonicalError::EINVAL as u64
+		};
+	    },
+	}
+    };
+
+    match vfs::stat(path).await {
+	Ok(ret) => SyscallResult {
+	    return_value: 0,
+	    err_num: CanonicalError::EOK as u64
+	},
+	Err(e) => SyscallResult {
+	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    err_num: e as u64
+	}
+    }
+}
+
 async fn sys_seek(fd_num: u64, offset: u64, whence: u64) -> SyscallResult {
     let actual_fd = match scheduler::get_actual_fd(fd_num) {
 	Ok(fd) => fd,
@@ -195,7 +223,7 @@ async fn sys_seek(fd_num: u64, offset: u64, whence: u64) -> SyscallResult {
 	};
     }
 
-    match vfs::seek_fd(actual_fd, offset, whence) {
+    match vfs::seek_fd(actual_fd, offset, whence).await {
 	Ok(offs) => SyscallResult {
 	    return_value: offs,
 	    err_num: CanonicalError::EOK as u64,
@@ -247,7 +275,7 @@ async fn sys_fork(start: u64) -> SyscallResult {
     }
 }
 
-async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> SyscallResult {
+pub async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> SyscallResult {
     let path = unsafe {
 	match CStr::from_ptr(path_ptr as *const i8).to_str() {
 	    Ok(path) => String::from(path),
@@ -302,7 +330,7 @@ async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> SyscallRe
 
 	envvars
     };
-    scheduler::execve(path, args, envvars);
+    scheduler::execve(path, args, envvars).await;
 
     SyscallResult {
 	return_value: 0,
@@ -318,13 +346,14 @@ async fn sys_tcb_set(new_fs: u64) -> SyscallResult {
     }
 }
 
-fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u64, rcx: u64) -> Pin<Box<dyn Future<Output = SyscallResult> + Send + Sync + 'static>> {
+fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u64, rcx: u64) -> Pin<Box<dyn Future<Output = SyscallResult> + Send + 'static>> {
     match rax {
 	0x00 => Box::pin(sys_write(rdi, rsi, rdx)),
 	0x01 => Box::pin(sys_read(rdi, rsi, rdx)),
 	0x02 => Box::pin(sys_open(rdi, rsi)),
 	0x03 => Box::pin(sys_close(rdi)),
 	0x04 => Box::pin(sys_ioctl(rdi, rsi, rdx)),
+	0x05 => Box::pin(sys_stat(rdi, rsi)),
 	0x08 => Box::pin(sys_seek(rdi, rsi, rdx)),
 	0x09 => Box::pin(sys_mmap(rdi, rsi, r8)),
 	0x0c => scheduler::exit(),  // Doesn't return, so no need for async fn here
@@ -348,6 +377,8 @@ unsafe extern "C" fn syscall_inner(mut stack_frame: scheduler::GeneralPurposeReg
     let rdx = stack_frame.rdx;
     let rip = stack_frame.rcx;
 
+    scheduler::set_registers_for_current_process(rsp, rip, stack_frame.r11, &mut stack_frame);
+
     let fut = do_syscall(
 	rax,
 	stack_frame.rdi,
@@ -359,13 +390,10 @@ unsafe extern "C" fn syscall_inner(mut stack_frame: scheduler::GeneralPurposeReg
 	stack_frame.rcx);
 
     scheduler::set_task_state(scheduler::TaskState::AsyncSyscall {
-	future: fut,
+	future: Arc::new(Mutex::new(fut)),
 	waker: None,
     });
 
-    stack_frame.rcx = rip;
-
-    scheduler::set_registers_for_current_process(rsp, rip, &mut stack_frame);
     scheduler::schedule_next();
 }
 
@@ -401,4 +429,68 @@ unsafe extern "C" fn syscall_enter () -> ! {
 	sp = const(offset_of!(gdt::ProcessorControlBlock, tmp_user_stack_ptr)),
 	ksp = const(offset_of!(gdt::ProcessorControlBlock, tss) + offset_of!(TaskStateSegment, privilege_stack_table)),
     );
+}
+
+#[allow(named_asm_labels)]
+pub unsafe fn do_syscall6(
+    nr: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    arg4: u64,
+    arg5: u64,
+    arg6: u64,
+) -> (u64, u64) {
+    let ret: u64;
+    let err: u64;
+    core::arch::asm!(
+	// Set up state: clear interrupts, save the return address and flags, set syscall stack
+	"cli",
+	"lea rcx, [rip + 2f]",
+	"pushfq",
+	"pop r11",
+
+	// Save the stack pointer (note that, because this is a kthread, swapping gs is unnecessary
+	"mov gs:[{sp}], rsp",
+	"mov rsp, gs:[{ksp}]",
+
+	// Actually syscall
+	"push rax",
+	"push rbx",
+	"push rcx",
+	"push rdx",
+	"push rsi",
+	"push rdi",
+	"push rbp",
+	"push r8",
+	"push r9",
+	"push r10",
+	"push r11",
+	"push r12",
+	"push r13",
+	"push r14",
+	"push r15",
+
+	"mov rdi, rsp",
+	"call syscall_inner",
+
+	"2:",
+	"nop",
+	
+        in("rax") nr,
+        in("rdi") arg1,
+        in("rsi") arg2,
+        in("rdx") arg3,
+        in("r10") arg4,
+        in("r8")  arg5,
+        in("r9")  arg6,
+        lateout("rax") ret,
+	lateout("rdx") err,
+        lateout("rcx") _,
+        lateout("r11") _,
+
+	sp = const(offset_of!(gdt::ProcessorControlBlock, tmp_user_stack_ptr)),
+	ksp = const(offset_of!(gdt::ProcessorControlBlock, tss) + offset_of!(TaskStateSegment, privilege_stack_table)),
+    );
+    (ret, err)
 }
