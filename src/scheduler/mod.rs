@@ -12,7 +12,6 @@ use alloc::boxed::Box;
 use core::pin::Pin;
 use core::future::Future;
 use core::task::Waker;
-use core::sync::atomic::{fence, Ordering};
 
 use crate::memory;
 use crate::sys::vfs;
@@ -309,7 +308,6 @@ impl Process {
 
 	self.task_type = TaskType::User;
 	self.state = TaskState::Running;
-	log::info!("RSP = 0x{:x}", self.context.rsp);
     }
 
     pub fn set_registers(&mut self, rsp: u64, rip: u64, rflags: u64, registers: &GeneralPurposeRegisters) {

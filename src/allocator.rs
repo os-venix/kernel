@@ -21,7 +21,6 @@ pub struct HoleList {
     pub(crate) first: Hole, // dummy
     pub(crate) bottom: *mut u8,
     pub(crate) top: *mut u8,
-    pub(crate) pending_extend: u8,
 }
 
 pub(crate) struct Cursor {
@@ -273,7 +272,6 @@ impl HoleList {
             },
             bottom: null_mut(),
             top: null_mut(),
-            pending_extend: 0,
         }
     }
 
@@ -336,7 +334,6 @@ impl HoleList {
             },
             bottom: aligned_hole_addr,
             top: aligned_hole_addr.wrapping_add(aligned_hole_size),
-            pending_extend: (requested_hole_size - aligned_hole_size) as u8,
         }
     }
 
@@ -420,44 +417,6 @@ impl HoleList {
                 hole.as_ref().size
             })
         })
-    }
-
-    pub(crate) unsafe fn extend(&mut self, by: usize) {
-        assert!(!self.top.is_null(), "tried to extend an empty heap");
-
-        let top = self.top;
-
-        let dead_space = top.align_offset(align_of::<Hole>());
-        debug_assert_eq!(
-            0, dead_space,
-            "dead space detected during extend: {} bytes. This means top was unaligned",
-            dead_space
-        );
-
-        debug_assert!(
-            (self.pending_extend as usize) < Self::min_size(),
-            "pending extend was larger than expected"
-        );
-
-        // join this extend request with any pending (but not yet acted on) extension
-        let extend_by = self.pending_extend as usize + by;
-
-        let minimum_extend = Self::min_size();
-        if extend_by < minimum_extend {
-            self.pending_extend = extend_by as u8;
-            return;
-        }
-
-        // only extend up to another valid boundary
-        let new_hole_size = align_down_size(extend_by, align_of::<Hole>());
-        let layout = Layout::from_size_align(new_hole_size, 1).unwrap();
-
-        // instantiate the hole by forcing a deallocation on the new memory
-        self.deallocate(NonNull::new_unchecked(top as *mut u8), layout);
-        self.top = top.add(new_hole_size);
-
-        // save extra bytes given to extend that weren't aligned to the hole size
-        self.pending_extend = (extend_by - new_hole_size) as u8;
     }
 }
 
@@ -710,87 +669,6 @@ impl Heap {
         self.holes = HoleList::new(heap_bottom, heap_size);
     }
 
-    /// Initialize an empty heap with provided memory.
-    ///
-    /// The caller is responsible for procuring a region of raw memory that may be utilized by the
-    /// allocator. This might be done via any method such as (unsafely) taking a region from the
-    /// program's memory, from a mutable static, or by allocating and leaking such memory from
-    /// another allocator.
-    ///
-    /// The latter approach may be especially useful if the underlying allocator does not perform
-    /// deallocation (e.g. a simple bump allocator). Then the overlaid linked-list-allocator can
-    /// provide memory reclamation.
-    ///
-    /// The usable size for allocations will be truncated to the nearest
-    /// alignment of `align_of::<usize>`. Any extra bytes left at the end
-    /// will be reclaimed once sufficient additional space is given to
-    /// [`extend`][Heap::extend].
-    ///
-    /// # Panics
-    ///
-    /// This method panics if the heap is already initialized.
-    ///
-    /// It also panics when the length of the given `mem` slice is not large enough to
-    /// store the required metadata. Depending on the alignment of the slice, the minimum
-    /// size is between `2 * size_of::<usize>` and `3 * size_of::<usize>`.
-    pub fn init_from_slice(&mut self, mem: &'static mut [MaybeUninit<u8>]) {
-        assert!(
-            self.bottom().is_null(),
-            "The heap has already been initialized."
-        );
-        let size = mem.len();
-        let address = mem.as_mut_ptr().cast();
-        // SAFETY: All initialization requires the bottom address to be valid, which implies it
-        // must not be 0. Initially the address is 0. The assertion above ensures that no
-        // initialization had been called before.
-        // The given address and size is valid according to the safety invariants of the mutable
-        // reference handed to us by the caller.
-        unsafe { self.init(address, size) }
-    }
-
-    /// Creates a new heap with the given `bottom` and `size`.
-    ///
-    /// The `heap_bottom` pointer is automatically aligned, so the [`bottom()`][Self::bottom]
-    /// method might return a pointer that is larger than `heap_bottom` after construction.
-    ///
-    /// The given `heap_size` must be large enough to store the required
-    /// metadata, otherwise this function will panic. Depending on the
-    /// alignment of the `hole_addr` pointer, the minimum size is between
-    /// `2 * size_of::<usize>` and `3 * size_of::<usize>`.
-    ///
-    /// The usable size for allocations will be truncated to the nearest
-    /// alignment of `align_of::<usize>`. Any extra bytes left at the end
-    /// will be reclaimed once sufficient additional space is given to
-    /// [`extend`][Heap::extend].
-    ///
-    /// # Safety
-    ///
-    /// The bottom address must be valid and the memory in the
-    /// `[heap_bottom, heap_bottom + heap_size)` range must not be used for anything else.
-    /// This function is unsafe because it can cause undefined behavior if the given address
-    /// is invalid.
-    ///
-    /// The provided memory range must be valid for the `'static` lifetime.
-    pub unsafe fn new(heap_bottom: *mut u8, heap_size: usize) -> Heap {
-        Heap {
-            used: 0,
-            holes: HoleList::new(heap_bottom, heap_size),
-        }
-    }
-
-    /// Creates a new heap from a slice of raw memory.
-    ///
-    /// This is a convenience function that has the same effect as calling
-    /// [`init_from_slice`] on an empty heap. All the requirements of `init_from_slice`
-    /// apply to this function as well.
-    pub fn from_slice(mem: &'static mut [MaybeUninit<u8>]) -> Heap {
-        let size = mem.len();
-        let address = mem.as_mut_ptr().cast();
-        // SAFETY: The given address and size is valid according to the safety invariants of the
-        // mutable reference handed to us by the caller.
-        unsafe { Self::new(address, size) }
-    }
-
     /// Allocates a chunk of the given size with the given alignment. Returns a pointer to the
     /// beginning of that chunk if it was successful. Else it returns `None`.
     /// This function scans the list of free memory blocks and uses the first block that is big
@@ -824,64 +702,6 @@ impl Heap {
     pub unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
         self.used -= self.holes.deallocate(ptr, layout).size();
     }
-
-    /// Returns the bottom address of the heap.
-    ///
-    /// The bottom pointer is automatically aligned, so the returned pointer
-    /// might be larger than the bottom pointer used for initialization.
-    pub fn bottom(&self) -> *mut u8 {
-        self.holes.bottom
-    }
-
-    /// Returns the size of the heap.
-    ///
-    /// This is the size the heap is using for allocations, not necessarily the
-    /// total amount of bytes given to the heap. To determine the exact memory
-    /// boundaries, use [`bottom`][Self::bottom] and [`top`][Self::top].
-    pub fn size(&self) -> usize {
-        unsafe { self.holes.top.offset_from(self.holes.bottom) as usize }
-    }
-
-    /// Return the top address of the heap.
-    ///
-    /// Note: The heap may choose to not use bytes at the end for allocations
-    /// until there is enough room for metadata, but it still retains ownership
-    /// over memory from [`bottom`][Self::bottom] to the address returned.
-    pub fn top(&self) -> *mut u8 {
-        unsafe { self.holes.top.add(self.holes.pending_extend as usize) }
-    }
-
-    /// Returns the size of the used part of the heap
-    pub fn used(&self) -> usize {
-        self.used
-    }
-
-    /// Returns the size of the free part of the heap
-    pub fn free(&self) -> usize {
-        self.size() - self.used
-    }
-
-    /// Extends the size of the heap by creating a new hole at the end.
-    ///
-    /// Small extensions are not guaranteed to grow the usable size of
-    /// the heap. In order to grow the Heap most effectively, extend by
-    /// at least `2 * size_of::<usize>`, keeping the amount a multiple of
-    /// `size_of::<usize>`.
-    ///
-    /// Calling this method on an uninitialized Heap will panic.
-    ///
-    /// # Safety
-    ///
-    /// The amount of data given in `by` MUST exist directly after the original
-    /// range of data provided when constructing the [Heap]. The additional data
-    /// must have the same lifetime of the original range of data.
-    ///
-    /// Even if this operation doesn't increase the [usable size][`Self::size`]
-    /// by exactly `by` bytes, those bytes are still owned by the Heap for
-    /// later use.
-    pub unsafe fn extend(&mut self, by: usize) {
-        self.holes.extend(by);
-    }
 }
 
 unsafe impl Allocator for LockedHeap {
@@ -907,31 +727,6 @@ pub struct LockedHeap(Mutex<Heap>);
 impl LockedHeap {
     pub const fn empty() -> LockedHeap {
         LockedHeap(Mutex::new(Heap::empty()))
-    }
-
-    /// Creates a new heap with the given `bottom` and `size`.
-    ///
-    /// The `heap_bottom` pointer is automatically aligned, so the [`bottom()`][Heap::bottom]
-    /// method might return a pointer that is larger than `heap_bottom` after construction.
-    ///
-    /// The given `heap_size` must be large enough to store the required
-    /// metadata, otherwise this function will panic. Depending on the
-    /// alignment of the `hole_addr` pointer, the minimum size is between
-    /// `2 * size_of::<usize>` and `3 * size_of::<usize>`.
-    ///
-    /// # Safety
-    ///
-    /// The bottom address must be valid and the memory in the
-    /// `[heap_bottom, heap_bottom + heap_size)` range must not be used for anything else.
-    /// This function is unsafe because it can cause undefined behavior if the given address
-    /// is invalid.
-    ///
-    /// The provided memory range must be valid for the `'static` lifetime.
-    pub unsafe fn new(heap_bottom: *mut u8, heap_size: usize) -> LockedHeap {
-        LockedHeap(Mutex::new(Heap {
-            used: 0,
-            holes: HoleList::new(heap_bottom, heap_size),
-        }))
     }
 }
 
