@@ -6,6 +6,7 @@
 #![feature(ascii_char_variants)]
 #![feature(extract_if)]
 #![feature(naked_functions)]
+#![feature(alloc_layout_extra)]
 
 extern crate alloc;
 
@@ -196,7 +197,7 @@ fn init_setup() -> ! {
     // Second, actually run init
     let path_cstring = CString::new("/init/init").unwrap();
     let args_strs: Vec<&str> = vec![];
-    let env_strs: Vec<&str> = vec![];//vec!["PATH=/bin", "USER=root", "LD_SHOW_AUXV=1"];
+    let env_strs: Vec<&str> = vec!["PATH=/bin", "USER=root", "LD_SHOW_AUXV=1"];
 
     let args_cstrings: Vec<CString> = args_strs.iter()
         .map(|s| CString::new(*s).unwrap())
@@ -235,6 +236,5 @@ fn init_setup() -> ! {
 	syscall::do_syscall6(0x3b, path_ptr, args_ptr, envvars_ptr, 0, 0, 0);
     }
 
-    log::info!("test");
     loop {}  // This shouldn't happen, due to the execve above. However, Rust needs it to satisfy bounds checks
 }
