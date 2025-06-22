@@ -61,6 +61,15 @@ pub fn init() {
 }
 
 async fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
+    if buf == 0 {
+	log::info!("NULL");
+
+	return SyscallResult {
+	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    err_num: CanonicalError::EIO as u64
+	};
+    }
+
     let actual_fd = match scheduler::get_actual_fd(fd) {
 	Ok(fd) => fd,
 	Err(_) => {

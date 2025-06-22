@@ -15,6 +15,7 @@ use crate::sys::syscall;
 use crate::sys::vfs;
 use crate::memory;
 
+#[derive(Debug)]
 enum FatFsType {
     FAT12,
     FAT16,
@@ -202,7 +203,7 @@ impl Fat16Fs {
 
 	{
 	    let boot_record = self.boot_record.read();
-	    for entry in 0 .. boot_record.sectors_per_fat * boot_record.bytes_per_sector / 2 {
+	    for entry in 0 .. (boot_record.sectors_per_fat as u32) * (boot_record.bytes_per_sector as u32) / 2 {
 		unsafe {
 		    table.push(
 			ptr::read(fat_buf_ptr.wrapping_add(entry as usize * 2) as *const u16)
@@ -651,6 +652,8 @@ pub async fn register_fat_fs(dev: Arc<block::GptDevice>, partition: u32) {
 		vfs::mount("/".to_string(), Arc::new(fs));
 	    }
 	},
-	_ => (),
+	t => {
+	    log::info!("{:?}", t);
+	},
     }
 }

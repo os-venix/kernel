@@ -100,7 +100,7 @@ pub async fn stat(file: String) -> Result<Stat, syscall::CanonicalError> {
     {
 	return match fs.stat(file_name).await {
 	    Ok(l) => Ok(l),
-	    Err(_) => panic!("Unable to stat {}", file),
+	    Err(_) => Err(syscall::CanonicalError::ENOENT),
 	};
     }
 }

@@ -95,9 +95,9 @@ fn panic(info: &PanicInfo) -> ! {
     // 	kernel_logger.force_unlock();
     // }
 
-    // if let Some(printk) = PRINTK.get() {
-    // 	printk.clear();
-    // }
+    if let Some(printk) = PRINTK.get() {
+	printk.clear();
+    }
     log::error!("{}", info);
     loop {}
 }
@@ -195,7 +195,7 @@ fn init_setup() -> ! {
     }
 
     // Second, actually run init
-    let path_cstring = CString::new("/init/init").unwrap();
+    let path_cstring = CString::new("/usr/bin/zsh").unwrap();
     let args_strs: Vec<&str> = vec![];
     let env_strs: Vec<&str> = vec!["PATH=/bin", "USER=root", "LD_SHOW_AUXV=1"];
 
@@ -226,6 +226,7 @@ fn init_setup() -> ! {
 	let (ret, err) = unsafe {
 	    syscall::do_syscall6(0x05, path_ptr, 0, 0, 0, 0, 0)
 	};
+
 	if ret == 0 {
 	    break;
 	}

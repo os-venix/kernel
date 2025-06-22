@@ -413,6 +413,8 @@ impl IdeDrive {
 			},
 		    };
 
+		    log::info!("Found drive type {:?}", self.drive_type);
+
 		    return true;
 		}
 

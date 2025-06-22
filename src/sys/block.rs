@@ -87,8 +87,8 @@ impl GptDevice {
 	let (mbr, pth, partition_entries) = {
 	    let mbr_buf = match device.clone().read(0, 1, memory::MemoryAccessRestriction::Kernel).await {
 		Ok(a) => a,
-		Err(_) => {
-		    log::info!("Failed to read boot sector");
+		Err(e) => {
+		    log::info!("Failed to read boot sector - {:?}", e);
 		    return None;
 		}
 	    };

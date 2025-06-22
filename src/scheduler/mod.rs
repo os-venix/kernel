@@ -73,6 +73,7 @@ pub enum TaskState {
     },
 }
 
+#[derive(Clone, Copy)]
 pub enum TaskType {
     User,
     Kernel,
@@ -157,7 +158,7 @@ impl Process {
 		ss: self.context.ss,
 	    },
 	    state: TaskState::Setup,
-	    task_type: TaskType::User,
+	    task_type: self.task_type,
 	}
     }
 
@@ -191,6 +192,10 @@ impl Process {
     }
 
     pub fn attach_loaded_elf(&mut self, elf: elf_loader::Elf, ld_so: elf_loader::Elf) {
+	let (_, _, user_code, user_data) = gdt::get_code_selectors();
+	self.context.cs = user_code.0 as u64;
+	self.context.ss = user_data.0 as u64;
+
 	self.auxvs.push(AuxVector {
 	    auxv_type: AT_BASE,
 	    value: ld_so.base
@@ -401,7 +406,7 @@ pub async fn execve(filename: String, args: Vec<String>, envvars: Vec<String>) {
     }
 
     let elf = elf_loader::Elf::new(filename).await.expect("Failed to load ELF");
-    let ld = elf_loader::Elf::new(String::from("/lib/ld.so")).await.expect("Failed to load ld.so");
+    let ld = elf_loader::Elf::new(String::from("/usr/lib/ld.so")).await.expect("Failed to load ld.so");
 
     {
 	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
@@ -653,7 +658,7 @@ pub fn schedule_next() -> ! {
 	poll_process_future(pid, future, waker);
     }
 
-    let context = next_task();    
+    let context = next_task();
     context_switch(&context);
 }
 
