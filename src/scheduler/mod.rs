@@ -264,7 +264,7 @@ impl Process {
 	    (self.envvars.len() as u64 * 8) +
 	    (self.args.len() as u64 * 8) +
 	/* padding = */(3 * 8);
-	let alignment = 16 - (self.context.rsp % 16);
+	let alignment = self.context.rsp % 16;
 	self.context.rsp -= alignment;  // Align the stack to a u128, as required by the standard
 	let stack_ptr = VirtAddr::new(self.context.rsp).as_mut_ptr::<u64>();
 
