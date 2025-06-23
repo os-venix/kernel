@@ -264,6 +264,13 @@ async fn sys_seek(fd_num: u64, offset: u64, whence: u64) -> SyscallResult {
 }
 
 async fn sys_mmap(start_val: u64, count: u64, r8: u64) -> SyscallResult {
+    if count == 0 {
+	return SyscallResult {
+	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    err_num: CanonicalError::EINVAL as u64
+	};
+    }
+
     // TODO: properly pass parameters, and properly name them. There's a lot of unimplemented stuff here
     if r8 != 0xFFFF_FFFF_FFFF_FFFF {
 	unimplemented!();
