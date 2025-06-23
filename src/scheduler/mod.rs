@@ -387,6 +387,9 @@ pub fn fork_current_process(rip: u64) -> u64 {
 }
 
 pub async fn execve(filename: String, args: Vec<String>, envvars: Vec<String>) {
+    let mut args_with_cmd = args.clone();
+    args_with_cmd.insert(0, filename.clone());
+
     {
 	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
 	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
@@ -399,7 +402,7 @@ pub async fn execve(filename: String, args: Vec<String>, envvars: Vec<String>) {
                     address_space.switch_to();
 		}
 	    }
-	    process_tbl.get_mut(&pid).unwrap().clear(args, envvars);
+	    process_tbl.get_mut(&pid).unwrap().clear(args_with_cmd, envvars);
 	} else {
 	    panic!("Attempted to access user address space when no process is running");
 	}

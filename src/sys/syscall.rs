@@ -138,7 +138,6 @@ pub async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
 
     if let Err(_) = vfs::stat(path.clone()).await {
 	// File does not exist
-	log::info!("Could not stat {}", path);
 	return SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
 	    err_num: CanonicalError::EACCESS as u64
