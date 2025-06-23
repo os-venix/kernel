@@ -687,6 +687,21 @@ pub fn open_fd(file: String) -> u64 {
     }
 }
 
+pub fn dup_fd(fd: Arc<RwLock<vfs::FileDescriptor>>) -> u64 {
+    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+    let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
+
+    if let Some(pid) = *running_process {
+	let fd_number = process_tbl[&pid].next_fd;
+	process_tbl.get_mut(&pid).unwrap().next_fd += 1;
+
+	process_tbl.get_mut(&pid).unwrap().file_descriptors.insert(fd_number, fd);
+	fd_number
+    } else {
+	panic!("Attempted to read open FDs on nonexistent process");
+    }
+}
+
 pub fn get_actual_fd(fd: u64) -> Result<Arc<RwLock<vfs::FileDescriptor>>> {
     let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();

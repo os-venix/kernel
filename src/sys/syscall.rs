@@ -214,6 +214,24 @@ async fn sys_stat(filename: u64, buf: u64) -> SyscallResult {
     }
 }
 
+async fn sys_dup(fd_num: u64) -> SyscallResult {
+    let actual_fd = match scheduler::get_actual_fd(fd_num) {
+	Ok(fd) => fd,
+	Err(_) => {
+	    return SyscallResult {
+		return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		err_num: CanonicalError::EBADF as u64
+	    };
+	},
+    };
+
+    let new_fd = scheduler::dup_fd(actual_fd);
+    SyscallResult {
+	return_value: new_fd,
+	err_num: CanonicalError::EOK as u64,
+    }
+}
+
 async fn sys_seek(fd_num: u64, offset: u64, whence: u64) -> SyscallResult {
     let actual_fd = match scheduler::get_actual_fd(fd_num) {
 	Ok(fd) => fd,
@@ -372,6 +390,7 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 	0x03 => Box::pin(sys_close(rdi)),
 	0x04 => Box::pin(sys_ioctl(rdi, rsi, rdx)),
 	0x05 => Box::pin(sys_stat(rdi, rsi)),
+	0x06 => Box::pin(sys_dup(rdi)),
 	0x08 => Box::pin(sys_seek(rdi, rsi, rdx)),
 	0x09 => Box::pin(sys_mmap(rdi, rsi, r8)),
 	0x0c => scheduler::exit(),  // Doesn't return, so no need for async fn here
