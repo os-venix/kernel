@@ -497,13 +497,19 @@ fn poll_process_future(pid: u64, future: Arc<Mutex<Pin<Box<dyn Future<Output = s
 
     let mut ctx = Context::from_waker(&waker);
 
-    {	
+    {
+	let mut running_process = RUNNING_PROCESS
+	    .get()
+	    .expect("RUNNING_PROCESS not initialized")
+	    .write();
 	let mut process_tbl = PROCESS_TABLE
 	    .get()
 	    .expect("PROCESS_TABLE not initialized")
 	    .write();
+
 	let process = process_tbl.get_mut(&pid).unwrap();
 	// Switch to address space
+	*running_process = Some(pid);
 	let address_space = process.address_space.read();
 	unsafe {
             address_space.switch_to();
@@ -731,4 +737,12 @@ pub fn get_active_page_table() -> u64 {
     } else {
 	panic!("Attempted to access user address space when no process is running");
     }
+}
+
+pub fn get_current_pid() -> u64 {    
+    let mut running_process = RUNNING_PROCESS
+	.get()
+	.expect("RUNNING_PROCESS not initialized")
+	.read();
+    running_process.expect("Couldn't find running PID")
 }

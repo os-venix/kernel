@@ -129,10 +129,12 @@ pub async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
 	}
     };
 
-    // Bottom 3 bits are mode. We don't currently enforce mode, but in order to progress, let's strip it out
+    // Bottom 3 bits are mode. We don't currently enforce mode, but in order to progress, let's strip it out.
+    // Similarly, there isn't yet a concept of a controlling TTY, so let's not worry about that either for now
     // TODO - support read/write/exec/etc modes
-    if flags & 0xFFFF_FFFF_FFFF_FFF8 != 0 {
-	log::info!("Open flags are 0x{:x}", flags);
+    // TODO - support O_NOCTTY (0x80)
+    if flags & 0xFFFF_FFFF_FFFF_FF78 != 0 {
+	log::info!("Open flags are 0x{:x} for {}", flags, path);
 	unimplemented!();
     }
 
@@ -346,6 +348,14 @@ pub async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> Sysca
     }
 }
 
+async fn sys_getpid() -> SyscallResult {
+    let pid = scheduler::get_current_pid();
+    SyscallResult {
+	return_value: pid,
+	err_num: CanonicalError::EOK as u64,
+    }
+}
+
 async fn sys_tcb_set(new_fs: u64) -> SyscallResult {
     FsBase::write(VirtAddr::new(new_fs));
     SyscallResult {
@@ -367,6 +377,7 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 	0x0c => scheduler::exit(),  // Doesn't return, so no need for async fn here
 	0x39 => Box::pin(sys_fork(rcx)),
 	0x3b => Box::pin(sys_execve(rdi, rsi, rdx)),
+	0x3c => Box::pin(sys_getpid()),
 	0x12c => Box::pin(sys_tcb_set(rdi)),
 	_ => panic!("Invalid syscall 0x{:X}", rax),
     }
