@@ -15,6 +15,8 @@ use alloc::sync::Arc;
 use spin::Mutex;
 use num_enum::TryFromPrimitive;
 use core::convert::TryFrom;
+use alloc::ffi::CString;
+use core::ptr;
 
 use crate::gdt;
 use crate::scheduler;
@@ -31,6 +33,7 @@ pub enum CanonicalError {
     EAGAIN = 11,
     EACCESS = 13,
     EINVAL = 22,
+    ERANGE = 34,
 }
 
 #[repr(u64)]
@@ -386,6 +389,31 @@ async fn sys_mmap(start_val: u64, count: u64, r8: u64) -> SyscallResult {
     }
 }
 
+async fn sys_getcwd(buf: u64, count: u64) -> SyscallResult {
+    let cwd = scheduler::get_current_cwd();
+
+    let c_string = CString::new(cwd).expect("String contained interior null byte");
+    let bytes = c_string.as_bytes_with_nul();
+
+    if bytes.len() > count as usize {
+	return SyscallResult {
+	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    err_num: CanonicalError::ERANGE as u64
+	};
+    }
+
+    let dest = buf as *mut u8;
+
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), dest, bytes.len());
+    }
+
+    SyscallResult {
+	return_value: 0,
+	err_num: CanonicalError::EOK as u64,
+    }
+}
+
 async fn sys_fork(start: u64) -> SyscallResult {
     let pid = scheduler::fork_current_process(start);
     SyscallResult {
@@ -465,8 +493,32 @@ async fn sys_getpid() -> SyscallResult {
     }
 }
 
+async fn sys_getppid() -> SyscallResult {
+    // We don't yet support process parentage
+    SyscallResult {
+	return_value: 0,
+	err_num: CanonicalError::EOK as u64,
+    }
+}
+
+async fn sys_getpgid() -> SyscallResult {
+    // We don't yet support process groups
+    SyscallResult {
+	return_value: 0,
+	err_num: CanonicalError::EOK as u64,
+    }
+}
+
 async fn sys_tcb_set(new_fs: u64) -> SyscallResult {
     FsBase::write(VirtAddr::new(new_fs));
+    SyscallResult {
+	return_value: 0,
+	err_num: 0,
+    }
+}
+
+async fn sys_tcgets(fd: u64, termios: u64) -> SyscallResult {
+    // For now, stub this
     SyscallResult {
 	return_value: 0,
 	err_num: 0,
@@ -485,11 +537,15 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 	0x07 => Box::pin(sys_fcntl(rdi, rsi, rdx)),
 	0x08 => Box::pin(sys_seek(rdi, rsi, rdx)),
 	0x09 => Box::pin(sys_mmap(rdi, rsi, r8)),
-	0x0c => scheduler::exit(),  // Doesn't return, so no need for async fn here
+	0x0c => scheduler::exit(rdi),  // Doesn't return, so no need for async fn here
+	0x20 => Box::pin(sys_getcwd(rdi, rsi)),
 	0x39 => Box::pin(sys_fork(rcx)),
 	0x3b => Box::pin(sys_execve(rdi, rsi, rdx)),
 	0x3c => Box::pin(sys_getpid()),
+	0x3d => Box::pin(sys_getppid()),
+	0x3e => Box::pin(sys_getpgid()),
 	0x12c => Box::pin(sys_tcb_set(rdi)),
+	0x12d => Box::pin(sys_tcgets(rdi, rsi)),
 	_ => panic!("Invalid syscall 0x{:X}", rax),
     }
 }

@@ -96,6 +96,7 @@ pub struct Process {
     context: ProcessContext,
     state: TaskState,
     task_type: TaskType,
+    cwd: String,
 }
 
 impl Process {
@@ -135,6 +136,7 @@ impl Process {
 	    },
 	    state: TaskState::Running,
 	    task_type: TaskType::Kernel,
+	    cwd: String::from("/"),
 	}
     }
 
@@ -165,6 +167,7 @@ impl Process {
 	    },
 	    state: TaskState::Setup,
 	    task_type: self.task_type,
+	    cwd: self.cwd.clone(),
 	}
     }
 
@@ -431,7 +434,11 @@ pub async fn execve(filename: String, args: Vec<String>, envvars: Vec<String>) {
     }
 }
 
-pub fn exit() -> ! {
+pub fn exit(exit_code: u64) -> ! {
+    if exit_code != 0 {
+	log::info!("Exited with code {}", exit_code);
+    }
+
     {
 	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
 	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
@@ -826,4 +833,15 @@ pub fn get_current_pid() -> u64 {
 	.expect("RUNNING_PROCESS not initialized")
 	.read();
     running_process.expect("Couldn't find running PID")
+}
+
+pub fn get_current_cwd() -> String {
+    let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
+    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+    if let Some(pid) = *running_process {
+	process_tbl[&pid].cwd.clone()
+    } else {
+	panic!("Attempted to access user address space when no process is running");
+    }
 }

@@ -217,7 +217,7 @@ fn kthread_init_block_devices() -> ! {
         }
 
         // Once done, mark thread for exit
-	scheduler::exit();
+	scheduler::exit(0);
     };
 
     scheduler::set_task_state(scheduler::TaskState::AsyncSyscall {
