@@ -18,6 +18,7 @@ use crate::driver;
 use crate::memory;
 use crate::sys::block;
 use crate::sys::syscall;
+use crate::sys::ioctl;
 
 const IDE_CTL_REG: u16 = 0;
 const IDE_CTL_NIEN: u8 = 1 << 1;
@@ -338,7 +339,7 @@ impl driver::Device for IdeDrive {
 	panic!("Attempted to write to IDE drive. Not yet implemented");
     }
 
-    fn ioctl(&self, ioctl: u64) -> Result<(Bytes, usize, u64), ()> {
+    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<(Bytes, usize, u64), ()> {
 	panic!("Shouldn't have attempted to ioctl to the IDE drive. That makes no sense.");
     }
 }

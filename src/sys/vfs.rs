@@ -8,6 +8,7 @@ use bytes;
 use futures_util::future::BoxFuture;
 
 use crate::sys::syscall;
+use crate::sys::ioctl;
 
 const SEEK_SET: u64 = 3;
 const SEEK_CUR: u64 = 1;
@@ -22,7 +23,7 @@ pub trait FileSystem {
     fn read(self: Arc<Self>, path: String, offset: u64, len: u64) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>>;
     fn write(&self, path: String, buf: *const u8, len: usize) -> Result<u64, ()>;
     fn stat(self: Arc<Self>, path: String) -> BoxFuture<'static, Result<Stat, ()>>;
-    fn ioctl(&self, path: String, ioctl: u64) -> Result<(bytes::Bytes, usize, u64), ()>;
+    fn ioctl(&self, path: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<(bytes::Bytes, usize, u64), ()>;
 }
 
 #[derive(Debug)]
@@ -105,11 +106,11 @@ pub async fn stat(file: String) -> Result<Stat, syscall::CanonicalError> {
     }
 }
 
-pub fn ioctl(file: String, ioctl: u64) -> Result<(bytes::Bytes, usize, u64)> {
+pub fn ioctl(file: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<(bytes::Bytes, usize, u64)> {
     let (fs, file_name) = get_mount_point(&file)?;
 
     {
-	return match fs.ioctl(file_name, ioctl) {
+	return match fs.ioctl(file_name, ioctl, buf) {
 	    Ok(l) => Ok(l),
 	    Err(_) => Err(anyhow!("Unable to write {}", file)),
 	};
@@ -142,11 +143,11 @@ pub async fn read_by_fd(fd: Arc<RwLock<FileDescriptor>>, buf: u64, len: u64) -> 
     Ok(read_buffer.len() as u64)
 }
 
-pub fn ioctl_by_fd(fd: Arc<RwLock<FileDescriptor>>, ioctl_num: u64, buf: u64) -> Result<u64> {
+pub fn ioctl_by_fd(fd: Arc<RwLock<FileDescriptor>>, operation: ioctl::IoCtl, buf: u64) -> Result<u64> {
     let r = fd.read();
     let file = r.get_file_name();
 
-    let (read_buf, size, ret) = ioctl(file, ioctl_num)?;
+    let (read_buf, size, ret) = ioctl(file, operation, buf)?;
 
     let data_to = unsafe {
 	slice::from_raw_parts_mut(buf as *mut u8, size as usize)

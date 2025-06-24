@@ -12,6 +12,7 @@ use futures_util::future::BoxFuture;
 use crate::sys::acpi;
 use crate::sys::syscall;
 use crate::sys::vfs;
+use crate::sys::ioctl;
 use crate::memory;
 
 pub trait Driver {
@@ -32,7 +33,7 @@ pub trait Bus {
 pub trait Device {
     fn read(self: Arc<Self>, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>>;
     fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()>;
-    fn ioctl(&self, ioctl: u64) -> Result<(bytes::Bytes, usize, u64), ()>;
+    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<(bytes::Bytes, usize, u64), ()>;
 }
 
 struct DevFS {
@@ -117,7 +118,7 @@ impl vfs::FileSystem for DevFS {
 	    })
 	})
     }
-    fn ioctl(&self, path: String, ioctl: u64) -> Result<(bytes::Bytes, usize, u64), ()> {
+    fn ioctl(&self, path: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<(bytes::Bytes, usize, u64), ()> {
 	let parts = path.split("/")
 	    .filter(|s| s.len() != 0)
 	    .collect::<Vec<&str>>();
@@ -135,7 +136,7 @@ impl vfs::FileSystem for DevFS {
 	let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
 	let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist");
 
-	device.ioctl(ioctl)
+	device.clone().ioctl(ioctl, buf)
     }
 }
 

@@ -11,6 +11,7 @@ use crate::drivers::usb::protocol as usb_protocol;
 use crate::drivers::usb::usb;
 use crate::memory;
 use crate::sys::syscall;
+use crate::sys::ioctl;
 
 mod protocol;
 
@@ -148,7 +149,7 @@ impl driver::Device for Keyboard {
     fn write(&self, _buf: *const u8, _size: u64) -> Result<u64, ()> {
 	unimplemented!();
     }
-    fn ioctl(&self, ioctl: u64) -> Result<(Bytes, usize, u64), ()> {
+    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<(Bytes, usize, u64), ()> {
 	unimplemented!();
     }
 }

@@ -14,6 +14,7 @@ use crate::sys::block;
 use crate::sys::syscall;
 use crate::sys::vfs;
 use crate::memory;
+use crate::sys::ioctl;
 
 #[derive(Debug)]
 enum FatFsType {
@@ -399,7 +400,7 @@ impl Fat16Fs {
 }
 
 impl vfs::FileSystem for Fat16Fs {
-    fn ioctl(&self, path: String, ioctl: u64) -> Result<(bytes::Bytes, usize, u64), ()> {
+    fn ioctl(&self, path: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<(bytes::Bytes, usize, u64), ()> {
 	// ioctls are devices only
 	Err(())
     }

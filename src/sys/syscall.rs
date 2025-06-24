@@ -14,10 +14,10 @@ use core::pin::Pin;
 use alloc::sync::Arc;
 use spin::Mutex;
 use num_enum::TryFromPrimitive;
-use core::convert::TryFrom;
 use alloc::ffi::CString;
 use core::ptr;
 
+use crate::sys::ioctl;
 use crate::gdt;
 use crate::scheduler;
 use crate::sys::vfs;
@@ -180,6 +180,14 @@ async fn sys_close(fd: u64) -> SyscallResult {
 }
 
 async fn sys_ioctl(fd_num: u64, ioctl: u64, buf: u64) -> SyscallResult {
+    let op = match ioctl::IoCtl::try_from(ioctl) {
+	Ok(v) => v,
+	Err(_) => {
+	    log::info!("Got ioctl number 0x{:x}", ioctl);
+	    unimplemented!();
+	},
+    };
+
     let actual_fd = match scheduler::get_actual_fd(fd_num) {
 	Ok(fd) => fd.file_description,
 	Err(_) => {
@@ -190,7 +198,7 @@ async fn sys_ioctl(fd_num: u64, ioctl: u64, buf: u64) -> SyscallResult {
 	},
     };
 
-    match vfs::ioctl_by_fd(actual_fd, ioctl, buf) {
+    match vfs::ioctl_by_fd(actual_fd, op, buf) {
 	Ok(ret) => SyscallResult {
 	    return_value: ret,
 	    err_num: CanonicalError::EOK as u64,

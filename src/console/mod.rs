@@ -7,6 +7,7 @@ use alloc::string::String;
 use spin::{Once, RwLock};
 use bytes::Bytes;
 use core::cmp;
+use core::ffi::c_int;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::Context;
@@ -22,6 +23,7 @@ use crate::sys::syscall;
 pub struct ConsoleDevice {
     pub key_buffer: RwLock<Bytes>,
     pub local_loopback: bool,
+    pgrp: RwLock<u64>,
 }
 unsafe impl Send for ConsoleDevice { }
 unsafe impl Sync for ConsoleDevice { }
@@ -84,17 +86,32 @@ impl driver::Device for ConsoleDevice {
 	Ok(size)
     }
 
-    fn ioctl(&self, ioctl: u64) -> Result<(Bytes, usize, u64), ()> {
-	// TODO: This should be converted way earlier to an IoCtl enum. Putting here for now because I'm lazy
+    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<(Bytes, usize, u64), ()> {
 	match ioctl {
-	    0x5413 /*ioctl::IoCtl::TIOCGWINSZ */ => {
+	    ioctl::IoCtl::TIOCGWINSZ => {
 		let printk = crate::PRINTK.get().expect("Unable to get printk");
 		Ok((Bytes::copy_from_slice(&[
 		    printk.get_rows(),
 		    printk.get_cols(),
 		    0, 0]), 4usize, 0))
 	    },
-	    _ => Err(()),
+	    ioctl::IoCtl::TIOCGPGRP => {
+		let pgrp = self.pgrp.read();
+		Ok((Bytes::new(), 0usize, pgrp.clone()))
+	    },
+	    ioctl::IoCtl::TIOCSPGRP => {
+		let mut pgrp = self.pgrp.write();
+		*pgrp = unsafe {
+		    let ptr = buf as *const c_int;
+		    *ptr as u64
+		};
+
+		Ok((Bytes::new(), 0usize, 0))
+	    },
+	    _ => {
+		log::info!("ioctl {:?} not implemented for console", ioctl);
+		Err(())
+	    },
 	}
     }
 }
@@ -105,6 +122,7 @@ pub fn init() {
     let device = Arc::new(ConsoleDevice {
 	key_buffer: RwLock::new(Bytes::new()),
 	local_loopback: true,
+	pgrp: RwLock::new(0),
     });
     CONSOLE.call_once(|| device.clone());
     let devid = driver::register_device(device);

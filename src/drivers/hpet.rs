@@ -12,6 +12,7 @@ use crate::sys::acpi::{namespace, resources};
 use crate::memory;
 use crate::interrupts;
 use crate::sys::syscall;
+use crate::sys::ioctl;
 
 const LEG_RT_CNF: u64 = 0x02;
 const ENABLE_CNF: u64 = 0x01;
@@ -257,7 +258,7 @@ impl driver::Device for HpetDevice {
     fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()> {
 	panic!("Shouldn't have attempted to write to the HPET. That makes no sense.");
     }
-    fn ioctl(&self, ioctl: u64) -> Result<(Bytes, usize, u64), ()> {
+    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<(Bytes, usize, u64), ()> {
 	panic!("Shouldn't have attempted to ioctl to the HPET. That makes no sense.");
     }
 }
