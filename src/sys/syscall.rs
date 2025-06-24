@@ -13,6 +13,8 @@ use core::future::Future;
 use core::pin::Pin;
 use alloc::sync::Arc;
 use spin::Mutex;
+use num_enum::TryFromPrimitive;
+use core::convert::TryFrom;
 
 use crate::gdt;
 use crate::scheduler;
@@ -29,6 +31,14 @@ pub enum CanonicalError {
     EAGAIN = 11,
     EACCESS = 13,
     EINVAL = 22,
+}
+
+#[repr(u64)]
+#[derive(Debug, TryFromPrimitive)]
+enum FcntlOperation {
+    F_DUPFD = 1,
+    F_GETFD = 3,
+    F_SETFD = 4,
 }
 
 impl fmt::Display for CanonicalError {
@@ -71,7 +81,7 @@ async fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
     }
 
     let actual_fd = match scheduler::get_actual_fd(fd) {
-	Ok(fd) => fd,
+	Ok(fd) => fd.file_description,
 	Err(_) => {
 	    return SyscallResult {
 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
@@ -94,7 +104,7 @@ async fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
 
 async fn sys_read(fd: u64, buf: u64, count: u64) -> SyscallResult {
     let actual_fd = match scheduler::get_actual_fd(fd) {
-	Ok(fd) => fd,
+	Ok(fd) => fd.file_description,
 	Err(_) => {
 	    return SyscallResult {
 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
@@ -146,7 +156,7 @@ pub async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
 	};
     }
 
-    let fd = scheduler::open_fd(path);
+    let fd = scheduler::open_fd(path, flags);
     SyscallResult {
 	return_value: fd,
 	err_num: CanonicalError::EOK as u64,
@@ -168,7 +178,7 @@ async fn sys_close(fd: u64) -> SyscallResult {
 
 async fn sys_ioctl(fd_num: u64, ioctl: u64, buf: u64) -> SyscallResult {
     let actual_fd = match scheduler::get_actual_fd(fd_num) {
-	Ok(fd) => fd,
+	Ok(fd) => fd.file_description,
 	Err(_) => {
 	    return SyscallResult {
 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
@@ -232,9 +242,83 @@ async fn sys_dup(fd_num: u64) -> SyscallResult {
     }
 }
 
+async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
+    let op = match FcntlOperation::try_from(operation) {
+	Ok(v) => v,
+	Err(_) => {
+	    log::info!("Got fcntl number 0x{:x}", operation);
+	    unimplemented!();
+	},
+    };
+
+    match op {
+	FcntlOperation::F_DUPFD => {
+	    let actual_fd = match scheduler::get_actual_fd(fd_num) {
+		Ok(fd) => fd,
+		Err(_) => {
+		    return SyscallResult {
+			return_value: 0xFFFF_FFFF_FFFF_FFFF,
+			err_num: CanonicalError::EBADF as u64
+		    };
+		},
+	    };
+
+	    match scheduler::dup_fd_exact(actual_fd, param, true) {
+		Ok(new_fd) => return SyscallResult {
+		    return_value: new_fd,
+		    err_num: CanonicalError::EOK as u64,
+		},
+		Err(e) => return SyscallResult {
+		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		    err_num: e as u64,
+		},
+	    }
+	},
+	FcntlOperation::F_GETFD => {
+	    let actual_fd = match scheduler::get_actual_fd(fd_num) {
+		Ok(fd) => fd,
+		Err(_) => {
+		    return SyscallResult {
+			return_value: 0xFFFF_FFFF_FFFF_FFFF,
+			err_num: CanonicalError::EBADF as u64
+		    };
+		},
+	    };
+
+	    return SyscallResult {
+		return_value: actual_fd.flags,
+		err_num: CanonicalError::EOK as u64,
+	    };
+	},
+	FcntlOperation::F_SETFD => {
+	    // Bottom 3 bits are mode. We don't currently enforce mode, but in order to progress, let's strip it out.
+	    // Similarly, there isn't yet a concept of a controlling TTY, so let's not worry about that either for now
+	    // TODO - support read/write/exec/etc modes
+	    // TODO - support O_NOCTTY (0x80)
+	    if param & 0xFFFF_FFFF_FFFF_FF78 != 0 {
+		log::info!("SETFD flags are 0x{:x}", param);
+		unimplemented!();
+	    }
+	    
+	    match scheduler::set_fd_flags(fd_num, param) {
+		Ok(fd) => return SyscallResult {
+		    return_value: 0,
+		    err_num: CanonicalError::EOK as u64,
+		},
+		Err(_) => {
+		    return SyscallResult {
+			return_value: 0xFFFF_FFFF_FFFF_FFFF,
+			err_num: CanonicalError::EBADF as u64
+		    };
+		},
+	    }
+	},
+    }
+}
+
 async fn sys_seek(fd_num: u64, offset: u64, whence: u64) -> SyscallResult {
     let actual_fd = match scheduler::get_actual_fd(fd_num) {
-	Ok(fd) => fd,
+	Ok(fd) => fd.file_description,
 	Err(_) => {
 	    return SyscallResult {
 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
@@ -398,6 +482,7 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 	0x04 => Box::pin(sys_ioctl(rdi, rsi, rdx)),
 	0x05 => Box::pin(sys_stat(rdi, rsi)),
 	0x06 => Box::pin(sys_dup(rdi)),
+	0x07 => Box::pin(sys_fcntl(rdi, rsi, rdx)),
 	0x08 => Box::pin(sys_seek(rdi, rsi, rdx)),
 	0x09 => Box::pin(sys_mmap(rdi, rsi, r8)),
 	0x0c => scheduler::exit(),  // Doesn't return, so no need for async fn here

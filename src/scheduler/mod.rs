@@ -79,9 +79,15 @@ pub enum TaskType {
     Kernel,
 }
 
+#[derive(Clone)]
+pub struct FileDescriptor {
+    pub file_description: Arc<RwLock<vfs::FileDescriptor>>,
+    pub flags: u64,
+}
+
 pub struct Process {
     pub address_space: Arc<RwLock<memory::user_address_space::AddressSpace>>,
-    file_descriptors: BTreeMap<u64, Arc<RwLock<vfs::FileDescriptor>>>,
+    file_descriptors: BTreeMap<u64, FileDescriptor>,
     next_fd: u64,
     args: Vec<String>,
     envvars: Vec<String>,
@@ -671,14 +677,25 @@ pub fn schedule_next() -> ! {
     context_switch(&context);
 }
 
-pub fn open_fd(file: String) -> u64 {
+pub fn open_fd(file: String, flags: u64) -> u64 {
     let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
-	let fd = Arc::new(RwLock::new(vfs::FileDescriptor::new(file)));
-	let fd_number = process_tbl[&pid].next_fd;
+	let fd = FileDescriptor {
+	    flags: flags,
+	    file_description: Arc::new(RwLock::new(vfs::FileDescriptor::new(file))),
+	};
+
+	let mut fd_number = process_tbl[&pid].next_fd;
 	process_tbl.get_mut(&pid).unwrap().next_fd += 1;
+
+	if let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd_number) {
+	    while let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd_number) {
+		// TODO: persist this
+		fd_number += 1;
+	    }
+	}
 
 	process_tbl.get_mut(&pid).unwrap().file_descriptors.insert(fd_number, fd);
 	fd_number
@@ -687,13 +704,20 @@ pub fn open_fd(file: String) -> u64 {
     }
 }
 
-pub fn dup_fd(fd: Arc<RwLock<vfs::FileDescriptor>>) -> u64 {
+pub fn dup_fd(fd: FileDescriptor) -> u64 {
     let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
     let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
 
     if let Some(pid) = *running_process {
-	let fd_number = process_tbl[&pid].next_fd;
+	let mut fd_number = process_tbl[&pid].next_fd;
 	process_tbl.get_mut(&pid).unwrap().next_fd += 1;
+
+	if let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd_number) {
+	    while let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd_number) {
+		// TODO: persist this
+		fd_number += 1;
+	    }
+	}
 
 	process_tbl.get_mut(&pid).unwrap().file_descriptors.insert(fd_number, fd);
 	fd_number
@@ -702,7 +726,29 @@ pub fn dup_fd(fd: Arc<RwLock<vfs::FileDescriptor>>) -> u64 {
     }
 }
 
-pub fn get_actual_fd(fd: u64) -> Result<Arc<RwLock<vfs::FileDescriptor>>> {
+pub fn dup_fd_exact(fd: FileDescriptor, mut fd_number: u64, try_greater: bool) -> Result<u64, syscall::CanonicalError> {
+    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+    let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
+
+    if let Some(pid) = *running_process {
+	if let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd_number) {
+	    if try_greater {
+		while let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd_number) {
+		    fd_number += 1;
+		}
+	    } else {
+		return Err(syscall::CanonicalError::EBADF);
+	    }
+	}
+
+	process_tbl.get_mut(&pid).unwrap().file_descriptors.insert(fd_number, fd);
+	Ok(fd_number)
+    } else {
+	panic!("Attempted to read open FDs on nonexistent process");
+    }
+}
+
+pub fn get_actual_fd(fd: u64) -> Result<FileDescriptor> {
     let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
@@ -711,6 +757,26 @@ pub fn get_actual_fd(fd: u64) -> Result<Arc<RwLock<vfs::FileDescriptor>>> {
 	    Ok(actual_fd.clone())
 	} else {
 	    Err(anyhow!("Attempted to access nonexistent file descriptor"))
+	}
+    } else {
+	panic!("Attempted to read open FDs on nonexistent process");
+    }
+}
+
+pub fn set_fd_flags(fd: u64, flags: u64) -> Result<()> {
+    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+    if let Some(pid) = *running_process {
+	if let Some(process) = process_tbl.get_mut(&pid) {
+	    if let Some(actual_fd) = process.file_descriptors.get_mut(&fd) {
+		actual_fd.flags = flags;
+		return Ok(());
+	    } else {
+		return Err(anyhow!("Attempted to access nonexistent file descriptor"));
+	    }
+	} else {
+	    panic!("Attempted to read open FDs on nonexistent process");
 	}
     } else {
 	panic!("Attempted to read open FDs on nonexistent process");
