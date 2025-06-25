@@ -23,7 +23,7 @@ pub trait FileSystem {
     fn read(self: Arc<Self>, path: String, offset: u64, len: u64) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>>;
     fn write(&self, path: String, buf: *const u8, len: usize) -> Result<u64, ()>;
     fn stat(self: Arc<Self>, path: String) -> BoxFuture<'static, Result<Stat, ()>>;
-    fn ioctl(&self, path: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<(bytes::Bytes, usize, u64), ()>;
+    fn ioctl(&self, path: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()>;
 }
 
 #[derive(Debug)]
@@ -84,17 +84,6 @@ pub async fn read(file: String, offset: u64, len: u64) -> Result<bytes::Bytes, s
     fs.read(file_name.clone(), offset, len).await
 }
 
-pub fn write(file: String, buf: *const u8, len: usize) -> Result<u64> {
-    let (fs, file_name) = get_mount_point(&file)?;
-
-    {
-	return match fs.write(file_name, buf, len) {
-	    Ok(l) => Ok(l),
-	    Err(_) => Err(anyhow!("Unable to write {}", file)),
-	};
-    }
-}
-
 pub async fn stat(file: String) -> Result<Stat, syscall::CanonicalError> {
     let (fs, file_name) = get_mount_point(&file)?;
 
@@ -106,21 +95,18 @@ pub async fn stat(file: String) -> Result<Stat, syscall::CanonicalError> {
     }
 }
 
-pub fn ioctl(file: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<(bytes::Bytes, usize, u64)> {
+pub fn write_by_fd(fd: Arc<RwLock<FileDescriptor>>, buf: u64, len: u64) -> Result<u64> {
+    let r = fd.read();
+    let file = r.get_file_name();
+
     let (fs, file_name) = get_mount_point(&file)?;
 
     {
-	return match fs.ioctl(file_name, ioctl, buf) {
+	return match fs.write(file_name, buf as *const u8, len as usize) {
 	    Ok(l) => Ok(l),
 	    Err(_) => Err(anyhow!("Unable to write {}", file)),
 	};
     }
-}
-
-pub fn write_by_fd(fd: Arc<RwLock<FileDescriptor>>, buf: u64, len: u64) -> Result<u64> {
-    let r = fd.read();
-    let file = r.get_file_name();
-    write(file, buf as *const u8, len as usize)
 }
 
 pub async fn read_by_fd(fd: Arc<RwLock<FileDescriptor>>, buf: u64, len: u64) -> Result<u64, syscall::CanonicalError> {
@@ -147,13 +133,14 @@ pub fn ioctl_by_fd(fd: Arc<RwLock<FileDescriptor>>, operation: ioctl::IoCtl, buf
     let r = fd.read();
     let file = r.get_file_name();
 
-    let (read_buf, size, ret) = ioctl(file, operation, buf)?;
+    let (fs, file_name) = get_mount_point(&file)?;
 
-    let data_to = unsafe {
-	slice::from_raw_parts_mut(buf as *mut u8, size as usize)
-    };
-    data_to.copy_from_slice(read_buf.as_ref());
-    Ok(ret)
+    {
+	return match fs.ioctl(file_name, operation, buf) {
+	    Ok(l) => Ok(l),
+	    Err(_) => Err(anyhow!("Unable to write {}", file)),
+	};
+    }
 }
 
 pub async fn seek_fd(fd: Arc<RwLock<FileDescriptor>>, offset: u64, whence: u64) -> Result<u64> {

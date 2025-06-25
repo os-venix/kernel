@@ -258,7 +258,7 @@ impl driver::Device for HpetDevice {
     fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()> {
 	panic!("Shouldn't have attempted to write to the HPET. That makes no sense.");
     }
-    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<(Bytes, usize, u64), ()> {
+    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()> {
 	panic!("Shouldn't have attempted to ioctl to the HPET. That makes no sense.");
     }
 }

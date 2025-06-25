@@ -400,7 +400,7 @@ impl Fat16Fs {
 }
 
 impl vfs::FileSystem for Fat16Fs {
-    fn ioctl(&self, path: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<(bytes::Bytes, usize, u64), ()> {
+    fn ioctl(&self, path: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()> {
 	// ioctls are devices only
 	Err(())
     }

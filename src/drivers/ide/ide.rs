@@ -339,7 +339,7 @@ impl driver::Device for IdeDrive {
 	panic!("Attempted to write to IDE drive. Not yet implemented");
     }
 
-    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<(Bytes, usize, u64), ()> {
+    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()> {
 	panic!("Shouldn't have attempted to ioctl to the IDE drive. That makes no sense.");
     }
 }

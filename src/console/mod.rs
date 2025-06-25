@@ -86,18 +86,24 @@ impl driver::Device for ConsoleDevice {
 	Ok(size)
     }
 
-    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<(Bytes, usize, u64), ()> {
+    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()> {
 	match ioctl {
 	    ioctl::IoCtl::TIOCGWINSZ => {
 		let printk = crate::PRINTK.get().expect("Unable to get printk");
-		Ok((Bytes::copy_from_slice(&[
+
+		let read_buf = Bytes::copy_from_slice(&[
 		    printk.get_rows(),
 		    printk.get_cols(),
-		    0, 0]), 4usize, 0))
+		    0, 0]);
+		let data_to = unsafe {
+		    slice::from_raw_parts_mut(buf as *mut u8, read_buf.len())
+		};
+		data_to.copy_from_slice(read_buf.as_ref());
+		Ok(0)
 	    },
 	    ioctl::IoCtl::TIOCGPGRP => {
 		let pgrp = self.pgrp.read();
-		Ok((Bytes::new(), 0usize, pgrp.clone()))
+		Ok(pgrp.clone())
 	    },
 	    ioctl::IoCtl::TIOCSPGRP => {
 		let mut pgrp = self.pgrp.write();
@@ -106,7 +112,7 @@ impl driver::Device for ConsoleDevice {
 		    *ptr as u64
 		};
 
-		Ok((Bytes::new(), 0usize, 0))
+		Ok(0)
 	    },
 	    _ => {
 		log::info!("ioctl {:?} not implemented for console", ioctl);

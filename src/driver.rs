@@ -33,7 +33,7 @@ pub trait Bus {
 pub trait Device {
     fn read(self: Arc<Self>, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>>;
     fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()>;
-    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<(bytes::Bytes, usize, u64), ()>;
+    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()>;
 }
 
 struct DevFS {
@@ -118,7 +118,7 @@ impl vfs::FileSystem for DevFS {
 	    })
 	})
     }
-    fn ioctl(&self, path: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<(bytes::Bytes, usize, u64), ()> {
+    fn ioctl(&self, path: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()> {
 	let parts = path.split("/")
 	    .filter(|s| s.len() != 0)
 	    .collect::<Vec<&str>>();
