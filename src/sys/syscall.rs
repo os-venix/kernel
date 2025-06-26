@@ -1,6 +1,6 @@
 use core::mem::offset_of;
 use x86_64::structures::tss::TaskStateSegment;
-use core::ffi::CStr;
+use core::ffi::{CStr, c_int};
 use alloc::string::String;
 use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{FsBase, Efer, EferFlags, SFMask, Star, LStar};
@@ -93,8 +93,8 @@ async fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
 	},
     };
 
-    let r = actual_fd.read();
-    match r.write(buf, count) {
+    let mut w = actual_fd.write();
+    match w.write(buf, count) {
 	Ok(len) => SyscallResult {
 	    return_value: len,
 	    err_num: CanonicalError::EOK as u64,
@@ -402,7 +402,14 @@ async fn sys_mmap(start_val: u64, count: u64, r8: u64) -> SyscallResult {
 }
 
 async fn sys_pipe(fds: u64, flags: u64) -> SyscallResult {
-    log::info!("Warning: pipe is a stub");
+    let (fd1, fd2) = scheduler::pipe_fd(flags);
+    let ptr = fds as *mut c_int;
+
+    unsafe {
+	*ptr.add(0) = fd1 as c_int;
+	*ptr.add(1) = fd2 as c_int;
+    }
+
     SyscallResult {
 	return_value: 0,
 	err_num: CanonicalError::EOK as u64,

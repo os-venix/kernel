@@ -711,6 +711,51 @@ pub fn open_fd(file: String, flags: u64) -> u64 {
     }
 }
 
+pub fn pipe_fd(flags: u64) -> (u64, u64) {
+    let file_description = Arc::new(RwLock::new(vfs::FileDescriptor::new_pipe()));
+
+    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+    if let Some(pid) = *running_process {
+	// TODO - one of these should be read, the other write
+	let fd1 = FileDescriptor {
+	    flags: flags,
+	    file_description: file_description.clone(),
+	};
+	let fd2 = FileDescriptor {
+	    flags: flags,
+	    file_description: file_description.clone(),
+	};
+
+	let mut fd1_number = process_tbl[&pid].next_fd;
+	process_tbl.get_mut(&pid).unwrap().next_fd += 2;
+
+	if let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd1_number) {
+	    while let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd1_number) {
+		// TODO: persist this
+		fd1_number += 1;
+	    }
+	}
+
+	process_tbl.get_mut(&pid).unwrap().file_descriptors.insert(fd1_number, fd1);
+
+	let mut fd2_number = fd1_number + 1;
+	if let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd2_number) {
+	    while let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd2_number) {
+		// TODO: persist this
+		fd2_number += 1;
+	    }
+	}
+
+	process_tbl.get_mut(&pid).unwrap().file_descriptors.insert(fd2_number, fd2);
+
+	(fd1_number, fd2_number)
+    } else {
+	panic!("Attempted to open a file on a nonexistent process");
+    }
+}
+
 pub fn dup_fd(fd: FileDescriptor) -> u64 {
     let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
     let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();

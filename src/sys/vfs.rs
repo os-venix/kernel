@@ -5,6 +5,7 @@ use alloc::collections::btree_map::BTreeMap;
 use anyhow::{anyhow, Result};
 use alloc::slice;
 use bytes;
+use core::cmp;
 use futures_util::future::BoxFuture;
 
 use crate::sys::syscall;
@@ -26,87 +27,123 @@ pub trait FileSystem {
     fn ioctl(&self, path: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()>;
 }
 
-pub struct FileDescriptor {
-    file_name: String,
-    current_offset: u64,
+pub enum FileDescriptor {
+    File {
+	file_name: String,
+	current_offset: u64,
 
-    file_system: Arc<dyn FileSystem + Send + Sync>,
-    local_name: String,
+	file_system: Arc<dyn FileSystem + Send + Sync>,
+	local_name: String,
+    },
+    Pipe {
+	buffer: bytes::BytesMut,
+    },
 }
 
 impl FileDescriptor {
     pub fn new(name: String) -> FileDescriptor {
 	let (fs, local_name) = get_mount_point(&name).unwrap();
-	FileDescriptor {
+	FileDescriptor::File {
 	    file_name: name,
 	    current_offset: 0,
-
 	    file_system: fs,
 	    local_name,
 	}
     }
 
-    pub fn get_file_name(&self) -> String {
-	self.file_name.clone()
+    pub fn new_pipe() -> FileDescriptor {
+	FileDescriptor::Pipe {
+	    buffer: bytes::BytesMut::new()
+	}
     }
 
     pub async fn read(&mut self, buf: u64, len: u64) -> Result<u64, syscall::CanonicalError> {
-	let read_buffer = self.file_system.clone().read(self.local_name.clone(), self.current_offset, len).await?;
+	let read_buffer = match self {
+	    FileDescriptor::File { file_name, current_offset, file_system, local_name } => {
+		let read_buffer = file_system.clone().read(local_name.clone(), *current_offset, len).await?;
+		*current_offset += len;
+		read_buffer
+	    },
+	    FileDescriptor::Pipe { buffer } => {
+		let to_read = cmp::min(len as usize, buffer.len());
+		buffer.split_to(to_read).freeze()
+	    },
+	};
 
 	let data_to = unsafe {
 	    slice::from_raw_parts_mut(buf as *mut u8, read_buffer.len())
 	};
 	data_to.copy_from_slice(read_buffer.as_ref());
 
-	self.current_offset += len;
 	Ok(read_buffer.len() as u64)
     }
 
-    pub fn write(&self, buf: u64, len: u64) -> Result<u64> {
-	match self.file_system.write(self.local_name.clone(), buf as *const u8, len as usize) {
-	    Ok(l) => Ok(l),
-	    Err(_) => Err(anyhow!("Unable to write {}", self.file_name)),
+    pub fn write(&mut self, buf: u64, len: u64) -> Result<u64> {
+	match self {
+	    FileDescriptor::File { file_name, current_offset, file_system, local_name } => {
+		match file_system.write(local_name.clone(), buf as *const u8, len as usize) {
+		    Ok(l) => Ok(l),
+		    Err(_) => Err(anyhow!("Unable to write {}", file_name)),
+		}
+	    },
+	    FileDescriptor::Pipe { buffer } => {
+		let user_buf = unsafe {
+		    slice::from_raw_parts(buf as *const u8, len as usize)
+		};
+		buffer.extend_from_slice(user_buf);
+		Ok(len)
+	    },
 	}
     }
 
     pub fn ioctl(&self, operation: ioctl::IoCtl, buf: u64) -> Result<u64> {
-	match self.file_system.ioctl(self.local_name.clone(), operation, buf) {
-	    Ok(l) => Ok(l),
-	    Err(_) => Err(anyhow!("Unable to write {}", self.file_name)),
+	match self {
+	    FileDescriptor::File { file_name, current_offset, file_system, local_name } => {
+		match file_system.ioctl(local_name.clone(), operation, buf) {
+		    Ok(l) => Ok(l),
+		    Err(_) => Err(anyhow!("Unable to ioctl {}", file_name)),
+		}
+	    },
+	    _ => Err(anyhow!("Unable to ioctl")),
 	}
     }
 
     pub async fn seek(&mut self, offset: u64, whence: u64) -> Result<u64> {
-	let offset_signed = offset as i64;
+	match self {
+	    FileDescriptor::File { file_name, current_offset, file_system, local_name } => {
+		let offset_signed = offset as i64;
 
-	let stat = stat(self.file_name.clone()).await?;
-	let size = if let Some(s) = stat.size { s } else {
-	    return Ok(0);
-	};
+		let stat = stat(file_name.clone()).await?;
+		let size = if let Some(s) = stat.size { s } else {
+		    return Ok(0);
+		};
 
-	if whence == SEEK_SET {
-	    if offset >= size || offset_signed < 0 {
-		return Err(anyhow!("Invalid size"));
-	    }
+		if whence == SEEK_SET {
+		    if offset >= size || offset_signed < 0 {
+			return Err(anyhow!("Invalid size"));
+		    }
 
-	    self.current_offset = offset_signed as u64;
-	} else if whence == SEEK_CUR {
-	    let (result, overflow) = self.current_offset.overflowing_add_signed(offset_signed);
-	    if result >= size || overflow {
-		return Err(anyhow!("Invalid size"));
-	    }
+		    *current_offset = offset_signed as u64;
+		} else if whence == SEEK_CUR {
+		    let (result, overflow) = current_offset.overflowing_add_signed(offset_signed);
+		    if result >= size || overflow {
+			return Err(anyhow!("Invalid size"));
+		    }
 
-	    self.current_offset = self.current_offset.wrapping_add_signed(offset_signed);
-	} else if whence == SEEK_END {
-	    let (result, overflow) = size.overflowing_add_signed(offset_signed);
-	    if result >= size || overflow {
-		return Err(anyhow!("Invalid size"));
-	    }
+		    *current_offset = current_offset.wrapping_add_signed(offset_signed);
+		} else if whence == SEEK_END {
+		    let (result, overflow) = size.overflowing_add_signed(offset_signed);
+		    if result >= size || overflow {
+			return Err(anyhow!("Invalid size"));
+		    }
 
-	    self.current_offset = size.wrapping_add_signed(offset_signed);
+		    *current_offset = size.wrapping_add_signed(offset_signed);
+		}
+
+		Ok(*current_offset)
+	    },
+	    _ => Err(anyhow!("Unable to seek")),
 	}
-
-	Ok(self.current_offset)
     }
 }
 
