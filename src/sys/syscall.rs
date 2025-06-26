@@ -93,7 +93,8 @@ async fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
 	},
     };
 
-    match vfs::write_by_fd(actual_fd, buf, count) {
+    let r = actual_fd.read();
+    match r.write(buf, count) {
 	Ok(len) => SyscallResult {
 	    return_value: len,
 	    err_num: CanonicalError::EOK as u64,
@@ -116,7 +117,8 @@ async fn sys_read(fd: u64, buf: u64, count: u64) -> SyscallResult {
 	},
     };
 
-    match vfs::read_by_fd(actual_fd, buf, count).await {
+    let mut w = actual_fd.write();
+    match w.read(buf, count).await {
 	Ok(len) => SyscallResult {
 	    return_value: len,
 	    err_num: CanonicalError::EOK as u64,
@@ -198,7 +200,8 @@ async fn sys_ioctl(fd_num: u64, ioctl: u64, buf: u64) -> SyscallResult {
 	},
     };
 
-    match vfs::ioctl_by_fd(actual_fd, op, buf) {
+    let r = actual_fd.read();
+    match r.ioctl(op, buf) {
 	Ok(ret) => SyscallResult {
 	    return_value: ret,
 	    err_num: CanonicalError::EOK as u64,
@@ -346,7 +349,8 @@ async fn sys_seek(fd_num: u64, offset: u64, whence: u64) -> SyscallResult {
 	};
     }
 
-    match vfs::seek_fd(actual_fd, offset, whence).await {
+    let mut w = actual_fd.write();
+    match w.seek(offset, whence).await {
 	Ok(offs) => SyscallResult {
 	    return_value: offs,
 	    err_num: CanonicalError::EOK as u64,
@@ -397,6 +401,14 @@ async fn sys_mmap(start_val: u64, count: u64, r8: u64) -> SyscallResult {
     }
 }
 
+async fn sys_pipe(fds: u64, flags: u64) -> SyscallResult {
+    log::info!("Warning: pipe is a stub");
+    SyscallResult {
+	return_value: 0,
+	err_num: CanonicalError::EOK as u64,
+    }
+}
+    
 async fn sys_getcwd(buf: u64, count: u64) -> SyscallResult {
     let cwd = scheduler::get_current_cwd();
 
@@ -545,6 +557,7 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 	0x07 => Box::pin(sys_fcntl(rdi, rsi, rdx)),
 	0x08 => Box::pin(sys_seek(rdi, rsi, rdx)),
 	0x09 => Box::pin(sys_mmap(rdi, rsi, r8)),
+	0x0a => Box::pin(sys_pipe(rdi, rsi)),
 	0x0c => scheduler::exit(rdi),  // Doesn't return, so no need for async fn here
 	0x20 => Box::pin(sys_getcwd(rdi, rsi)),
 	0x39 => Box::pin(sys_fork(rcx)),

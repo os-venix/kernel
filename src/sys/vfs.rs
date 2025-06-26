@@ -26,22 +26,87 @@ pub trait FileSystem {
     fn ioctl(&self, path: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()>;
 }
 
-#[derive(Debug)]
 pub struct FileDescriptor {
     file_name: String,
     current_offset: u64,
+
+    file_system: Arc<dyn FileSystem + Send + Sync>,
+    local_name: String,
 }
 
 impl FileDescriptor {
     pub fn new(name: String) -> FileDescriptor {
+	let (fs, local_name) = get_mount_point(&name).unwrap();
 	FileDescriptor {
 	    file_name: name,
 	    current_offset: 0,
+
+	    file_system: fs,
+	    local_name,
 	}
     }
 
     pub fn get_file_name(&self) -> String {
 	self.file_name.clone()
+    }
+
+    pub async fn read(&mut self, buf: u64, len: u64) -> Result<u64, syscall::CanonicalError> {
+	let read_buffer = self.file_system.clone().read(self.local_name.clone(), self.current_offset, len).await?;
+
+	let data_to = unsafe {
+	    slice::from_raw_parts_mut(buf as *mut u8, read_buffer.len())
+	};
+	data_to.copy_from_slice(read_buffer.as_ref());
+
+	self.current_offset += len;
+	Ok(read_buffer.len() as u64)
+    }
+
+    pub fn write(&self, buf: u64, len: u64) -> Result<u64> {
+	match self.file_system.write(self.local_name.clone(), buf as *const u8, len as usize) {
+	    Ok(l) => Ok(l),
+	    Err(_) => Err(anyhow!("Unable to write {}", self.file_name)),
+	}
+    }
+
+    pub fn ioctl(&self, operation: ioctl::IoCtl, buf: u64) -> Result<u64> {
+	match self.file_system.ioctl(self.local_name.clone(), operation, buf) {
+	    Ok(l) => Ok(l),
+	    Err(_) => Err(anyhow!("Unable to write {}", self.file_name)),
+	}
+    }
+
+    pub async fn seek(&mut self, offset: u64, whence: u64) -> Result<u64> {
+	let offset_signed = offset as i64;
+
+	let stat = stat(self.file_name.clone()).await?;
+	let size = if let Some(s) = stat.size { s } else {
+	    return Ok(0);
+	};
+
+	if whence == SEEK_SET {
+	    if offset >= size || offset_signed < 0 {
+		return Err(anyhow!("Invalid size"));
+	    }
+
+	    self.current_offset = offset_signed as u64;
+	} else if whence == SEEK_CUR {
+	    let (result, overflow) = self.current_offset.overflowing_add_signed(offset_signed);
+	    if result >= size || overflow {
+		return Err(anyhow!("Invalid size"));
+	    }
+
+	    self.current_offset = self.current_offset.wrapping_add_signed(offset_signed);
+	} else if whence == SEEK_END {
+	    let (result, overflow) = size.overflowing_add_signed(offset_signed);
+	    if result >= size || overflow {
+		return Err(anyhow!("Invalid size"));
+	    }
+
+	    self.current_offset = size.wrapping_add_signed(offset_signed);
+	}
+
+	Ok(self.current_offset)
     }
 }
 
@@ -87,97 +152,8 @@ pub async fn read(file: String, offset: u64, len: u64) -> Result<bytes::Bytes, s
 pub async fn stat(file: String) -> Result<Stat, syscall::CanonicalError> {
     let (fs, file_name) = get_mount_point(&file)?;
 
-    {
-	return match fs.stat(file_name).await {
-	    Ok(l) => Ok(l),
-	    Err(_) => Err(syscall::CanonicalError::ENOENT),
-	};
-    }
-}
-
-pub fn write_by_fd(fd: Arc<RwLock<FileDescriptor>>, buf: u64, len: u64) -> Result<u64> {
-    let r = fd.read();
-    let file = r.get_file_name();
-
-    let (fs, file_name) = get_mount_point(&file)?;
-
-    {
-	return match fs.write(file_name, buf as *const u8, len as usize) {
-	    Ok(l) => Ok(l),
-	    Err(_) => Err(anyhow!("Unable to write {}", file)),
-	};
-    }
-}
-
-pub async fn read_by_fd(fd: Arc<RwLock<FileDescriptor>>, buf: u64, len: u64) -> Result<u64, syscall::CanonicalError> {
-    let read_buffer = {
-	let w = fd.read();
-	let file = w.get_file_name();
-
-	read(file, w.current_offset, len)
-    }.await?;
-
-    let data_to = unsafe {
-	slice::from_raw_parts_mut(buf as *mut u8, read_buffer.len())
+    return match fs.stat(file_name).await {
+	Ok(l) => Ok(l),
+	Err(_) => Err(syscall::CanonicalError::ENOENT),
     };
-    data_to.copy_from_slice(read_buffer.as_ref());
-
-    {
-	let mut w = fd.write();
-	w.current_offset += len;
-    }
-    Ok(read_buffer.len() as u64)
-}
-
-pub fn ioctl_by_fd(fd: Arc<RwLock<FileDescriptor>>, operation: ioctl::IoCtl, buf: u64) -> Result<u64> {
-    let r = fd.read();
-    let file = r.get_file_name();
-
-    let (fs, file_name) = get_mount_point(&file)?;
-
-    {
-	return match fs.ioctl(file_name, operation, buf) {
-	    Ok(l) => Ok(l),
-	    Err(_) => Err(anyhow!("Unable to write {}", file)),
-	};
-    }
-}
-
-pub async fn seek_fd(fd: Arc<RwLock<FileDescriptor>>, offset: u64, whence: u64) -> Result<u64> {
-    let offset_signed = offset as i64;
-
-    let stat = {
-	let w = fd.read();
-	let file = w.get_file_name();
-
-	stat(file)
-    }.await?;
-    let size = if let Some(s) = stat.size { s } else {
-	return Ok(0);
-    };
-
-    let mut w = fd.write();
-    if whence == SEEK_SET {
-	if offset >= size || offset_signed < 0 {
-	    return Err(anyhow!("Invalid size"));
-	}
-
-	w.current_offset = offset_signed as u64;
-    } else if whence == SEEK_CUR {
-	let (result, overflow) = w.current_offset.overflowing_add_signed(offset_signed);
-	if result >= size || overflow {
-	    return Err(anyhow!("Invalid size"));
-	}
-
-	w.current_offset = w.current_offset.wrapping_add_signed(offset_signed);
-    } else if whence == SEEK_END {
-	let (result, overflow) = size.overflowing_add_signed(offset_signed);
-	if result >= size || overflow {
-	    return Err(anyhow!("Invalid size"));
-	}
-
-	w.current_offset = size.wrapping_add_signed(offset_signed);
-    }
-
-    Ok(w.current_offset)
 }
