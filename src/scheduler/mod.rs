@@ -20,6 +20,7 @@ use crate::sys::syscall;
 use crate::gdt;
 
 mod elf_loader;
+mod signal;
 
 const AT_NUL: u64 = 0;
 const AT_PHDR: u64 = 3;
@@ -97,6 +98,7 @@ pub struct Process {
     state: TaskState,
     task_type: TaskType,
     cwd: String,
+    signals: BTreeMap<u64, signal::SignalHandler>,
 }
 
 impl Process {
@@ -137,6 +139,7 @@ impl Process {
 	    state: TaskState::Running,
 	    task_type: TaskType::Kernel,
 	    cwd: String::from("/"),
+	    signals: BTreeMap::new(),
 	}
     }
 
@@ -168,6 +171,7 @@ impl Process {
 	    state: TaskState::Setup,
 	    task_type: self.task_type,
 	    cwd: self.cwd.clone(),
+	    signals: self.signals.clone(),
 	}
     }
 
@@ -182,6 +186,7 @@ impl Process {
 	self.context.gprs = GeneralPurposeRegisters::default();
 	self.context.rflags = 0x202;
 	self.auxvs = Vec::new();
+	self.signals = BTreeMap::new();
     }
 
     pub fn init_stack(&mut self) {
@@ -329,6 +334,10 @@ impl Process {
 	self.context.rip = rip;
 	self.context.rflags = rflags;
 	self.context.gprs = *registers;
+    }
+
+    fn install_signal_handler(&mut self, signal: u64, handler: signal::SignalHandler) {
+	self.signals.insert(signal, handler);
     }
 }
 
@@ -886,6 +895,19 @@ pub fn get_current_cwd() -> String {
 
     if let Some(pid) = *running_process {
 	process_tbl[&pid].cwd.clone()
+    } else {
+	panic!("Attempted to access user address space when no process is running");
+    }
+}
+
+pub fn install_signal_handler(signal: u64, handler: u64) {
+    let signal_handler = signal::parse_sigaction(handler);
+
+    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
+    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+    if let Some(pid) = *running_process {
+	process_tbl.get_mut(&pid).unwrap().install_signal_handler(signal, signal_handler);
     } else {
 	panic!("Attempted to access user address space when no process is running");
     }
