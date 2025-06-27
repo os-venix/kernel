@@ -95,6 +95,7 @@ pub struct Process {
     task_type: RwLock<TaskType>,
     cwd: RwLock<String>,
     signals: RwLock<BTreeMap<u64, signal::SignalHandler>>,
+    sigmask: RwLock<u64>,
 }
 
 unsafe impl Send for Process { }
@@ -137,6 +138,7 @@ impl Process {
 	    task_type: RwLock::new(TaskType::Kernel),
 	    cwd: RwLock::new(String::from("/")),
 	    signals: RwLock::new(BTreeMap::new()),
+	    sigmask: RwLock::new(0),
 	}
     }
 
@@ -191,6 +193,11 @@ impl Process {
 	    old_cwd.clone()
 	};
 
+	let sigmask = {
+	    let old_sigmask = self.sigmask.read();
+	    old_sigmask.clone()
+	};
+
 	Process {
 	    address_space: Arc::new(RwLock::new(new_address_space)),
 	    file_descriptors: RwLock::new(file_descriptors.clone()),
@@ -209,6 +216,7 @@ impl Process {
 	    task_type: RwLock::new(task_type),
 	    cwd: RwLock::new(cwd),
 	    signals: RwLock::new(signals),
+	    sigmask: RwLock::new(sigmask),
 	}
     }
 
@@ -537,5 +545,25 @@ impl Process {
     pub fn get_cwd(&self) -> String {
 	let cwd = self.cwd.read();
 	cwd.clone()
-    }	
+    }
+
+    pub fn get_current_sigprocmask(&self) -> u64 {
+	let sigmask = self.sigmask.read();
+	*sigmask
+    }
+
+    pub fn signal_mask_block(self: Arc<Self>, newset: u64) {
+	let mut sigmask = self.sigmask.write();
+	*sigmask = (*sigmask) | newset;
+    }
+
+    pub fn signal_mask_unblock(self: Arc<Self>, newset: u64) {
+	let mut sigmask = self.sigmask.write();
+	*sigmask = (*sigmask) & !newset;
+    }
+
+    pub fn signal_mask_setmask(self: Arc<Self>, newset: u64) {
+	let mut sigmask = self.sigmask.write();
+	*sigmask = newset;
+    }
 }

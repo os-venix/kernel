@@ -613,6 +613,36 @@ async fn sys_sigaction(signum: u64, new_sigaction: u64, old_sigaction: u64) -> S
     }
 }
 
+async fn sys_sigprocmask(how: u64, set: u64, oldset: u64) -> SyscallResult {
+    let process = scheduler::get_current_process();
+    let newset: u64 = unsafe {
+	let s = set as *const u64;
+	*s
+    };
+
+    if oldset != 0 {
+	unsafe {
+	    let s = oldset as *mut u64;
+	    *s = process.get_current_sigprocmask();
+	}
+    }
+
+    match how {
+	1 => process.signal_mask_block(newset),
+	2 => process.signal_mask_unblock(newset),
+	3 => process.signal_mask_setmask(newset),
+	_ => return SyscallResult {
+	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    err_num: CanonicalError::EINVAL as u64,
+	},
+    }
+
+    SyscallResult {
+	return_value: 0,
+	err_num: CanonicalError::EOK as u64,
+    }
+}
+
 fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u64, rcx: u64) -> Pin<Box<dyn Future<Output = SyscallResult> + Send + 'static>> {
     match rax {
 	0x00 => Box::pin(sys_write(rdi, rsi, rdx)),
@@ -628,6 +658,7 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 	0x0a => Box::pin(sys_pipe(rdi, rsi)),
 	0x0c => scheduler::exit(rdi),  // Doesn't return, so no need for async fn here
 	0x10 => Box::pin(sys_sigaction(rdi, rsi, rdx)),
+	0x11 => Box::pin(sys_sigprocmask(rdi, rsi, rdx)),
 	0x20 => Box::pin(sys_getcwd(rdi, rsi)),
 	0x39 => Box::pin(sys_fork(rcx)),
 	0x3b => Box::pin(sys_execve(rdi, rsi, rdx)),
