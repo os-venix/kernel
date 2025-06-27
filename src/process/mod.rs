@@ -395,6 +395,11 @@ impl Process {
 	context.gprs = *registers;
     }
 
+    pub fn get_current_signal_handler(&self, signal: u64) -> Option<signal::SignalHandler> {
+	let signals = self.signals.read();
+	signals.get(&signal).cloned()
+    }
+
     pub fn install_signal_handler(self: Arc<Self>, signal: u64, handler: signal::SignalHandler) {
 	let mut signals = self.signals.write();
 	signals.insert(signal, handler);

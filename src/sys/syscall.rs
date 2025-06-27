@@ -592,7 +592,14 @@ async fn sys_tcgets(fd: u64, termios: u64) -> SyscallResult {
 async fn sys_sigaction(signum: u64, new_sigaction: u64, old_sigaction: u64) -> SyscallResult {
     let process = scheduler::get_current_process();
     if old_sigaction != 0 {
-	log::info!("Expected oldact to be saved, this is not implemented");
+	if let Some(signal) = process.get_current_signal_handler(signum) {
+	    let sigaction = signal::create_sigaction(signal);
+
+	    unsafe {
+		let sa = old_sigaction as *mut signal::SigAction;
+		*sa = sigaction;
+	    }
+	}
     }
 
     if new_sigaction != 0 {
