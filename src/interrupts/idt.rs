@@ -24,7 +24,8 @@ macro_rules! irq_handler_def {
 	    #[allow(named_asm_labels)]
 	    extern "x86-interrupt" fn [<irq_ $irq >] (stack_frame: InterruptStackFrame) {
 		extern "C" fn inner(stack_frame: &StackFrame) -> ! {
-		    scheduler::set_registers_for_current_process(
+		    let process = scheduler::get_current_process();
+		    process.set_registers(
 			stack_frame.stack_frame.stack_pointer.as_u64(),
 			stack_frame.stack_frame.instruction_pointer.as_u64(),
 			stack_frame.stack_frame.cpu_flags.bits(),

@@ -1,8 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::{Once, RwLock, Mutex};
-use anyhow::{anyhow, Result};
-use alloc::string::String;
 use alloc::collections::BTreeMap;
 use alloc::boxed::Box;
 use core::pin::Pin;
@@ -60,6 +58,14 @@ pub fn kthread_start(f: fn() -> !) {
     };
 }
 
+pub fn get_current_pid() -> u64 {    
+    let mut running_process = RUNNING_PROCESS
+	.get()
+	.expect("RUNNING_PROCESS not initialized")
+	.read();
+    running_process.expect("Couldn't find running PID")
+}
+
 pub fn get_current_process() -> Arc<process::Process> {
     let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
@@ -91,45 +97,6 @@ pub fn fork_current_process(rip: u64) -> u64 {
     pid
 }
 
-pub async fn execve(filename: String, args: Vec<String>, envvars: Vec<String>) {
-    let mut args_with_cmd = args.clone();
-    args_with_cmd.insert(0, filename.clone());
-
-    {
-	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-	if let Some(pid) = *running_process {
-	    // Switch to address space
-	    {
-		let address_space = process_tbl.get_mut(&pid).unwrap().address_space.read();
-		unsafe {
-                    address_space.switch_to();
-		}
-	    }
-	    process_tbl.get_mut(&pid).unwrap().clone().clear(args_with_cmd, envvars);
-	} else {
-	    panic!("Attempted to access user address space when no process is running");
-	}
-    }
-
-    let elf = elf_loader::Elf::new(filename).await.expect("Failed to load ELF");
-    let ld = elf_loader::Elf::new(String::from("/usr/lib/ld.so")).await.expect("Failed to load ld.so");
-
-    {
-	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-	if let Some(pid) = *running_process {
-	    process_tbl.get_mut(&pid).unwrap().clone().attach_loaded_elf(elf, ld);
-	    process_tbl.get_mut(&pid).unwrap().clone().init_stack();
-	    process_tbl.get_mut(&pid).unwrap().clone().init_stack_and_start();
-	} else {
-	    panic!("Attempted to access user address space when no process is running");
-	}
-    }
-}
-
 pub fn exit(exit_code: u64) -> ! {
     if exit_code != 0 {
 	log::info!("Exited with code {}", exit_code);
@@ -149,17 +116,6 @@ pub fn exit(exit_code: u64) -> ! {
     }
 
     schedule_next();
-}
-
-pub fn set_registers_for_current_process(rsp: u64, rip: u64, rflags: u64, registers: &process::GeneralPurposeRegisters) {
-    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-    if let Some(pid) = *running_process {
-	process_tbl.get_mut(&pid).unwrap().clone().set_registers(rsp, rip, rflags, registers)
-    } else {
-	panic!("Attempted to access user address space when no process is running");
-    }
 }
 
 fn get_futures_to_poll() -> BTreeMap<u64, (Arc<Mutex<Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + 'static>>>>, Option<Waker>)> {
@@ -374,161 +330,4 @@ pub fn schedule_next() -> ! {
 
     let context = next_task();
     context_switch(&context);
-}
-
-pub fn open_fd(file: String, flags: u64) -> u64 {
-    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-    if let Some(pid) = *running_process {
-	let fd = process::FileDescriptor {
-	    flags: flags,
-	    file_description: Arc::new(RwLock::new(vfs::FileDescriptor::new(file))),
-	};
-	process_tbl.get_mut(&pid).unwrap().clone().emplace_fd(fd)
-    } else {
-	panic!("Attempted to open a file on a nonexistent process");
-    }
-}
-
-pub fn pipe_fd(flags: u64) -> (u64, u64) {
-    let file_description = Arc::new(RwLock::new(vfs::FileDescriptor::new_pipe()));
-
-    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-    if let Some(pid) = *running_process {
-	// TODO - one of these should be read, the other write
-	let fd1 = process::FileDescriptor {
-	    flags: flags,
-	    file_description: file_description.clone(),
-	};
-	let fd2 = process::FileDescriptor {
-	    flags: flags,
-	    file_description: file_description.clone(),
-	};
-
-	let fd1_number = process_tbl.get_mut(&pid).unwrap().clone().emplace_fd(fd1);
-	let fd2_number = process_tbl.get_mut(&pid).unwrap().clone().emplace_fd(fd2);
-
-	(fd1_number, fd2_number)
-    } else {
-	panic!("Attempted to open a file on a nonexistent process");
-    }
-}
-
-pub fn dup_fd(fd: process::FileDescriptor) -> u64 {
-    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-    let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
-
-    if let Some(pid) = *running_process {
-	process_tbl.get_mut(&pid).unwrap().clone().emplace_fd(fd)
-    } else {
-	panic!("Attempted to read open FDs on nonexistent process");
-    }
-}
-
-pub fn dup_fd_exact(fd: process::FileDescriptor, mut fd_num: u64, try_greater: bool) -> Result<u64, syscall::CanonicalError> {
-    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-    let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
-
-    if let Some(pid) = *running_process {
-	Ok(process_tbl.get_mut(&pid).unwrap().clone().emplace_fd_at(fd, fd_num, try_greater))
-    } else {
-	panic!("Attempted to read open FDs on nonexistent process");
-    }
-}
-
-pub fn get_actual_fd(fd: u64) -> Result<process::FileDescriptor> {
-    let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
-    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-    if let Some(pid) = *running_process {
-	Ok(process_tbl[&pid].get_file_descriptor(fd))
-    } else {
-	panic!("Attempted to read open FDs on nonexistent process");
-    }
-}
-
-pub fn set_fd_flags(fd: u64, flags: u64) -> Result<()> {
-    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-    if let Some(pid) = *running_process {
-	if let Some(process) = process_tbl.get_mut(&pid) {
-	    process.clone().set_fd_flags(fd, flags);
-	    Ok(())
-	} else {
-	    panic!("Attempted to read open FDs on nonexistent process");
-	}
-    } else {
-	panic!("Attempted to read open FDs on nonexistent process");
-    }
-}
-
-pub fn close_fd(fd: u64) -> Result<()> {
-    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-    if let Some(pid) = *running_process {
-	process_tbl.get_mut(&pid).unwrap().clone().close_fd(fd);
-	Ok(())
-    } else {
-	panic!("Attempted to open a file on a nonexistent process");
-    }
-}
-
-pub fn set_task_state(state: process::TaskState) {
-    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-    if let Some(pid) = *running_process {
-	process_tbl.get_mut(&pid).unwrap().clone().set_state(state);
-    } else {
-	panic!("Attempted to open a file on a nonexistent process");
-    }
-}
-
-pub fn get_active_page_table() -> u64 {
-    let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
-    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-    if let Some(pid) = *running_process {
-	let address_space = process_tbl[&pid].address_space.read();
-	address_space.get_pt4()
-    } else {
-	panic!("Attempted to access user address space when no process is running");
-    }
-}
-
-pub fn get_current_pid() -> u64 {    
-    let mut running_process = RUNNING_PROCESS
-	.get()
-	.expect("RUNNING_PROCESS not initialized")
-	.read();
-    running_process.expect("Couldn't find running PID")
-}
-
-pub fn get_current_cwd() -> String {
-    let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
-    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-    if let Some(pid) = *running_process {
-	process_tbl[&pid].clone().get_cwd()
-    } else {
-	panic!("Attempted to access user address space when no process is running");
-    }
-}
-
-pub fn install_signal_handler(signal: u64, handler: u64) {
-    let signal_handler = signal::parse_sigaction(handler);
-
-    let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-    if let Some(pid) = *running_process {
-	process_tbl.get_mut(&pid).unwrap().clone().install_signal_handler(signal, signal_handler);
-    } else {
-	panic!("Attempted to access user address space when no process is running");
-    }
 }

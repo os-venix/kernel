@@ -221,7 +221,8 @@ fn kthread_init_block_devices() -> ! {
 	scheduler::exit(0);
     };
 
-    scheduler::set_task_state(process::TaskState::AsyncSyscall {
+    let process = scheduler::get_current_process();
+    process.set_state(process::TaskState::AsyncSyscall {
 	future: Arc::new(Mutex::new(Box::pin(fut))),
 	waker: None,
     });

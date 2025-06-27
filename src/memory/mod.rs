@@ -338,11 +338,17 @@ pub fn kernel_allocate(
 	let mut mapper = KERNEL_PAGE_TABLE.write();
 	inner_map(mapper.as_mut().expect("Attempted to use missing kernel page table"), page_range, frame_range.clone(), &access_restriction)?;
     } else {
+	let active_page_table = {
+	    let process = scheduler::get_current_process();
+	    let address_space = process.address_space.read();
+	    address_space.get_pt4()
+	};
+	
 	let direct_map_offset = DIRECT_MAP_OFFSET.get().expect("No direct map offset");
 	let pt4_addr = match access_restriction {
 	    MemoryAccessRestriction::Kernel | MemoryAccessRestriction::EarlyKernel => unreachable!(),
-	    MemoryAccessRestriction::User => scheduler::get_active_page_table() + direct_map_offset,
-	    MemoryAccessRestriction::UserByStart(_) => scheduler::get_active_page_table() + direct_map_offset,
+	    MemoryAccessRestriction::User => active_page_table + direct_map_offset,
+	    MemoryAccessRestriction::UserByStart(_) => active_page_table + direct_map_offset,
 	};
 	let pt4_ptr = pt4_addr as *mut PageTable;
 

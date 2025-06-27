@@ -16,10 +16,13 @@ use spin::Mutex;
 use num_enum::TryFromPrimitive;
 use alloc::ffi::CString;
 use core::ptr;
+use spin::RwLock;
 
 use crate::sys::ioctl;
 use crate::gdt;
 use crate::scheduler;
+use crate::scheduler::signal;
+use crate::scheduler::elf_loader;
 use crate::sys::vfs;
 use crate::memory;
 use crate::process;
@@ -84,17 +87,19 @@ async fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
 	};
     }
 
-    let actual_fd = match scheduler::get_actual_fd(fd) {
-	Ok(fd) => fd.file_description,
-	Err(_) => {
-	    return SyscallResult {
-		return_value: 0xFFFF_FFFF_FFFF_FFFF,
-		err_num: CanonicalError::EBADF as u64
-	    };
-	},
-    };
+    let process = scheduler::get_current_process();
+    let actual_fd = process.get_file_descriptor(fd);
+    // let actual_fd = match process.get_file_descriptor(fd) {
+    // 	Ok(fd) => fd.file_description,
+    // 	Err(_) => {
+    // 	    return SyscallResult {
+    // 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
+    // 		err_num: CanonicalError::EBADF as u64
+    // 	    };
+    // 	},
+    // };
 
-    let mut w = actual_fd.write();
+    let mut w = actual_fd.file_description.write();
     match w.write(buf, count) {
 	Ok(len) => SyscallResult {
 	    return_value: len,
@@ -108,17 +113,19 @@ async fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
 }
 
 async fn sys_read(fd: u64, buf: u64, count: u64) -> SyscallResult {
-    let actual_fd = match scheduler::get_actual_fd(fd) {
-	Ok(fd) => fd.file_description,
-	Err(_) => {
-	    return SyscallResult {
-		return_value: 0xFFFF_FFFF_FFFF_FFFF,
-		err_num: CanonicalError::EBADF as u64
-	    };
-	},
-    };
+    let process = scheduler::get_current_process();
+    let actual_fd = process.get_file_descriptor(fd);
+    // let actual_fd = match process.get_file_descriptor(fd) {
+    // 	Ok(fd) => fd.file_description,
+    // 	Err(_) => {
+    // 	    return SyscallResult {
+    // 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
+    // 		err_num: CanonicalError::EBADF as u64
+    // 	    };
+    // 	},
+    // };
 
-    let mut w = actual_fd.write();
+    let mut w = actual_fd.file_description.write();
     match w.read(buf, count).await {
 	Ok(len) => SyscallResult {
 	    return_value: len,
@@ -162,23 +169,27 @@ pub async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
 	};
     }
 
-    let fd = scheduler::open_fd(path, flags);
+    let process = scheduler::get_current_process();
+    let fd = process::FileDescriptor {
+	flags: flags,
+	file_description: Arc::new(RwLock::new(vfs::FileDescriptor::new(path))),
+    };
+
+    let fd_num = process.emplace_fd(fd);
+
     SyscallResult {
-	return_value: fd,
+	return_value: fd_num,
 	err_num: CanonicalError::EOK as u64,
     }
 }
 
 async fn sys_close(fd: u64) -> SyscallResult {
-    return match scheduler::close_fd(fd) {
-	Ok(_) => SyscallResult {
-	    return_value: 0,
-	    err_num: 0,
-	},
-	Err(_) => SyscallResult {
-	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::EBADF as u64
-	}
+    let process = scheduler::get_current_process();
+    process.close_fd(fd);
+
+    SyscallResult {
+	return_value: 0,
+	err_num: 0,
     }
 }
 
@@ -191,17 +202,19 @@ async fn sys_ioctl(fd_num: u64, ioctl: u64, buf: u64) -> SyscallResult {
 	},
     };
 
-    let actual_fd = match scheduler::get_actual_fd(fd_num) {
-	Ok(fd) => fd.file_description,
-	Err(_) => {
-	    return SyscallResult {
-		return_value: 0xFFFF_FFFF_FFFF_FFFF,
-		err_num: CanonicalError::EBADF as u64
-	    };
-	},
-    };
+    let process = scheduler::get_current_process();
+    let actual_fd = process.get_file_descriptor(fd_num);
+    // let actual_fd = match process.get_file_descriptor(fd) {
+    // 	Ok(fd) => fd.file_description,
+    // 	Err(_) => {
+    // 	    return SyscallResult {
+    // 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
+    // 		err_num: CanonicalError::EBADF as u64
+    // 	    };
+    // 	},
+    // };
 
-    let r = actual_fd.read();
+    let r = actual_fd.file_description.read();
     match r.ioctl(op, buf) {
 	Ok(ret) => SyscallResult {
 	    return_value: ret,
@@ -240,17 +253,19 @@ async fn sys_stat(filename: u64, buf: u64) -> SyscallResult {
 }
 
 async fn sys_dup(fd_num: u64) -> SyscallResult {
-    let actual_fd = match scheduler::get_actual_fd(fd_num) {
-	Ok(fd) => fd,
-	Err(_) => {
-	    return SyscallResult {
-		return_value: 0xFFFF_FFFF_FFFF_FFFF,
-		err_num: CanonicalError::EBADF as u64
-	    };
-	},
-    };
+    let process = scheduler::get_current_process();
+    let actual_fd = process.get_file_descriptor(fd_num);
+    // let actual_fd = match process.get_file_descriptor(fd) {
+    // 	Ok(fd) => fd.file_description,
+    // 	Err(_) => {
+    // 	    return SyscallResult {
+    // 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
+    // 		err_num: CanonicalError::EBADF as u64
+    // 	    };
+    // 	},
+    // };
 
-    let new_fd = scheduler::dup_fd(actual_fd);
+    let new_fd = process.emplace_fd(actual_fd);
     SyscallResult {
 	return_value: new_fd,
 	err_num: CanonicalError::EOK as u64,
@@ -268,37 +283,36 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
 
     match op {
 	FcntlOperation::F_DUPFD => {
-	    let actual_fd = match scheduler::get_actual_fd(fd_num) {
-		Ok(fd) => fd,
-		Err(_) => {
-		    return SyscallResult {
-			return_value: 0xFFFF_FFFF_FFFF_FFFF,
-			err_num: CanonicalError::EBADF as u64
-		    };
-		},
-	    };
+	    let process = scheduler::get_current_process();
+	    let actual_fd = process.get_file_descriptor(fd_num);
+	    // let actual_fd = match process.get_file_descriptor(fd) {
+	    // 	Ok(fd) => fd.file_description,
+	    // 	Err(_) => {
+	    // 	    return SyscallResult {
+	    // 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    // 		err_num: CanonicalError::EBADF as u64
+	    // 	    };
+	    // 	},
+	    // };
 
-	    match scheduler::dup_fd_exact(actual_fd, param, true) {
-		Ok(new_fd) => return SyscallResult {
-		    return_value: new_fd,
-		    err_num: CanonicalError::EOK as u64,
-		},
-		Err(e) => return SyscallResult {
-		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-		    err_num: e as u64,
-		},
-	    }
+	    let new_fd = process.emplace_fd_at(actual_fd, param, true);
+	    return SyscallResult {
+		return_value: new_fd,
+		err_num: CanonicalError::EOK as u64,
+	    };
 	},
 	FcntlOperation::F_GETFD => {
-	    let actual_fd = match scheduler::get_actual_fd(fd_num) {
-		Ok(fd) => fd,
-		Err(_) => {
-		    return SyscallResult {
-			return_value: 0xFFFF_FFFF_FFFF_FFFF,
-			err_num: CanonicalError::EBADF as u64
-		    };
-		},
-	    };
+	    let process = scheduler::get_current_process();
+	    let actual_fd = process.get_file_descriptor(fd_num);
+	    // let actual_fd = match process.get_file_descriptor(fd) {
+	    // 	Ok(fd) => fd.file_description,
+	    // 	Err(_) => {
+	    // 	    return SyscallResult {
+	    // 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    // 		err_num: CanonicalError::EBADF as u64
+	    // 	    };
+	    // 	},
+	    // };
 
 	    return SyscallResult {
 		return_value: actual_fd.flags,
@@ -306,6 +320,7 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
 	    };
 	},
 	FcntlOperation::F_SETFD => {
+	    let process = scheduler::get_current_process();
 	    // Bottom 3 bits are mode. We don't currently enforce mode, but in order to progress, let's strip it out.
 	    // Similarly, there isn't yet a concept of a controlling TTY, so let's not worry about that either for now
 	    // TODO - support read/write/exec/etc modes
@@ -314,33 +329,28 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
 		log::info!("SETFD flags are 0x{:x}", param);
 		unimplemented!();
 	    }
-	    
-	    match scheduler::set_fd_flags(fd_num, param) {
-		Ok(fd) => return SyscallResult {
-		    return_value: 0,
-		    err_num: CanonicalError::EOK as u64,
-		},
-		Err(_) => {
-		    return SyscallResult {
-			return_value: 0xFFFF_FFFF_FFFF_FFFF,
-			err_num: CanonicalError::EBADF as u64
-		    };
-		},
-	    }
+
+	    process.set_fd_flags(fd_num, param);
+	    return SyscallResult {
+		return_value: 0,
+		err_num: CanonicalError::EOK as u64,
+	    };
 	},
     }
 }
 
 async fn sys_seek(fd_num: u64, offset: u64, whence: u64) -> SyscallResult {
-    let actual_fd = match scheduler::get_actual_fd(fd_num) {
-	Ok(fd) => fd.file_description,
-	Err(_) => {
-	    return SyscallResult {
-		return_value: 0xFFFF_FFFF_FFFF_FFFF,
-		err_num: CanonicalError::EBADF as u64
-	    };
-	},
-    };
+    let process = scheduler::get_current_process();
+    let actual_fd = process.get_file_descriptor(fd_num);
+    // let actual_fd = match process.get_file_descriptor(fd) {
+    // 	Ok(fd) => fd.file_description,
+    // 	Err(_) => {
+    // 	    return SyscallResult {
+    // 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
+    // 		err_num: CanonicalError::EBADF as u64
+    // 	    };
+    // 	},
+    // };
 
     // Valid values are SEEK_SET, SEEK_CUR, or SEEK_END
     if whence > 3 || whence == 0 {
@@ -350,7 +360,7 @@ async fn sys_seek(fd_num: u64, offset: u64, whence: u64) -> SyscallResult {
 	};
     }
 
-    let mut w = actual_fd.write();
+    let mut w = actual_fd.file_description.write();
     match w.seek(offset, whence).await {
 	Ok(offs) => SyscallResult {
 	    return_value: offs,
@@ -403,12 +413,26 @@ async fn sys_mmap(start_val: u64, count: u64, r8: u64) -> SyscallResult {
 }
 
 async fn sys_pipe(fds: u64, flags: u64) -> SyscallResult {
-    let (fd1, fd2) = scheduler::pipe_fd(flags);
+    let process = scheduler::get_current_process();
+    let file_description = Arc::new(RwLock::new(vfs::FileDescriptor::new_pipe()));
+
+    let fd1 = process::FileDescriptor {
+	flags: flags,
+	file_description: file_description.clone(),
+    };
+    let fd2 = process::FileDescriptor {
+	flags: flags,
+	file_description: file_description.clone(),
+    };
+
+    let fd1_number = process.clone().emplace_fd(fd1);
+    let fd2_number = process.emplace_fd(fd2);
+
     let ptr = fds as *mut c_int;
 
     unsafe {
-	*ptr.add(0) = fd1 as c_int;
-	*ptr.add(1) = fd2 as c_int;
+	*ptr.add(0) = fd1_number as c_int;
+	*ptr.add(1) = fd2_number as c_int;
     }
 
     SyscallResult {
@@ -418,7 +442,8 @@ async fn sys_pipe(fds: u64, flags: u64) -> SyscallResult {
 }
     
 async fn sys_getcwd(buf: u64, count: u64) -> SyscallResult {
-    let cwd = scheduler::get_current_cwd();
+    let process = scheduler::get_current_process();
+    let cwd = process.get_cwd();
 
     let c_string = CString::new(cwd).expect("String contained interior null byte");
     let bytes = c_string.as_bytes_with_nul();
@@ -462,7 +487,7 @@ pub async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> Sysca
 	    },
 	}
     };
-    let args = unsafe {
+    let mut args = unsafe {
 	let mut args: Vec<String> = Vec::new();
 	let mut argc_ptr = args_ptr as *const u64;
 	while *argc_ptr != 0 {
@@ -483,6 +508,8 @@ pub async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> Sysca
 
 	args
     };
+    args.insert(0, path.clone());
+
     let envvars = unsafe {
 	let mut envvars: Vec<String> = Vec::new();
 
@@ -505,7 +532,16 @@ pub async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> Sysca
 
 	envvars
     };
-    scheduler::execve(path, args, envvars).await;
+
+    let process = scheduler::get_current_process();
+    process.clone().clear(args, envvars);
+
+    let elf = elf_loader::Elf::new(path).await.expect("Failed to load ELF");
+    let ld = elf_loader::Elf::new(String::from("/usr/lib/ld.so")).await.expect("Failed to load ld.so");
+
+    process.clone().attach_loaded_elf(elf, ld);
+    process.clone().init_stack();
+    process.clone().init_stack_and_start();
 
     SyscallResult {
 	return_value: 0,
@@ -554,12 +590,14 @@ async fn sys_tcgets(fd: u64, termios: u64) -> SyscallResult {
 }
 
 async fn sys_sigaction(signum: u64, new_sigaction: u64, old_sigaction: u64) -> SyscallResult {
+    let process = scheduler::get_current_process();
     if old_sigaction != 0 {
 	log::info!("Expected oldact to be saved, this is not implemented");
     }
 
     if new_sigaction != 0 {
-	scheduler::install_signal_handler(signum, new_sigaction);
+	let signal_handler = signal::parse_sigaction(new_sigaction);
+	process.install_signal_handler(signum, signal_handler);
     }
 
     SyscallResult {
@@ -608,7 +646,8 @@ unsafe extern "C" fn syscall_inner(mut stack_frame: process::GeneralPurposeRegis
     let rdx = stack_frame.rdx;
     let rip = stack_frame.rcx;
 
-    scheduler::set_registers_for_current_process(rsp, rip, stack_frame.r11, &mut stack_frame);
+    let process = scheduler::get_current_process();
+    process.clone().set_registers(rsp, rip, stack_frame.r11, &stack_frame);
 
     let fut = do_syscall(
 	rax,
@@ -620,7 +659,7 @@ unsafe extern "C" fn syscall_inner(mut stack_frame: process::GeneralPurposeRegis
 	stack_frame.r9,
 	stack_frame.rcx);
 
-    scheduler::set_task_state(process::TaskState::AsyncSyscall {
+    process.set_state(process::TaskState::AsyncSyscall {
 	future: Arc::new(Mutex::new(fut)),
 	waker: None,
     });
