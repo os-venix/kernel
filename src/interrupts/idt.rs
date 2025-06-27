@@ -8,11 +8,12 @@ use alloc::boxed::Box;
 use crate::interrupts::local_apic;
 use crate::gdt;
 use crate::scheduler;
+use crate::process;
 
 #[repr(C)]
 #[derive(Debug)]
 struct StackFrame {
-    registers: scheduler::GeneralPurposeRegisters,
+    registers: process::GeneralPurposeRegisters,
     stack_frame: InterruptStackFrame,
 }
 

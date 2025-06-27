@@ -14,6 +14,7 @@ use crate::driver;
 use crate::fs::fat;
 use crate::memory;
 use crate::scheduler;
+use crate::process;
 use crate::gdt;
 
 #[repr(C, packed(1))]
@@ -220,7 +221,7 @@ fn kthread_init_block_devices() -> ! {
 	scheduler::exit(0);
     };
 
-    scheduler::set_task_state(scheduler::TaskState::AsyncSyscall {
+    scheduler::set_task_state(process::TaskState::AsyncSyscall {
 	future: Arc::new(Mutex::new(Box::pin(fut))),
 	waker: None,
     });

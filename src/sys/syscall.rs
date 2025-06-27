@@ -22,6 +22,7 @@ use crate::gdt;
 use crate::scheduler;
 use crate::sys::vfs;
 use crate::memory;
+use crate::process;
 
 #[repr(u64)]
 #[derive(Debug)]
@@ -595,7 +596,7 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 }
 
 #[no_mangle]
-unsafe extern "C" fn syscall_inner(mut stack_frame: scheduler::GeneralPurposeRegisters) -> ! {
+unsafe extern "C" fn syscall_inner(mut stack_frame: process::GeneralPurposeRegisters) -> ! {
     let rsp: u64;
     core::arch::asm!(
 	"mov {rsp}, gs:[{sp}]",
@@ -619,7 +620,7 @@ unsafe extern "C" fn syscall_inner(mut stack_frame: scheduler::GeneralPurposeReg
 	stack_frame.r9,
 	stack_frame.rcx);
 
-    scheduler::set_task_state(scheduler::TaskState::AsyncSyscall {
+    scheduler::set_task_state(process::TaskState::AsyncSyscall {
 	future: Arc::new(Mutex::new(fut)),
 	waker: None,
     });

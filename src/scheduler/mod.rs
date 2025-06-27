@@ -3,345 +3,21 @@ use alloc::vec::Vec;
 use spin::{Once, RwLock, Mutex};
 use anyhow::{anyhow, Result};
 use alloc::string::String;
-use x86_64::VirtAddr;
-use alloc::ffi::CString;
-use alloc::slice;
-use alloc::vec;
 use alloc::collections::BTreeMap;
 use alloc::boxed::Box;
 use core::pin::Pin;
 use core::future::Future;
 use core::task::Waker;
 
-use crate::memory;
 use crate::sys::vfs;
 use crate::drivers::hpet;
 use crate::sys::syscall;
-use crate::gdt;
+use crate::process;
 
-mod elf_loader;
-mod signal;
+pub mod elf_loader;
+pub mod signal;
 
-const AT_NUL: u64 = 0;
-const AT_PHDR: u64 = 3;
-const AT_PHENT: u64 = 4;
-const AT_PHNUM: u64 = 5;
-const AT_BASE: u64 = 7;
-const AT_ENTRY: u64 = 9;
-
-#[repr(C)]
-#[derive(Copy, Clone, Default, Debug)]
-pub struct GeneralPurposeRegisters {
-    pub r15: u64,
-    pub r14: u64,
-    pub r13: u64,
-    pub r12: u64,
-    pub r11: u64,
-    pub r10: u64,
-    pub r9: u64,
-    pub r8: u64,
-    pub rbp: u64,
-    pub rdi: u64,
-    pub rsi: u64,
-    pub rdx: u64,
-    pub rcx: u64,
-    pub rbx: u64,
-    pub rax: u64,
-}
-
-#[derive(Copy, Clone, Default, Debug)]
-struct ProcessContext {
-    gprs: GeneralPurposeRegisters,
-    rflags: u64,
-    rip: u64,
-    rsp: u64,
-    cs: u64,
-    ss: u64,
-}
-
-#[derive(Clone)]
-struct AuxVector {
-    auxv_type: u64,
-    value: u64,
-}
-
-pub enum TaskState {
-    Setup,
-    Running,
-    AsyncSyscall {
-	future: Arc<Mutex<Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + 'static>>>>,
-	waker: Option<Waker>,
-    },
-}
-
-#[derive(Clone, Copy)]
-pub enum TaskType {
-    User,
-    Kernel,
-}
-
-#[derive(Clone)]
-pub struct FileDescriptor {
-    pub file_description: Arc<RwLock<vfs::FileDescriptor>>,
-    pub flags: u64,
-}
-
-pub struct Process {
-    pub address_space: Arc<RwLock<memory::user_address_space::AddressSpace>>,
-    file_descriptors: BTreeMap<u64, FileDescriptor>,
-    next_fd: u64,
-    args: Vec<String>,
-    envvars: Vec<String>,
-    auxvs: Vec<AuxVector>,
-    stack_bottom: VirtAddr,
-    context: ProcessContext,
-    state: TaskState,
-    task_type: TaskType,
-    cwd: String,
-    signals: BTreeMap<u64, signal::SignalHandler>,
-}
-
-impl Process {
-    pub fn new_kthread(rip: u64) -> Self {
-	let mut address_space = memory::user_address_space::AddressSpace::new();
-	unsafe {
-	    address_space.switch_to();
-	}
-	
-	let (kernel_code, kernel_data, _, _) = gdt::get_code_selectors();
-	
-	let (rsp, _) = match memory::user_allocate(
-	    8 * 1024 * 1024,  // 8MiB
-	    memory::MemoryAllocationType::RAM,
-	    memory::MemoryAllocationOptions::Arbitrary,
-	    memory::MemoryAccessRestriction::User,
-	    &mut address_space) {
-	    Ok(i) => i,
-	    Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
-	};
-
-	Process {
-	    address_space: Arc::new(RwLock::new(address_space)),
-	    file_descriptors: BTreeMap::new(),
-	    next_fd: 0,
-	    args: vec!(String::from("init")),
-	    envvars: vec!(String::from("PATH=/bin:/usr/bin")),
-	    auxvs: Vec::new(),
-	    stack_bottom: rsp,
-	    context: ProcessContext {
-		gprs: GeneralPurposeRegisters::default(),
-		rflags: 0x202,
-		rip: rip,
-		rsp: rsp.as_u64() + (8 * 1024 * 1024),
-		cs: kernel_code.0 as u64,
-		ss: kernel_data.0 as u64,
-	    },
-	    state: TaskState::Running,
-	    task_type: TaskType::Kernel,
-	    cwd: String::from("/"),
-	    signals: BTreeMap::new(),
-	}
-    }
-
-    pub fn from_existing(&self, rip: u64) -> Self {
-	let address_space = self.address_space.read();
-	let mut new_address_space = memory::user_address_space::AddressSpace::new();
-	unsafe {
-	    new_address_space.switch_to();
-	}
-
-	new_address_space.create_copy_of_address_space(&address_space);
-
-	Process {
-	    address_space: Arc::new(RwLock::new(new_address_space)),
-	    file_descriptors: self.file_descriptors.clone(),
-	    next_fd: self.next_fd,
-	    args: self.args.clone(),
-	    envvars: self.envvars.clone(),
-	    auxvs: self.auxvs.clone(),
-	    stack_bottom: self.stack_bottom,
-	    context: ProcessContext {
-		gprs: GeneralPurposeRegisters::default(),
-		rflags: 0x202,
-		rip: rip,
-		rsp: 0,
-		cs: self.context.cs,
-		ss: self.context.ss,
-	    },
-	    state: TaskState::Setup,
-	    task_type: self.task_type,
-	    cwd: self.cwd.clone(),
-	    signals: self.signals.clone(),
-	}
-    }
-
-    pub fn clear(&mut self, args: Vec<String>, envvars: Vec<String>) {
-	{
-	    let mut address_space = self.address_space.write();
-	    address_space.clear_user_space();
-	}
-
-	self.args = args;
-	self.envvars = envvars;
-	self.context.gprs = GeneralPurposeRegisters::default();
-	self.context.rflags = 0x202;
-	self.auxvs = Vec::new();
-	self.signals = BTreeMap::new();
-    }
-
-    pub fn init_stack(&mut self) {
-	let mut address_space = self.address_space.write();
-	let (rsp, _) = match memory::user_allocate(
-	    8 * 1024 * 1024,  // 8MiB
-	    memory::MemoryAllocationType::RAM,
-	    memory::MemoryAllocationOptions::Arbitrary,
-	    memory::MemoryAccessRestriction::User,
-	    &mut address_space) {
-	    Ok(i) => i,
-	    Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
-	};
-
-	self.stack_bottom = rsp;
-	self.context.rsp = rsp.as_u64() + 8 * 1024 * 1024;  // Start at the end of the stack and grow down
-    }
-
-    pub fn attach_loaded_elf(&mut self, elf: elf_loader::Elf, ld_so: elf_loader::Elf) {
-	let (_, _, user_code, user_data) = gdt::get_code_selectors();
-	self.context.cs = user_code.0 as u64;
-	self.context.ss = user_data.0 as u64;
-
-	self.auxvs.push(AuxVector {
-	    auxv_type: AT_BASE,
-	    value: ld_so.base
-	});
-	self.auxvs.push(AuxVector {
-	    auxv_type: AT_ENTRY,
-	    value: elf.entry
-	});
-	self.auxvs.push(AuxVector {
-	    auxv_type: AT_PHDR,
-	    value: elf.program_header
-	});
-	self.auxvs.push(AuxVector {
-	    auxv_type: AT_PHENT,
-	    value: elf.program_header_entry_size
-	});
-	self.auxvs.push(AuxVector {
-	    auxv_type: AT_PHNUM,
-	    value: elf.program_header_entry_count
-	});
-	self.auxvs.push(AuxVector {
-	    auxv_type: AT_NUL,
-	    value: 0
-	});
-
-	self.context.rip = ld_so.entry;
-    }
-
-    pub fn init_stack_and_start(&mut self) {
-	let envvars_buf_size: usize = self.envvars.iter()
-	    .map(|env_var| env_var.len() + 1)
-	    .sum();
-	let args_buf_size: usize = self.args.iter()
-	    .map(|arg| arg.len() + 1)
-	    .sum();
-	
-	self.context.rsp -= envvars_buf_size as u64 + args_buf_size as u64;
-	let stack_ptr = VirtAddr::new(self.context.rsp);
-	let data_to = unsafe {
-	    slice::from_raw_parts_mut(
-		stack_ptr.as_mut_ptr::<u8>(),
-		envvars_buf_size + args_buf_size)
-	};
-
-	let mut current_offs = envvars_buf_size + args_buf_size;
-	let mut envvar_p: Vec<u64> = Vec::new();
-	for envvar in self.envvars.clone() {
-	    let envvar_len = envvar.len() + 1;
-	    let envvar_cstring = CString::new(envvar.as_str()).unwrap();
-	    data_to[current_offs - envvar_len..current_offs].copy_from_slice(envvar_cstring.as_bytes_with_nul());
-	    current_offs -= envvar_len;
-
-	    envvar_p.push(self.context.rsp + current_offs as u64);
-	}
-	let mut args_p: Vec<u64> = Vec::new();
-	for arg in self.args.clone() {
-	    let arg_len = arg.len() + 1;
-	    let arg_cstring = CString::new(arg.as_str()).unwrap();
-	    data_to[current_offs - arg_len..current_offs].copy_from_slice(arg_cstring.as_bytes_with_nul());
-
-	    current_offs -= arg_len;
-	    args_p.push(self.context.rsp + current_offs as u64);
-	}
-
-	self.context.rsp -= /* auxv = */(self.auxvs.len() as u64 * 16) +
-	    (self.envvars.len() as u64 * 8) +
-	    (self.args.len() as u64 * 8) +
-	/* padding = */(3 * 8);
-	let alignment = self.context.rsp % 16;
-	self.context.rsp -= alignment;  // Align the stack to a u128, as required by the standard
-	let stack_ptr = VirtAddr::new(self.context.rsp).as_mut_ptr::<u64>();
-
-	unsafe {
-	    let mut sp = stack_ptr; // mutable walking pointer of type *mut u64
-
-	    // argc
-	    core::ptr::write_unaligned(sp, self.args.len() as u64);
-	    sp = sp.add(1);
-
-	    // argv[0..n]
-	    for arg in &args_p {
-		core::ptr::write_unaligned(sp, *arg);
-		sp = sp.add(1);
-	    }
-
-	    // NULL after argv
-	    core::ptr::write_unaligned(sp, 0);
-	    sp = sp.add(1);
-
-	    // envp[0..n]
-	    for env in &envvar_p {
-		core::ptr::write_unaligned(sp, *env);
-		sp = sp.add(1);
-	    }
-
-	    // NULL after envp
-	    core::ptr::write_unaligned(sp, 0);
-	    sp = sp.add(1);
-
-	    // auxv entries (key, value)
-	    for auxv in &self.auxvs {
-		core::ptr::write_unaligned(sp, auxv.auxv_type);
-		sp = sp.add(1);
-		core::ptr::write_unaligned(sp, auxv.value);
-		sp = sp.add(1);
-	    }
-
-	    // write padding (as bytes)
-	    let mut pad_ptr = sp as *mut u8;
-	    for _ in 0..alignment {
-		core::ptr::write(pad_ptr, 0u8);
-		pad_ptr = pad_ptr.add(1);
-	    }
-	}
-
-	self.task_type = TaskType::User;
-	self.state = TaskState::Running;
-    }
-
-    pub fn set_registers(&mut self, rsp: u64, rip: u64, rflags: u64, registers: &GeneralPurposeRegisters) {
-	self.context.rsp = rsp;
-	self.context.rip = rip;
-	self.context.rflags = rflags;
-	self.context.gprs = *registers;
-    }
-
-    fn install_signal_handler(&mut self, signal: u64, handler: signal::SignalHandler) {
-	self.signals.insert(signal, handler);
-    }
-}
-
-pub static PROCESS_TABLE: Once<RwLock<BTreeMap<u64, Process>>> = Once::new();
+pub static PROCESS_TABLE: Once<RwLock<BTreeMap<u64, Arc<process::Process>>>> = Once::new();
 pub static RUNNING_PROCESS: Once<RwLock<Option<u64>>> = Once::new();
 pub static NEXT_PID: Once<Mutex<u64>> = Once::new();
 
@@ -357,7 +33,7 @@ pub fn init() {
     NEXT_PID.call_once(|| Mutex::new(1));  // PID 0 is idle thread
 
     let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-    process_tbl.insert(0, Process::new_kthread(idle_thread as usize as u64));
+    process_tbl.insert(0, Arc::new(process::Process::new_kthread(idle_thread as usize as u64)));
 }
 
 pub fn start() -> ! {
@@ -377,11 +53,22 @@ pub fn kthread_start(f: fn() -> !) {
 
     {
 	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-	process_tbl.insert(pid, Process::new_kthread(f as usize as u64));
+	process_tbl.insert(pid, Arc::new(process::Process::new_kthread(f as usize as u64)));
 
 	let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
 	*running_process = Some(pid);
     };
+}
+
+pub fn get_current_process() -> Arc<process::Process> {
+    let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
+    let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
+
+    if let Some(pid) = *running_process {
+	return process_tbl[&pid].clone();
+    } else {
+	panic!("Attempted to access user address space when no process is running");
+    }
 }
 
 pub fn fork_current_process(rip: u64) -> u64 {
@@ -398,7 +85,7 @@ pub fn fork_current_process(rip: u64) -> u64 {
 
 	let new_process = process_tbl[&running_process.expect("No running process")].from_existing(rip);
 
-	process_tbl.insert(pid, new_process);
+	process_tbl.insert(pid, Arc::new(new_process));
     };
 
     pid
@@ -420,7 +107,7 @@ pub async fn execve(filename: String, args: Vec<String>, envvars: Vec<String>) {
                     address_space.switch_to();
 		}
 	    }
-	    process_tbl.get_mut(&pid).unwrap().clear(args_with_cmd, envvars);
+	    process_tbl.get_mut(&pid).unwrap().clone().clear(args_with_cmd, envvars);
 	} else {
 	    panic!("Attempted to access user address space when no process is running");
 	}
@@ -434,9 +121,9 @@ pub async fn execve(filename: String, args: Vec<String>, envvars: Vec<String>) {
 	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
 	if let Some(pid) = *running_process {
-	    process_tbl.get_mut(&pid).unwrap().attach_loaded_elf(elf, ld);
-	    process_tbl.get_mut(&pid).unwrap().init_stack();
-	    process_tbl.get_mut(&pid).unwrap().init_stack_and_start();
+	    process_tbl.get_mut(&pid).unwrap().clone().attach_loaded_elf(elf, ld);
+	    process_tbl.get_mut(&pid).unwrap().clone().init_stack();
+	    process_tbl.get_mut(&pid).unwrap().clone().init_stack_and_start();
 	} else {
 	    panic!("Attempted to access user address space when no process is running");
 	}
@@ -454,7 +141,7 @@ pub fn exit(exit_code: u64) -> ! {
 
 	if let Some(pid) = *running_process {
 	    // Free associated memory, and drop the process
-	    process_tbl.get_mut(&pid).unwrap().clear(Vec::new(), Vec::new());
+	    process_tbl.get_mut(&pid).unwrap().clone().clear(Vec::new(), Vec::new());
 	    process_tbl.remove(&pid);
 	} else {
 	    panic!("Attempted to access user address space when no process is running");
@@ -464,12 +151,12 @@ pub fn exit(exit_code: u64) -> ! {
     schedule_next();
 }
 
-pub fn set_registers_for_current_process(rsp: u64, rip: u64, rflags: u64, registers: &GeneralPurposeRegisters) {
+pub fn set_registers_for_current_process(rsp: u64, rip: u64, rflags: u64, registers: &process::GeneralPurposeRegisters) {
     let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
-	process_tbl.get_mut(&pid).unwrap().set_registers(rsp, rip, rflags, registers)
+	process_tbl.get_mut(&pid).unwrap().clone().set_registers(rsp, rip, rflags, registers)
     } else {
 	panic!("Attempted to access user address space when no process is running");
     }
@@ -483,10 +170,10 @@ fn get_futures_to_poll() -> BTreeMap<u64, (Arc<Mutex<Pin<Box<dyn Future<Output =
 	.write();
 
     for (pid, process) in process_tbl.iter_mut() {
-	match &mut process.state {
-	    TaskState::Setup => {},
-	    TaskState::Running => {},
-	    TaskState::AsyncSyscall { future, waker } => {
+	match &mut process.get_state() {
+	    process::TaskState::Setup => {},
+	    process::TaskState::Running => {},
+	    process::TaskState::AsyncSyscall { future, waker } => {
 		let dummy: Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + 'static>> = Box::pin(async {		
 		    syscall::SyscallResult {
 			return_value: 0,
@@ -544,11 +231,7 @@ fn poll_process_future(pid: u64, future: Arc<Mutex<Pin<Box<dyn Future<Output = s
 		.get()
 		.expect("PROCESS_TABLE not initialized")
 		.write();
-	    let process = process_tbl.get_mut(&pid).unwrap();
-
-	    process.state = TaskState::Running;
-	    process.context.gprs.rax = result.return_value as u64;
-	    process.context.gprs.rdx = result.err_num;
+	    process_tbl.get_mut(&pid).unwrap().clone().syscall_return(result.return_value as u64, result.err_num);
         }
         core::task::Poll::Pending => {	    
 	    let mut process_tbl = PROCESS_TABLE
@@ -556,15 +239,15 @@ fn poll_process_future(pid: u64, future: Arc<Mutex<Pin<Box<dyn Future<Output = s
 		.expect("PROCESS_TABLE not initialized")
 		.write();
 	    let process = process_tbl.get_mut(&pid).unwrap();
-	    process.state = TaskState::AsyncSyscall {
+	    process.clone().set_state(process::TaskState::AsyncSyscall {
                 future,
                 waker: Some(waker),
-            };
+            });
 	}
     }
 }
 
-fn next_task() -> ProcessContext {
+fn next_task() -> process::ProcessContext {
     let mut running_process = RUNNING_PROCESS
 	.get()
 	.expect("RUNNING_PROCESS not initialized")
@@ -576,10 +259,10 @@ fn next_task() -> ProcessContext {
 	.write();
 
     // Pull out idle process context; this is where we go if nothing else is currently runnable
-    let idle_ctx = process_tbl.get(&0).unwrap().context.clone();
+    let idle_ctx = process_tbl.get(&0).unwrap().get_context();
 
     // Convert to vector to allow indexed wraparound search
-    let mut tasks: Vec<(u64, &mut Process)> = process_tbl.iter_mut().map(|(pid, p)| (*pid, p)).collect();
+    let mut tasks: Vec<(u64, &mut Arc<process::Process>)> = process_tbl.iter_mut().map(|(pid, p)| (*pid, p)).collect();
     tasks.sort_by_key(|(pid, _)| *pid); // Ensure stable order
 
     // Get current PID
@@ -600,9 +283,9 @@ fn next_task() -> ProcessContext {
 	    continue;
 	}
 
-	match &mut process.state {
-	    TaskState::Setup => {},
-            TaskState::Running => {
+	match &mut process.get_state() {
+	    process::TaskState::Setup => {},
+            process::TaskState::Running => {
 		*running_process = Some(*pid);
 
 		// Switch to address space
@@ -611,9 +294,9 @@ fn next_task() -> ProcessContext {
                     address_space.switch_to();
 		}
 
-		return process.context;
+		return process.get_context();
             }
-            TaskState::AsyncSyscall { future: _, waker: _ } => { },
+            process::TaskState::AsyncSyscall { future: _, waker: _ } => { },
 	}
     }
 
@@ -631,7 +314,7 @@ fn next_task() -> ProcessContext {
 
 #[naked]
 #[allow(named_asm_labels)]
-extern "C" fn context_switch(context: &ProcessContext) -> ! {
+extern "C" fn context_switch(context: &process::ProcessContext) -> ! {
     unsafe {
 	core::arch::asm!(
 	    // First, build up the stack frame for the iret
@@ -698,23 +381,11 @@ pub fn open_fd(file: String, flags: u64) -> u64 {
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
-	let fd = FileDescriptor {
+	let fd = process::FileDescriptor {
 	    flags: flags,
 	    file_description: Arc::new(RwLock::new(vfs::FileDescriptor::new(file))),
 	};
-
-	let mut fd_number = process_tbl[&pid].next_fd;
-	process_tbl.get_mut(&pid).unwrap().next_fd += 1;
-
-	if let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd_number) {
-	    while let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd_number) {
-		// TODO: persist this
-		fd_number += 1;
-	    }
-	}
-
-	process_tbl.get_mut(&pid).unwrap().file_descriptors.insert(fd_number, fd);
-	fd_number
+	process_tbl.get_mut(&pid).unwrap().clone().emplace_fd(fd)
     } else {
 	panic!("Attempted to open a file on a nonexistent process");
     }
@@ -728,36 +399,17 @@ pub fn pipe_fd(flags: u64) -> (u64, u64) {
 
     if let Some(pid) = *running_process {
 	// TODO - one of these should be read, the other write
-	let fd1 = FileDescriptor {
+	let fd1 = process::FileDescriptor {
 	    flags: flags,
 	    file_description: file_description.clone(),
 	};
-	let fd2 = FileDescriptor {
+	let fd2 = process::FileDescriptor {
 	    flags: flags,
 	    file_description: file_description.clone(),
 	};
 
-	let mut fd1_number = process_tbl[&pid].next_fd;
-	process_tbl.get_mut(&pid).unwrap().next_fd += 2;
-
-	if let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd1_number) {
-	    while let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd1_number) {
-		// TODO: persist this
-		fd1_number += 1;
-	    }
-	}
-
-	process_tbl.get_mut(&pid).unwrap().file_descriptors.insert(fd1_number, fd1);
-
-	let mut fd2_number = fd1_number + 1;
-	if let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd2_number) {
-	    while let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd2_number) {
-		// TODO: persist this
-		fd2_number += 1;
-	    }
-	}
-
-	process_tbl.get_mut(&pid).unwrap().file_descriptors.insert(fd2_number, fd2);
+	let fd1_number = process_tbl.get_mut(&pid).unwrap().clone().emplace_fd(fd1);
+	let fd2_number = process_tbl.get_mut(&pid).unwrap().clone().emplace_fd(fd2);
 
 	(fd1_number, fd2_number)
     } else {
@@ -765,60 +417,34 @@ pub fn pipe_fd(flags: u64) -> (u64, u64) {
     }
 }
 
-pub fn dup_fd(fd: FileDescriptor) -> u64 {
+pub fn dup_fd(fd: process::FileDescriptor) -> u64 {
     let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
     let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
 
     if let Some(pid) = *running_process {
-	let mut fd_number = process_tbl[&pid].next_fd;
-	process_tbl.get_mut(&pid).unwrap().next_fd += 1;
-
-	if let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd_number) {
-	    while let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd_number) {
-		// TODO: persist this
-		fd_number += 1;
-	    }
-	}
-
-	process_tbl.get_mut(&pid).unwrap().file_descriptors.insert(fd_number, fd);
-	fd_number
+	process_tbl.get_mut(&pid).unwrap().clone().emplace_fd(fd)
     } else {
 	panic!("Attempted to read open FDs on nonexistent process");
     }
 }
 
-pub fn dup_fd_exact(fd: FileDescriptor, mut fd_number: u64, try_greater: bool) -> Result<u64, syscall::CanonicalError> {
+pub fn dup_fd_exact(fd: process::FileDescriptor, mut fd_num: u64, try_greater: bool) -> Result<u64, syscall::CanonicalError> {
     let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
     let mut running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").write();
 
     if let Some(pid) = *running_process {
-	if let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd_number) {
-	    if try_greater {
-		while let Some(_) = process_tbl.get_mut(&pid).unwrap().file_descriptors.get(&fd_number) {
-		    fd_number += 1;
-		}
-	    } else {
-		return Err(syscall::CanonicalError::EBADF);
-	    }
-	}
-
-	process_tbl.get_mut(&pid).unwrap().file_descriptors.insert(fd_number, fd);
-	Ok(fd_number)
+	Ok(process_tbl.get_mut(&pid).unwrap().clone().emplace_fd_at(fd, fd_num, try_greater))
     } else {
 	panic!("Attempted to read open FDs on nonexistent process");
     }
 }
 
-pub fn get_actual_fd(fd: u64) -> Result<FileDescriptor> {
+pub fn get_actual_fd(fd: u64) -> Result<process::FileDescriptor> {
     let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
-	if let Some(actual_fd) = process_tbl[&pid].file_descriptors.get(&fd) {
-	    Ok(actual_fd.clone())
-	} else {
-	    Err(anyhow!("Attempted to access nonexistent file descriptor"))
-	}
+	Ok(process_tbl[&pid].get_file_descriptor(fd))
     } else {
 	panic!("Attempted to read open FDs on nonexistent process");
     }
@@ -830,12 +456,8 @@ pub fn set_fd_flags(fd: u64, flags: u64) -> Result<()> {
 
     if let Some(pid) = *running_process {
 	if let Some(process) = process_tbl.get_mut(&pid) {
-	    if let Some(actual_fd) = process.file_descriptors.get_mut(&fd) {
-		actual_fd.flags = flags;
-		return Ok(());
-	    } else {
-		return Err(anyhow!("Attempted to access nonexistent file descriptor"));
-	    }
+	    process.clone().set_fd_flags(fd, flags);
+	    Ok(())
 	} else {
 	    panic!("Attempted to read open FDs on nonexistent process");
 	}
@@ -849,21 +471,19 @@ pub fn close_fd(fd: u64) -> Result<()> {
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
-	return match process_tbl.get_mut(&pid).unwrap().file_descriptors.remove(&fd) {
-	    Some(_) => Ok(()),
-	    None => Err(anyhow!("No open FD found")),
-	}
+	process_tbl.get_mut(&pid).unwrap().clone().close_fd(fd);
+	Ok(())
     } else {
 	panic!("Attempted to open a file on a nonexistent process");
     }
 }
 
-pub fn set_task_state(state: TaskState) {
+pub fn set_task_state(state: process::TaskState) {
     let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
-	process_tbl.get_mut(&pid).unwrap().state = state;
+	process_tbl.get_mut(&pid).unwrap().clone().set_state(state);
     } else {
 	panic!("Attempted to open a file on a nonexistent process");
     }
@@ -894,7 +514,7 @@ pub fn get_current_cwd() -> String {
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
-	process_tbl[&pid].cwd.clone()
+	process_tbl[&pid].clone().get_cwd()
     } else {
 	panic!("Attempted to access user address space when no process is running");
     }
@@ -907,7 +527,7 @@ pub fn install_signal_handler(signal: u64, handler: u64) {
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
-	process_tbl.get_mut(&pid).unwrap().install_signal_handler(signal, signal_handler);
+	process_tbl.get_mut(&pid).unwrap().clone().install_signal_handler(signal, signal_handler);
     } else {
 	panic!("Attempted to access user address space when no process is running");
     }

@@ -46,6 +46,7 @@ mod scheduler;
 mod dma;
 mod utils;
 mod console;
+mod process;
 
 use crate::sys::syscall;
 
