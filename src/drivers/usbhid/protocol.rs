@@ -115,7 +115,7 @@ fn parse_key(input: &[u8]) -> IResult<&[u8], Key> {
         0x26 => Key::AsciiKey('9'),
         0x27 => Key::AsciiKey('0'),
 
-        0x28 => Key::AsciiKey('\n'),   // Enter
+        0x28 => Key::AsciiKey('\r'),   // Enter
         0x2C => Key::AsciiKey(' '),    // Space
         0x2D => Key::AsciiKey('-'),
         0x2E => Key::AsciiKey('='),

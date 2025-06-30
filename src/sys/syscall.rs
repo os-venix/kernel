@@ -581,14 +581,6 @@ async fn sys_tcb_set(new_fs: u64) -> SyscallResult {
     }
 }
 
-async fn sys_tcgets(fd: u64, termios: u64) -> SyscallResult {
-    // For now, stub this
-    SyscallResult {
-	return_value: 0,
-	err_num: 0,
-    }
-}
-
 async fn sys_sigaction(signum: u64, new_sigaction: u64, old_sigaction: u64) -> SyscallResult {
     let process = scheduler::get_current_process();
     if old_sigaction != 0 {
@@ -666,7 +658,6 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 	0x3d => Box::pin(sys_getppid()),
 	0x3e => Box::pin(sys_getpgid()),
 	0x12c => Box::pin(sys_tcb_set(rdi)),
-	0x12d => Box::pin(sys_tcgets(rdi, rsi)),
 	_ => panic!("Invalid syscall 0x{:X}", rax),
     }
 }
