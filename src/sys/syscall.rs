@@ -252,6 +252,31 @@ async fn sys_stat(filename: u64, buf: u64) -> SyscallResult {
     }
 }
 
+async fn sys_fstat(fd: u64, buf: u64) -> SyscallResult {
+    let process = scheduler::get_current_process();
+    let actual_fd = process.get_file_descriptor(fd);
+    let file_description = actual_fd.file_description.read();
+
+    let path = match &*file_description {
+	vfs::FileDescriptor::File { file_name, .. } => file_name.clone(),
+	_ => return SyscallResult {
+	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    err_num: CanonicalError::EINVAL as u64,
+	}
+    };
+
+    match vfs::stat(path).await {
+	Ok(ret) => SyscallResult {
+	    return_value: 0,
+	    err_num: CanonicalError::EOK as u64
+	},
+	Err(e) => SyscallResult {
+	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    err_num: e as u64
+	}
+    }
+}
+
 async fn sys_dup(fd_num: u64) -> SyscallResult {
     let process = scheduler::get_current_process();
     let actual_fd = process.get_file_descriptor(fd_num);
@@ -277,7 +302,11 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
 	Ok(v) => v,
 	Err(_) => {
 	    log::info!("Got fcntl number 0x{:x}", operation);
-	    unimplemented!();
+	    return SyscallResult {
+		return_value:0xFFFF_FFFF_FFFF_FFFF,
+		err_num: CanonicalError::EINVAL as u64,
+	    };
+//	    unimplemented!();
 	},
     };
 
@@ -648,6 +677,7 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 	0x08 => Box::pin(sys_seek(rdi, rsi, rdx)),
 	0x09 => Box::pin(sys_mmap(rdi, rsi, r8)),
 	0x0a => Box::pin(sys_pipe(rdi, rsi)),
+	0x0b => Box::pin(sys_fstat(rdi, rsi)),
 	0x0c => scheduler::exit(rdi),  // Doesn't return, so no need for async fn here
 	0x10 => Box::pin(sys_sigaction(rdi, rsi, rdx)),
 	0x11 => Box::pin(sys_sigprocmask(rdi, rsi, rdx)),
