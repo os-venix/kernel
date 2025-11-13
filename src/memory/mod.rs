@@ -44,13 +44,6 @@ pub enum MemoryAllocationType {
     DMA,
 }
 
-#[derive(PartialEq, Eq)]
-pub enum MemoryAllocationOptions {
-    Arbitrary,
-    Contiguous,
-    ContiguousByStart(PhysAddr),
-}
-
 #[derive(PartialEq, Eq, Debug)]
 pub enum MemoryAccessRestriction {
     EarlyKernel,
@@ -145,7 +138,6 @@ pub fn kernel_allocate_early(size: u64) -> Result<VirtAddr, MapToError<Size4KiB>
 pub fn user_allocate(
     size: u64,
     _alloc_type: MemoryAllocationType,
-    alloc_options: MemoryAllocationOptions,
     access_restriction: MemoryAccessRestriction,
     address_space: &mut user_address_space::AddressSpace) -> Result<(VirtAddr, Vec<PhysAddr>), MapToError<Size4KiB>> {
     let page_range = {
@@ -166,28 +158,17 @@ pub fn user_allocate(
 	Page::range_inclusive(start_page, end_page)
     };
 
-    let frame_range: Vec<PhysFrame> = match alloc_options {
-	MemoryAllocationOptions::Arbitrary => {
-	    let mut range = Vec::new();	    
-	    let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
+    let frame_range: Vec<PhysFrame> = {
+	let mut range = Vec::new();	    
+	let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
 
-	    for _ in page_range {
-		let frame = frame_allocator.as_mut().expect("Attempted to use missing frame allocator").allocate_frame()
-		    .ok_or(MapToError::FrameAllocationFailed)?;
-		range.push(frame);
-	    }
+	for _ in page_range {
+	    let frame = frame_allocator.as_mut().expect("Attempted to use missing frame allocator").allocate_frame()
+		.ok_or(MapToError::FrameAllocationFailed)?;
+	    range.push(frame);
+	}
 
-	    range
-	},
-	MemoryAllocationOptions::Contiguous => {
-	    unimplemented!();
-	},
-	MemoryAllocationOptions::ContiguousByStart(start_addr) => {
-	    (0 .. size)
-		.step_by(4096)
-		.map(|addr| PhysFrame::containing_address(start_addr + addr))
-		.collect()
-	},
+	range
     };
 
     fn inner_map(mapper: &mut OffsetPageTable,
@@ -301,7 +282,7 @@ pub fn kernel_allocate(
 
 	    range
 	},
-	MemoryAllocationType::MMIO(start_addr) => 
+	MemoryAllocationType::MMIO(start_addr) =>
 	    (0 .. size)
 	    .step_by(4096)
 	    .map(|addr| PhysFrame::containing_address(PhysAddr::new(start_addr + addr)))
@@ -378,23 +359,27 @@ pub fn kernel_allocate(
     Ok((page_range.start.start_address(), frame_range.iter().map(|frame| frame.start_address()).collect()))
 }
 
-pub fn allocate_arbitrary_contiguous_region_kernel(
-    phys_addr: usize, size: usize, alloc_type: MemoryAllocationType) -> Result<(VirtAddr, usize), MapToError<Size4KiB>> {
+// This function handles MMIO allocation. The reason we use it, rather than calling kernel_allocate directly, is that
+// in theory, an MMIO region may span page boundaries, and the caller should not be expected to properly align.
+//
+// This function performs that alignment.
+pub fn allocate_mmio(
+    phys_addr: usize, size: usize) -> Result<VirtAddr, MapToError<Size4KiB>> {
     let start_phys_addr = phys_addr - (phys_addr % 4096);  // Page align
-    let end_phys_addr = phys_addr + size + (4096 - ((phys_addr + size) % 4096));  // Page align
+    let end_phys_addr = (((phys_addr + size) + 4095) / 4096) * 4096;
 
     let total_size = end_phys_addr - start_phys_addr;
 
     let allocated_region = kernel_allocate(
 	total_size as u64,
-	alloc_type,
+	MemoryAllocationType::MMIO(start_phys_addr as u64),
 	MemoryAccessRestriction::EarlyKernel,
     )?.0;
 
     let offset_from_start = phys_addr - start_phys_addr;
     let virt_addr = allocated_region + offset_from_start as u64;
 
-    Ok((virt_addr, total_size as usize))
+    Ok(virt_addr)
 }
 
 pub fn get_ptr_in_hhdm(phys_addr: PhysAddr) -> VirtAddr {

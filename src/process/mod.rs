@@ -113,7 +113,6 @@ impl Process {
 	let (rsp, _) = match memory::user_allocate(
 	    8 * 1024 * 1024,  // 8MiB
 	    memory::MemoryAllocationType::RAM,
-	    memory::MemoryAllocationOptions::Arbitrary,
 	    memory::MemoryAccessRestriction::User,
 	    &mut address_space) {
 	    Ok(i) => i,
@@ -246,7 +245,6 @@ impl Process {
 	    match memory::user_allocate(
 		8 * 1024 * 1024,  // 8MiB
 		memory::MemoryAllocationType::RAM,
-		memory::MemoryAllocationOptions::Arbitrary,
 		memory::MemoryAccessRestriction::User,
 		&mut address_space) {
 		Ok(i) => i,

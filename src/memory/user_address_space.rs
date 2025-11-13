@@ -142,7 +142,6 @@ impl AddressSpace {
 	    memory::user_allocate(
 		4096,
 		memory::MemoryAllocationType::RAM,
-		memory::MemoryAllocationOptions::Arbitrary,
 		memory::MemoryAccessRestriction::UserByStart(entry.virt_start),
 		self).expect("Unable to allocate to copy userspace");
 	    
