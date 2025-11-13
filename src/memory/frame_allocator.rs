@@ -1,6 +1,5 @@
 use alloc::collections::BTreeMap;
 use limine::memory_map::{Entry, EntryType};
-use core::cmp::Ordering;
 
 use x86_64::{
     PhysAddr,
@@ -127,6 +126,62 @@ impl VenixFrameAllocator {
 	if !merged {
             // If no merge happens, just insert the region
             free_regions.insert(new_region.start, new_region);
+	}
+    }
+
+    // This function assumes size has been rounded to the nearest page
+    pub fn allocate_dma_frames(&mut self, size: u64) -> Option<PhysAddr> {
+	if size % 4096 != 0 {
+	    panic!("Attempted to allocate DMA frames to a non-page boundary");
+	}
+
+	if let Some(ref mut free_regions) = self.free_regions {
+	    // Keep track of the start address in question. We do it this way because we can't
+	    // modify a collection while simultaneously iterating over it.
+	    let mut start: Option<u64> = None;
+
+	    for (start_addr, region) in &*free_regions {
+		// If we get to this point and are greater than the 4 gig mark, it means
+		// either we're out of DMA memory, or couldn't find a region large enough.
+		// Either way, OOM
+		//
+		// This covers both the case where the whole region is out of bounds,
+		// and also when the region starts in bounds, but isn't big enough to stay
+		// in bounds.
+		if start_addr + size >= 0x1_0000_0000 {
+		    return None;
+		}
+
+		// The region isn't big enough, check the next one
+		if region.end - region.start >= size {
+		    start = Some(*start_addr);
+		    break;
+		}
+	    }
+
+	    if let Some(start_addr) = start {
+		let region = free_regions.get(&start_addr).unwrap().clone();
+		free_regions.remove(&start_addr);
+
+		// If we don't consmue the whole region, put back what's left
+		if region.end - region.start > size {
+		    free_regions.insert(start_addr + size, MemoryRegion {
+			start: start_addr + size,
+			end: region.end,
+		    });
+		}
+
+		Some(PhysAddr::new(start_addr))
+	    } else {
+		// If start is None, it means we got to the end of the loop without finding a
+		// large enough region, but without getting out of DMA bounds.
+		//
+		// Effectively, this is an OOM condition.
+		None
+	    }
+	} else {
+	    // We can't allocate DMA in runt mode. Nor do we need to
+	    None
 	}
     }
 }

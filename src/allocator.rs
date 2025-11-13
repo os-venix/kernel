@@ -6,7 +6,6 @@ use core::alloc::{Layout, LayoutError};
 use core::alloc::{AllocError, Allocator};
 use core::mem;
 use core::mem::{align_of, size_of};
-use core::mem::MaybeUninit;
 use core::ops::Deref;
 use core::ptr::null_mut;
 use core::ptr::NonNull;

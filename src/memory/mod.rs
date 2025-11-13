@@ -231,7 +231,7 @@ pub fn user_allocate(
 
 pub fn kernel_allocate(
     size: u64,
-    _alloc_type: MemoryAllocationType,
+    alloc_type: MemoryAllocationType,
     alloc_options: MemoryAllocationOptions,
     access_restriction: MemoryAccessRestriction) -> Result<(VirtAddr, Vec<PhysAddr>), MapToError<Size4KiB>> {
     if access_restriction == MemoryAccessRestriction::Kernel {
@@ -289,8 +289,8 @@ pub fn kernel_allocate(
 	Page::range_inclusive(start_page, end_page)
     };
 
-    let frame_range: Vec<PhysFrame> = match alloc_options {
-	MemoryAllocationOptions::Arbitrary => {
+    let frame_range: Vec<PhysFrame> = match alloc_type {
+	MemoryAllocationType::RAM => {
 	    let mut range = Vec::new();	    
 	    let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
 
@@ -302,13 +302,29 @@ pub fn kernel_allocate(
 
 	    range
 	},
-	MemoryAllocationOptions::Contiguous => {
-	    unimplemented!();
+	MemoryAllocationType::MMIO => {
+	    match alloc_options {		
+		MemoryAllocationOptions::ContiguousByStart(start_addr) => {
+		    (0 .. size)
+			.step_by(4096)
+			.map(|addr| PhysFrame::containing_address(start_addr + addr))
+			.collect()
+		},
+		_ => panic!("Invalid combination"),
+	    }
 	},
-	MemoryAllocationOptions::ContiguousByStart(start_addr) => {
+	MemoryAllocationType::DMA => {
+	    let aligned_size = ((size + 4095) / 4096) * 4096;
+
+	    let start = {
+		let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
+		frame_allocator.as_mut().expect("Attempted to use missing frame allocator").allocate_dma_frames(aligned_size)
+		    .ok_or(MapToError::FrameAllocationFailed)?
+	    };
+
 	    (0 .. size)
 		.step_by(4096)
-		.map(|addr| PhysFrame::containing_address(start_addr + addr))
+		.map(|addr| PhysFrame::containing_address(start + addr))
 		.collect()
 	},
     };
