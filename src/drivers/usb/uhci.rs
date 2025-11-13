@@ -407,7 +407,6 @@ impl<'a> UhciBus<'a> {
 	// Create a transfer frame page in DMA memory, and configure the controller with the physical address
 	let (frame_list_virt, frame_list_phys) = memory::kernel_allocate(
 	    4096, memory::MemoryAllocationType::DMA,
-	    memory::MemoryAllocationOptions::Arbitrary,
 	    memory::MemoryAccessRestriction::Kernel)
 	    .expect("Unable to allocate a frame list memory region");
 	let frame_list_phys_addr = frame_list_phys[0].as_u64();

@@ -48,7 +48,7 @@ impl AddressSpace {
 
 	let (virt, phys) = memory::kernel_allocate(
 	    4096, memory::MemoryAllocationType::RAM,
-	    memory::MemoryAllocationOptions::Arbitrary, memory::MemoryAccessRestriction::Kernel).expect("Allocation failed");
+	    memory::MemoryAccessRestriction::Kernel).expect("Allocation failed");
 	
 	let data_to_z = unsafe {
 	    slice::from_raw_parts_mut(virt.as_mut_ptr::<u8>(), 4096 as usize)

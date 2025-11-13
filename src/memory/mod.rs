@@ -40,7 +40,7 @@ pub struct MemoryRegion {
 #[derive(PartialEq, Eq)]
 pub enum MemoryAllocationType {
     RAM,
-    MMIO,
+    MMIO(u64),
     DMA,
 }
 
@@ -232,7 +232,6 @@ pub fn user_allocate(
 pub fn kernel_allocate(
     size: u64,
     alloc_type: MemoryAllocationType,
-    alloc_options: MemoryAllocationOptions,
     access_restriction: MemoryAccessRestriction) -> Result<(VirtAddr, Vec<PhysAddr>), MapToError<Size4KiB>> {
     if access_restriction == MemoryAccessRestriction::Kernel {
 	unsafe {
@@ -302,17 +301,11 @@ pub fn kernel_allocate(
 
 	    range
 	},
-	MemoryAllocationType::MMIO => {
-	    match alloc_options {		
-		MemoryAllocationOptions::ContiguousByStart(start_addr) => {
-		    (0 .. size)
-			.step_by(4096)
-			.map(|addr| PhysFrame::containing_address(start_addr + addr))
-			.collect()
-		},
-		_ => panic!("Invalid combination"),
-	    }
-	},
+	MemoryAllocationType::MMIO(start_addr) => 
+	    (0 .. size)
+	    .step_by(4096)
+	    .map(|addr| PhysFrame::containing_address(PhysAddr::new(start_addr + addr)))
+	    .collect(),
 	MemoryAllocationType::DMA => {
 	    let aligned_size = ((size + 4095) / 4096) * 4096;
 
@@ -395,7 +388,6 @@ pub fn allocate_arbitrary_contiguous_region_kernel(
     let allocated_region = kernel_allocate(
 	total_size as u64,
 	alloc_type,
-	MemoryAllocationOptions::ContiguousByStart(PhysAddr::new(start_phys_addr as u64)),
 	MemoryAccessRestriction::EarlyKernel,
     )?.0;
 

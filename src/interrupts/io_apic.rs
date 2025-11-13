@@ -45,7 +45,7 @@ impl IoApic {
 	let size = 0x20;
 
 	let (virt_addr, _) = match memory::allocate_arbitrary_contiguous_region_kernel(
-	    base_addr as usize, size as usize, memory::MemoryAllocationType::MMIO) {
+	    base_addr as usize, size as usize, memory::MemoryAllocationType::MMIO(base_addr as u64)) {
 	    Ok(v) => v,
 	    Err(e) => panic!("{:#?}", e),
 	};

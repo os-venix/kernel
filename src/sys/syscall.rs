@@ -419,7 +419,6 @@ async fn sys_mmap(start_val: u64, count: u64, r8: u64) -> SyscallResult {
 	match memory::kernel_allocate(
 	    count,
 	    memory::MemoryAllocationType::RAM,
-	    memory::MemoryAllocationOptions::Arbitrary,
 	    memory::MemoryAccessRestriction::User) {
 	    Ok(i) => i,
 	    Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),
@@ -428,7 +427,6 @@ async fn sys_mmap(start_val: u64, count: u64, r8: u64) -> SyscallResult {
 	match memory::kernel_allocate(
 	    count,
 	    memory::MemoryAllocationType::RAM,
-	    memory::MemoryAllocationOptions::Arbitrary,
 	    memory::MemoryAccessRestriction::UserByStart(VirtAddr::new(start_val))) {
 	    Ok(i) => i,
 	    Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),

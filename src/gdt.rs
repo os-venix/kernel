@@ -42,7 +42,6 @@ pub fn init() {
 	let pcb = memory::kernel_allocate(
 	    size_of::<ProcessorControlBlock>() as u64,
 	    memory::MemoryAllocationType::RAM,
-	    memory::MemoryAllocationOptions::Arbitrary,
 	    memory::MemoryAccessRestriction::EarlyKernel).expect("Unable to allocate BSP PCB");
 
 	(&mut *(pcb.0.as_mut_ptr::<ProcessorControlBlock>()), pcb.0.as_u64())
@@ -63,7 +62,6 @@ pub fn init() {
     let stack_start = memory::kernel_allocate(
 	1024 * 1024 * 8 as u64,    
 	memory::MemoryAllocationType::RAM,
-	memory::MemoryAllocationOptions::Arbitrary,
 	memory::MemoryAccessRestriction::EarlyKernel).expect("Unable to allocate kernel stack").0;
 
     // Both syscalls and interrupts can use the same stack, as only one will ever be running at once - syscalls disable interrupts, and interrupt handlers do too

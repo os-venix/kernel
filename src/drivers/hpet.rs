@@ -49,7 +49,7 @@ unsafe impl Sync for Hpet {}
 impl Hpet {
     pub fn new(base_addr: u32, size: u32) -> Hpet {	
 	let (virt_addr, _) = match memory::allocate_arbitrary_contiguous_region_kernel(
-	    base_addr as usize, size as usize, memory::MemoryAllocationType::MMIO) {
+	    base_addr as usize, size as usize, memory::MemoryAllocationType::MMIO(base_addr as u64)) {
 	    Ok(v) => v,
 	    Err(e) => panic!("{:#?}", e),
 	};

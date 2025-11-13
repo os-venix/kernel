@@ -64,7 +64,6 @@ impl Elf {
 		match memory::kernel_allocate(
 		    highest_virt_addr.expect("No loadable sections were found") - lowest_virt_addr.expect("No loadable sections were found"),
 		    memory::MemoryAllocationType::RAM,
-		    memory::MemoryAllocationOptions::Arbitrary,
 		    memory::MemoryAccessRestriction::UserByStart(virt_start_addr)) {
 		    Ok(_) => (),
 		    Err(e) => {
@@ -78,7 +77,6 @@ impl Elf {
 		let (start, _) = match memory::kernel_allocate(
 		    highest_virt_addr.expect("No loadable sections were found") - lowest_virt_addr.expect("No loadable sections were found"),
 		    memory::MemoryAllocationType::RAM,
-		    memory::MemoryAllocationOptions::Arbitrary,
 		    memory::MemoryAccessRestriction::User) {
 		    Ok(i) => i,
 		    Err(e) => panic!("Could not allocate memory for {}: {:?}", file_name, e),
