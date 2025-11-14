@@ -39,9 +39,18 @@ impl VenixFrameAllocator {
 
     fn usable_frames(&self) -> impl Iterator<Item = PhysFrame> {
 	self.memory_map.iter()
+	    .rev()
 	    .filter(|r| r.entry_type == EntryType::USABLE)
-	    .map(|r| r.base .. r.base + r.length)
-	    .flat_map(|r| r.step_by(4096))
+	    .flat_map(|r| {
+		let start = r.base;
+		let end = r.base + r.length;
+
+		let last_page = (end - 1) & !4095;
+
+		(0 ..=((last_page - start) / 4096))
+		    .rev()
+		    .map(move |i| last_page - i * 4096)
+	    })
 	    .map(|addr| PhysFrame::containing_address(PhysAddr::new(addr)))
     }
 
@@ -60,33 +69,35 @@ impl VenixFrameAllocator {
 	    if region.entry_type != EntryType::USABLE {
 		continue;
 	    }
-	    
-	    if self.next == 0 {
-		free_regions.insert(region.base, MemoryRegion {
-		    start: region.base,
-		    end: region.base + region.length,
-		});
-		continue;
+
+	    free_regions.insert(region.base, MemoryRegion {
+		start: region.base,
+		end: region.base + region.length,
+	    });
+	}
+
+	for i in 0 .. self.next {
+            if let Some(first_region_entry) = free_regions.last_entry() {
+		let start_addr = first_region_entry.get().start;
+		let end_addr = first_region_entry.get().end;
+
+                // If the first region is exactly one frame (4KiB), just allocate it and remove it
+                if end_addr - start_addr == 4096 {
+                    // Allocate the first frame and remove the region
+                    free_regions.remove(&start_addr); // Remove the region from the map
+		    continue;
+                }
+
+                // Otherwise, allocate a frame from the first region and update the region
+                let new_end = end_addr - 4096; // Move the end address back by 4KiB
+
+                // Modify the region in the map (update the start address)
+		free_regions.remove(&start_addr);
+                free_regions.insert(start_addr, MemoryRegion {
+                    start: start_addr,
+                    end: new_end,
+                });
 	    }
-
-	    let size = region.length;
-	    let size_in_pages = size / 4096;
-
-	    if size_in_pages as usize <= self.next {
-		self.next -= size_in_pages as usize;
-		continue;
-	    }
-
-	    let region_start = region.base + (self.next as u64 * 4096);
-
-	    free_regions.insert(
-		region_start,
-		MemoryRegion {
-		    start: region_start,
-		    end: region.base + region.length,
-		});
-
-	    self.next = 0;
 	}
 
 	self.free_regions = Some(free_regions);
@@ -190,7 +201,7 @@ unsafe impl FrameAllocator<Size4KiB> for VenixFrameAllocator {
     fn allocate_frame(&mut self) -> Option<PhysFrame> {	
         if let Some(ref mut free_regions) = self.free_regions {
             // Check if we have any free regions
-            if let Some(first_region_entry) = free_regions.first_entry() {
+            if let Some(first_region_entry) = free_regions.last_entry() {
                 let start_addr = first_region_entry.get().start;
 		let end_addr = first_region_entry.get().end;
 
@@ -202,17 +213,17 @@ unsafe impl FrameAllocator<Size4KiB> for VenixFrameAllocator {
                 }
 
                 // Otherwise, allocate a frame from the first region and update the region
-                let new_start = start_addr + 4096; // Move the start address forward by 4KiB
+                let new_end = end_addr - 4096; // Move the end address back by 4KiB
 
                 // Modify the region in the map (update the start address)
 		free_regions.remove(&start_addr);
-                free_regions.insert(new_start, MemoryRegion {
-                    start: new_start,
-                    end: end_addr,
+                free_regions.insert(start_addr, MemoryRegion {
+                    start: start_addr,
+                    end: new_end,
                 });
 
                 // Return the allocated frame
-                return Some(PhysFrame::containing_address(PhysAddr::new(start_addr)));
+                return Some(PhysFrame::containing_address(PhysAddr::new(new_end)));
             }
 
 	    // We're out of memory

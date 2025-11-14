@@ -127,19 +127,19 @@ fn init() {
     let memory_map = MEMORY_MAP_REQUEST.get_response().expect("Limine did not return a memory map.");
     log::info!("Memory map:");
 
-    for entry in memory_map.entries() {
-	log::info!("   {:X} - {:X}: {:?}", entry.base, entry.base + entry.length, match entry.entry_type {
-	    EntryType::USABLE => "Usable",
-	    EntryType::RESERVED => "Reserved",
-	    EntryType::ACPI_RECLAIMABLE => "ACPI Reclaimable",
-	    EntryType::ACPI_NVS => "ACPI NVS",
-	    EntryType::BAD_MEMORY => "Bad Memory",
-	    EntryType::BOOTLOADER_RECLAIMABLE => "Bootloader reclamiable",
-	    EntryType::KERNEL_AND_MODULES => "Kernel (and modules)",
-	    EntryType::FRAMEBUFFER => "Framebuffer",
-	    _ => "Unknown",
-	});
-    }
+    // for entry in memory_map.entries() {
+    // 	log::info!("   {:X} - {:X}: {:?}", entry.base, entry.base + entry.length, match entry.entry_type {
+    // 	    EntryType::USABLE => "Usable",
+    // 	    EntryType::RESERVED => "Reserved",
+    // 	    EntryType::ACPI_RECLAIMABLE => "ACPI Reclaimable",
+    // 	    EntryType::ACPI_NVS => "ACPI NVS",
+    // 	    EntryType::BAD_MEMORY => "Bad Memory",
+    // 	    EntryType::BOOTLOADER_RECLAIMABLE => "Bootloader reclamiable",
+    // 	    EntryType::KERNEL_AND_MODULES => "Kernel (and modules)",
+    // 	    EntryType::FRAMEBUFFER => "Framebuffer",
+    // 	    _ => "Unknown",
+    // 	});
+    // }
 
     let direct_map_offset = HHDM_REQUEST.get_response().expect("Limine did not direct-map the higher half.").offset();
     memory::init(direct_map_offset, memory_map.entries());

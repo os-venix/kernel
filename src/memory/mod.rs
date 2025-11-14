@@ -214,12 +214,14 @@ pub fn kernel_allocate(
     size: u64,
     alloc_type: MemoryAllocationType,
     access_restriction: MemoryAccessRestriction) -> Result<(VirtAddr, Vec<PhysAddr>), MapToError<Size4KiB>> {
+    log::info!("a");
     if access_restriction == MemoryAccessRestriction::Kernel {
 	unsafe {
 	    switch_to_kernel();
 	}
     }
 
+    log::info!("b");
     let page_range = {
 	let start = match access_restriction {
 	    MemoryAccessRestriction::Kernel | MemoryAccessRestriction::EarlyKernel => {
@@ -269,6 +271,7 @@ pub fn kernel_allocate(
 	Page::range_inclusive(start_page, end_page)
     };
 
+    log::info!("c");
     let frame_range: Vec<PhysFrame> = match alloc_type {
 	MemoryAllocationType::RAM => {
 	    let mut range = Vec::new();	    
@@ -303,6 +306,7 @@ pub fn kernel_allocate(
 	},
     };
 
+    log::info!("d");
     fn inner_map(mapper: &mut OffsetPageTable,
 		 page_range: PageRangeInclusive,
 		 frame_range: Vec<PhysFrame>,
@@ -350,12 +354,14 @@ pub fn kernel_allocate(
 	inner_map(&mut mapper, page_range, frame_range.clone(), &access_restriction)?;
     }
 
+    log::info!("e");
     if access_restriction == MemoryAccessRestriction::Kernel {
 	unsafe {
 	    switch_to_user();
 	}
     }
 
+    log::info!("f");
     Ok((page_range.start.start_address(), frame_range.iter().map(|frame| frame.start_address()).collect()))
 }
 
