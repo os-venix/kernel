@@ -48,8 +48,7 @@ impl AddressSpace {
 
 	log::info!("0");
 	let (virt, phys) = memory::kernel_allocate(
-	    4096, memory::MemoryAllocationType::RAM,
-	    memory::MemoryAccessRestriction::Kernel).expect("Allocation failed");
+	    4096, memory::MemoryAllocationType::RAM).expect("Allocation failed");
 	log::info!("1");
 	
 	let data_to_z = unsafe {

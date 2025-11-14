@@ -108,7 +108,14 @@ pub fn exit(exit_code: u64) -> ! {
 
 	if let Some(pid) = *running_process {
 	    // Free associated memory, and drop the process
-	    process_tbl.get_mut(&pid).unwrap().clone().clear(Vec::new(), Vec::new());
+	    let current_process = process_tbl.get_mut(&pid).unwrap().clone();
+	    let mut task_type = current_process.task_type.write();
+	    match *task_type {
+		process::TaskType::User(ref mut address_space) => {
+		    address_space.clear_user_space();
+		},
+		_ => (),
+	    }
 	    process_tbl.remove(&pid);
 	} else {
 	    panic!("Attempted to access user address space when no process is running");
@@ -175,10 +182,6 @@ fn poll_process_future(pid: u64, future: Arc<Mutex<Pin<Box<dyn Future<Output = s
 	let process = process_tbl.get_mut(&pid).unwrap();
 	// Switch to address space
 	*running_process = Some(pid);
-	let address_space = process.address_space.read();
-	unsafe {
-            address_space.switch_to();
-	}
     }
 
     match future.clone().lock().as_mut().poll(&mut ctx) {
@@ -245,9 +248,14 @@ fn next_task() -> process::ProcessContext {
 		*running_process = Some(*pid);
 
 		// Switch to address space
-		let address_space = process.address_space.read();
-		unsafe {
-                    address_space.switch_to();
+		let mut task_type = process.task_type.write();
+		match *task_type {
+		    process::TaskType::User(ref mut address_space) => {
+			unsafe {
+			    address_space.switch_to();
+			}
+		    },
+		    _ => (),
 		}
 
 		return process.get_context();
@@ -257,14 +265,6 @@ fn next_task() -> process::ProcessContext {
     }
 
     *running_process = Some(0);
-
-    {
-	// Switch to address space
-	let address_space = process_tbl.get(&0).unwrap().address_space.read();
-	unsafe {
-            address_space.switch_to();
-	}
-    }
     idle_ctx
 }
 

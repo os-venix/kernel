@@ -415,22 +415,53 @@ async fn sys_mmap(start_val: u64, count: u64, r8: u64) -> SyscallResult {
 	unimplemented!();
     }
 
-    let (start, _) = if start_val == 0 {
-	match memory::kernel_allocate(
-	    count,
-	    memory::MemoryAllocationType::RAM,
-	    memory::MemoryAccessRestriction::User) {
-	    Ok(i) => i,
-	    Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),
-	}
-    } else {
-	match memory::kernel_allocate(
-	    count,
-	    memory::MemoryAllocationType::RAM,
-	    memory::MemoryAccessRestriction::UserByStart(VirtAddr::new(start_val))) {
-	    Ok(i) => i,
-	    Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),
-	}		
+    let process = scheduler::get_current_process();
+    let mut task_type = process.task_type.write();
+    let start = match *task_type {
+	process::TaskType::Kernel => {
+	    let (start, _) = if start_val == 0 {
+		match memory::kernel_allocate(
+		    count,
+		    memory::MemoryAllocationType::RAM) {
+		    Ok(i) => i,
+		    Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),
+		}
+	    } else {
+		unimplemented!();
+		// match memory::kernel_allocate(
+		//     count,
+		//     memory::MemoryAllocationType::RAM,
+		//     memory::MemoryAccessRestriction::UserByStart(VirtAddr::new(start_val))) {
+		//     Ok(i) => i,
+		//     Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),
+		// }
+	    };
+
+	    start
+	},
+	process::TaskType::User(ref mut address_space) => {
+	    let (start, _) = if start_val == 0 {
+		match memory::user_allocate(
+		    count,
+		    memory::MemoryAllocationType::RAM,
+		    memory::MemoryAccessRestriction::User,
+		    address_space) {
+		    Ok(i) => i,
+		    Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),
+		}
+	    } else {
+		match memory::user_allocate(
+		    count,
+		    memory::MemoryAllocationType::RAM,
+		    memory::MemoryAccessRestriction::UserByStart(VirtAddr::new(start_val)),
+		    address_space) {
+		    Ok(i) => i,
+		    Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),
+		}		
+	    };
+
+	    start
+	},
     };
 
     SyscallResult {
@@ -561,13 +592,20 @@ pub async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> Sysca
     };
 
     let process = scheduler::get_current_process();
-    process.clone().clear(args, envvars);
+    process.clone().execve(args, envvars);
 
-    let elf = elf_loader::Elf::new(path).await.expect("Failed to load ELF");
-    let ld = elf_loader::Elf::new(String::from("/usr/lib/ld.so")).await.expect("Failed to load ld.so");
+    {
+	let mut task_type = process.task_type.write();
+	let start = match *task_type {
+	    process::TaskType::Kernel => unreachable!(),
+	    process::TaskType::User(ref mut address_space) => {
+		let elf = elf_loader::Elf::new(path, address_space).await.expect("Failed to load ELF");
+		let ld = elf_loader::Elf::new(String::from("/usr/lib/ld.so"), address_space).await.expect("Failed to load ld.so");
+		process.clone().attach_loaded_elf(elf, ld);
+	    },
+	};
+    }
 
-    process.clone().attach_loaded_elf(elf, ld);
-    process.clone().init_stack();
     process.clone().init_stack_and_start();
 
     SyscallResult {

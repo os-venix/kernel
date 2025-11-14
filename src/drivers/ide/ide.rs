@@ -501,8 +501,7 @@ impl IdeDrive {
 
 	let buf_ptr = memory::kernel_allocate(
 	    size,
-	    memory::MemoryAllocationType::RAM,
-	    memory::MemoryAccessRestriction::User)
+	    memory::MemoryAllocationType::RAM)
 	    .expect("Unable to allocate heap").0.as_mut_ptr::<u16>();
 
 	let buf_u16 = unsafe {
@@ -532,7 +531,7 @@ impl IdeDrive {
 	}
 
 	let (buf_virt, buf_phys) = memory::kernel_allocate(
-	    size * 512, memory::MemoryAllocationType::DMA, access_restriction)
+	    size * 512, memory::MemoryAllocationType::DMA)
 	    .expect("Unable to allocate a PDRT memory region");
 
 	let mut compacted_phys_addr = {

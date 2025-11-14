@@ -18,7 +18,6 @@ use limine::memory_map::Entry;
 use core::mem::offset_of;
 
 use crate::gdt;
-use crate::scheduler;
 
 mod frame_allocator;
 mod page_allocator;
@@ -212,57 +211,13 @@ pub fn user_allocate(
 
 pub fn kernel_allocate(
     size: u64,
-    alloc_type: MemoryAllocationType,
-    access_restriction: MemoryAccessRestriction) -> Result<(VirtAddr, Vec<PhysAddr>), MapToError<Size4KiB>> {
-    log::info!("a");
-    if access_restriction == MemoryAccessRestriction::Kernel {
-	unsafe {
-	    switch_to_kernel();
-	}
-    }
+    alloc_type: MemoryAllocationType) -> Result<(VirtAddr, Vec<PhysAddr>), MapToError<Size4KiB>> {
 
-    log::info!("b");
     let page_range = {
-	let start = match access_restriction {
-	    MemoryAccessRestriction::Kernel | MemoryAccessRestriction::EarlyKernel => {
-		let mut w = VENIX_PAGE_ALLOCATOR.write();
-		w.as_mut().expect("Attempted to read missing Kernel page allocator").get_page_range(size)
-	    },
-	    MemoryAccessRestriction::User => {
-		let mut process_tbl = scheduler::PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-		let running_process = scheduler::RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-		match *running_process {
-		    Some(pid) => {
-			let mut address_space = process_tbl.get_mut(&pid).unwrap().address_space.write();
-			address_space.get_page_range(size)
-		    },
-		    None => {
-			panic!("Attempted to allocate userspace memory while not in a process address space");
-		    },
-		}
-	    },
-	    MemoryAccessRestriction::UserByStart(addr) => {
-		let mut process_tbl = scheduler::PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-		let running_process = scheduler::RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
-
-		match *running_process {
-		    Some(pid) => {
-			let mut address_space = process_tbl.get_mut(&pid).unwrap().address_space.write();
-			match address_space.get_page_range_from_start(addr, size as usize) {
-			    Ok(_) => (),
-			    Err(_) => panic!("Couldn't get memory at 0x{:x}, already allocated", addr.as_u64()),
-			}
-		    },
-		    None => {
-			panic!("Attempted to allocate userspace memory while not in a process address space");
-		    },
-		}
-
-		addr
-	    },
+	let start = {
+	    let mut w = VENIX_PAGE_ALLOCATOR.write();
+	    w.as_mut().expect("Attempted to read missing Kernel page allocator").get_page_range(size)
 	};
-
 	let end = start + (size - 1);
 
 	let start_page = Page::containing_address(start);
@@ -271,7 +226,6 @@ pub fn kernel_allocate(
 	Page::range_inclusive(start_page, end_page)
     };
 
-    log::info!("c");
     let frame_range: Vec<PhysFrame> = match alloc_type {
 	MemoryAllocationType::RAM => {
 	    let mut range = Vec::new();	    
@@ -306,62 +260,16 @@ pub fn kernel_allocate(
 	},
     };
 
-    log::info!("d");
-    fn inner_map(mapper: &mut OffsetPageTable,
-		 page_range: PageRangeInclusive,
-		 frame_range: Vec<PhysFrame>,
-		 access_restriction: &MemoryAccessRestriction) -> Result<(), MapToError<Size4KiB>> {
-	let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
-
-	for (page, &frame) in page_range.zip(frame_range.iter()) {
-	    let flags = match *access_restriction {
-		MemoryAccessRestriction::Kernel | MemoryAccessRestriction::EarlyKernel => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL,
-		MemoryAccessRestriction::User => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
-		MemoryAccessRestriction::UserByStart(_) => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
-	    };
-
-	    unsafe {
-		mapper.map_to(page, frame, flags, frame_allocator.as_mut().expect("Attempted to use missing frame allocator"))?.flush();
-	    };
-	}
-
-	Ok(())
-    }
-
-    if access_restriction == MemoryAccessRestriction::Kernel || access_restriction == MemoryAccessRestriction::EarlyKernel {
-	let mut mapper = KERNEL_PAGE_TABLE.write();
-	inner_map(mapper.as_mut().expect("Attempted to use missing kernel page table"), page_range, frame_range.clone(), &access_restriction)?;
-    } else {
-	let active_page_table = {
-	    let process = scheduler::get_current_process();
-	    let address_space = process.address_space.read();
-	    address_space.get_pt4()
-	};
-	
-	let direct_map_offset = DIRECT_MAP_OFFSET.get().expect("No direct map offset");
-	let pt4_addr = match access_restriction {
-	    MemoryAccessRestriction::Kernel | MemoryAccessRestriction::EarlyKernel => unreachable!(),
-	    MemoryAccessRestriction::User => active_page_table + direct_map_offset,
-	    MemoryAccessRestriction::UserByStart(_) => active_page_table + direct_map_offset,
-	};
-	let pt4_ptr = pt4_addr as *mut PageTable;
-
-	let mut mapper = unsafe {
-	    let pt4 = &mut *pt4_ptr;
-	    OffsetPageTable::new(pt4, VirtAddr::new(*direct_map_offset))
-	};
-
-	inner_map(&mut mapper, page_range, frame_range.clone(), &access_restriction)?;
-    }
-
-    log::info!("e");
-    if access_restriction == MemoryAccessRestriction::Kernel {
+    let mut mapper = KERNEL_PAGE_TABLE.write();
+    let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
+    
+    for (page, &frame) in page_range.zip(frame_range.iter()) {
+	let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
 	unsafe {
-	    switch_to_user();
-	}
+	    mapper.as_mut().unwrap().map_to(page, frame, flags, frame_allocator.as_mut().expect("Attempted to use missing frame allocator"))?.flush();
+	};
     }
 
-    log::info!("f");
     Ok((page_range.start.start_address(), frame_range.iter().map(|frame| frame.start_address()).collect()))
 }
 
@@ -378,8 +286,7 @@ pub fn allocate_mmio(
 
     let allocated_region = kernel_allocate(
 	total_size as u64,
-	MemoryAllocationType::MMIO(start_phys_addr as u64),
-	MemoryAccessRestriction::EarlyKernel,
+	MemoryAllocationType::MMIO(start_phys_addr as u64)
     )?.0;
 
     let offset_from_start = phys_addr - start_phys_addr;

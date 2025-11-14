@@ -72,9 +72,8 @@ pub enum TaskState {
     },
 }
 
-#[derive(Clone, Copy)]
 pub enum TaskType {
-    User,
+    User(memory::user_address_space::AddressSpace),
     Kernel,
 }
 
@@ -85,14 +84,13 @@ pub struct FileDescriptor {
 }
 
 pub struct Process {
-    pub address_space: Arc<RwLock<memory::user_address_space::AddressSpace>>,
     file_descriptors: RwLock<BTreeMap<u64, FileDescriptor>>,
     args: RwLock<Vec<String>>,
     envvars: RwLock<Vec<String>>,
     auxvs: RwLock<Vec<AuxVector>>,
     context: RwLock<ProcessContext>,
     state: RwLock<TaskState>,
-    task_type: RwLock<TaskType>,
+    pub task_type: Arc<RwLock<TaskType>>,
     cwd: RwLock<String>,
     signals: RwLock<BTreeMap<u64, signal::SignalHandler>>,
     sigmask: RwLock<u64>,
@@ -103,24 +101,16 @@ unsafe impl Sync for Process { }
 
 impl Process {
     pub fn new_kthread(rip: u64) -> Self {
-	let mut address_space = memory::user_address_space::AddressSpace::new();
-	unsafe {
-	    address_space.switch_to();
-	}
-	
 	let (kernel_code, kernel_data, _, _) = gdt::get_code_selectors();
 	
-	let (rsp, _) = match memory::user_allocate(
+	let (rsp, _) = match memory::kernel_allocate(
 	    8 * 1024 * 1024,  // 8MiB
-	    memory::MemoryAllocationType::RAM,
-	    memory::MemoryAccessRestriction::User,
-	    &mut address_space) {
+	    memory::MemoryAllocationType::RAM) {
 	    Ok(i) => i,
 	    Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
 	};
 
 	Process {
-	    address_space: Arc::new(RwLock::new(address_space)),
 	    file_descriptors: RwLock::new(BTreeMap::new()),
 	    args: RwLock::new(vec!(String::from("init"))),
 	    envvars: RwLock::new(vec!(String::from("PATH=/bin:/usr/bin"))),
@@ -134,24 +124,71 @@ impl Process {
 		ss: kernel_data.0 as u64,
 	    }),
 	    state: RwLock::new(TaskState::Running),
-	    task_type: RwLock::new(TaskType::Kernel),
+	    task_type: Arc::new(RwLock::new(TaskType::Kernel)),
 	    cwd: RwLock::new(String::from("/")),
 	    signals: RwLock::new(BTreeMap::new()),
 	    sigmask: RwLock::new(0),
 	}
     }
 
-    pub fn from_existing(&self, rip: u64) -> Self {
-	let mut new_address_space = memory::user_address_space::AddressSpace::new();
+    pub fn execve(self: Arc<Self>, new_args: Vec<String>, new_envvars: Vec<String>) {
+	let mut task_type = self.task_type.write();
+	let rsp = match &mut *task_type {
+	    TaskType::Kernel => {
+		let mut address_space = memory::user_address_space::AddressSpace::new();
+
+		let (rsp, _) = {
+		    match memory::user_allocate(
+			8 * 1024 * 1024,  // 8MiB
+			memory::MemoryAllocationType::RAM,
+			memory::MemoryAccessRestriction::User,
+			&mut address_space) {
+			Ok(i) => i,
+			Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
+		    }
+		};
+
+		*task_type = TaskType::User(address_space);
+		rsp
+	    },
+	    // TODO: will this break any file I/O, mmap, etc?
+	    TaskType::User(ref mut address_space) => {
+		address_space.clear_user_space();
+
+		let (rsp, _) = {
+		    match memory::user_allocate(
+			8 * 1024 * 1024,  // 8MiB
+			memory::MemoryAllocationType::RAM,
+			memory::MemoryAccessRestriction::User,
+			address_space) {
+			Ok(i) => i,
+			Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
+		    }
+		};
+		rsp
+	    },
+	};
+
+	let mut context = self.context.write();
+	let mut auxvs = self.auxvs.write();
+	let mut signals = self.signals.write();
+	let mut args = self.args.write();
+	let mut envvars = self.envvars.write();
+
+	*args = new_args;
+	*envvars = new_envvars;
+	context.gprs = GeneralPurposeRegisters::default();
+	context.rflags = 0x202;
+	*auxvs = Vec::new();
+	*signals = BTreeMap::new();
+
 	{
-	    let address_space = self.address_space.read();
-	    unsafe {
-		new_address_space.switch_to();
-	    }
-
-	    new_address_space.create_copy_of_address_space(&address_space);
+	    let mut context = self.context.write();
+	    context.rsp = rsp.as_u64() + 8 * 1024 * 1024;  // Start at the end of the stack and grow down
 	}
+    }
 
+    pub fn from_existing(&self, rip: u64) -> Self {
 	let signals = {
 	    let old_signals = self.signals.read();
 	    old_signals.clone()
@@ -184,7 +221,19 @@ impl Process {
 
 	let task_type = {
 	    let old_task_type = self.task_type.read();
-	    old_task_type.clone()
+
+	    match &*old_task_type {
+		TaskType::Kernel => TaskType::Kernel,
+		TaskType::User(address_space) => {
+		    let mut new_address_space = memory::user_address_space::AddressSpace::new();
+		    unsafe {
+			new_address_space.switch_to();
+		    }
+		    new_address_space.create_copy_of_address_space(&address_space);
+
+		    TaskType::User(new_address_space)
+		},
+	    }
 	};
 
 	let cwd = {
@@ -198,7 +247,6 @@ impl Process {
 	};
 
 	Process {
-	    address_space: Arc::new(RwLock::new(new_address_space)),
 	    file_descriptors: RwLock::new(file_descriptors.clone()),
 	    args: RwLock::new(args),
 	    envvars: RwLock::new(envvars),
@@ -212,49 +260,10 @@ impl Process {
 		ss: ss,
 	    }),
 	    state: RwLock::new(TaskState::Setup),
-	    task_type: RwLock::new(task_type),
+	    task_type: Arc::new(RwLock::new(task_type)),
 	    cwd: RwLock::new(cwd),
 	    signals: RwLock::new(signals),
 	    sigmask: RwLock::new(sigmask),
-	}
-    }
-
-    pub fn clear(self: Arc<Self>, new_args: Vec<String>, new_envvars: Vec<String>) {
-	{
-	    let mut address_space = self.address_space.write();
-	    address_space.clear_user_space();
-	}
-
-	let mut context = self.context.write();
-	let mut auxvs = self.auxvs.write();
-	let mut signals = self.signals.write();
-	let mut args = self.args.write();
-	let mut envvars = self.envvars.write();
-
-	*args = new_args;
-	*envvars = new_envvars;
-	context.gprs = GeneralPurposeRegisters::default();
-	context.rflags = 0x202;
-	*auxvs = Vec::new();
-	*signals = BTreeMap::new();
-    }
-
-    pub fn init_stack(self: Arc<Self>) {
-	let (rsp, _) = {
-	    let mut address_space = self.address_space.write();
-	    match memory::user_allocate(
-		8 * 1024 * 1024,  // 8MiB
-		memory::MemoryAllocationType::RAM,
-		memory::MemoryAccessRestriction::User,
-		&mut address_space) {
-		Ok(i) => i,
-		Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
-	    }
-	};
-
-	{
-	    let mut context = self.context.write();
-	    context.rsp = rsp.as_u64() + 8 * 1024 * 1024;  // Start at the end of the stack and grow down
 	}
     }
 
@@ -388,7 +397,6 @@ impl Process {
 	    }
 	}
 
-	*task_type = TaskType::User;
 	*state = TaskState::Running;
     }
 
