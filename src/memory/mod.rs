@@ -12,12 +12,9 @@ use x86_64::structures::paging::{
     OffsetPageTable,
     page::PageRangeInclusive,
 };
-use x86_64::registers::control::{Cr3, Cr3Flags};
+use x86_64::registers::control::Cr3;
 use alloc::vec::Vec;
 use limine::memory_map::Entry;
-use core::mem::offset_of;
-
-use crate::gdt;
 
 mod frame_allocator;
 mod page_allocator;
@@ -45,7 +42,6 @@ pub enum MemoryAllocationType {
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum MemoryAccessRestriction {
-    EarlyKernel,
     Kernel,
     User,
     UserByStart(VirtAddr),
@@ -141,7 +137,7 @@ pub fn user_allocate(
     address_space: &mut user_address_space::AddressSpace) -> Result<(VirtAddr, Vec<PhysAddr>), MapToError<Size4KiB>> {
     let page_range = {
 	let start = match access_restriction {
-	    MemoryAccessRestriction::Kernel | MemoryAccessRestriction::EarlyKernel => panic!("Attempted to use user_allocate() for kernel"),
+	    MemoryAccessRestriction::Kernel => panic!("Attempted to use user_allocate() for kernel"),
 	    MemoryAccessRestriction::User => address_space.get_page_range(size),
 	    MemoryAccessRestriction::UserByStart(addr) => match address_space.get_page_range_from_start(addr, size as usize) {
 		Ok(_) => addr,
@@ -178,7 +174,7 @@ pub fn user_allocate(
 
 	for (page, &frame) in page_range.zip(frame_range.iter()) {
 	    let flags = match *access_restriction {
-		MemoryAccessRestriction::Kernel | MemoryAccessRestriction::EarlyKernel => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL,
+		MemoryAccessRestriction::Kernel => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL,
 		MemoryAccessRestriction::User => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
 		MemoryAccessRestriction::UserByStart(_) => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
 	    };
@@ -193,7 +189,7 @@ pub fn user_allocate(
 
     let direct_map_offset = DIRECT_MAP_OFFSET.get().expect("No direct map offset");
     let pt4_addr = match access_restriction {
-	MemoryAccessRestriction::Kernel | MemoryAccessRestriction::EarlyKernel => unreachable!(),
+	MemoryAccessRestriction::Kernel => unreachable!(),
 	MemoryAccessRestriction::User => address_space.get_pt4() + direct_map_offset,
 	MemoryAccessRestriction::UserByStart(_) => address_space.get_pt4() + direct_map_offset,
     };
@@ -298,39 +294,4 @@ pub fn allocate_mmio(
 pub fn get_ptr_in_hhdm(phys_addr: PhysAddr) -> VirtAddr {
     let hhdm = DIRECT_MAP_OFFSET.get().expect("Could not read HHDM");
     VirtAddr::new(phys_addr.as_u64() + hhdm)
-}
-
-#[allow(named_asm_labels)]
-pub unsafe fn switch_to_kernel() {
-    // Kernel always has no flags, user always has PAGE_LEVEL_CACHE_DISABLE
-    // If we're already in kernel space, don't save CR3
-    core::arch::asm!(
-	"mov {r}, cr3",
-	"test {r}, 0xFFF",  // 
-	"je 2f",
-	"mov gs:[{user_cr3}], {r}",
-	"2:",
-
-	r = out(reg) _,
-	user_cr3 = const(offset_of!(gdt::ProcessorControlBlock, user_cr3)),
-    );
-    let r = KERNEL_PAGE_FRAME.read();
-    let frame = r.as_ref().expect("Attempted to read missing Kernel page frame");
-    Cr3::write(*frame, Cr3Flags::empty());
-}
-
-#[allow(named_asm_labels)]
-pub unsafe fn switch_to_user() {
-    // Kernel always has no flags, user always has PAGE_LEVEL_CACHE_DISABLE
-    // If user_cr3 doesn't contain a user page table, don't switch to it
-    core::arch::asm!(
-	"mov {r}, gs:[{user_cr3}]",
-	"test {r}, 0xFFF",
-	"je 2f",
-	"mov cr3, {r}",
-	"2:",
-
-	r = out(reg) _,
-	user_cr3 = const(offset_of!(gdt::ProcessorControlBlock, user_cr3)),
-    );
 }

@@ -596,7 +596,7 @@ pub async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> Sysca
 
     {
 	let mut task_type = process.task_type.write();
-	let start = match *task_type {
+	match *task_type {
 	    process::TaskType::Kernel => unreachable!(),
 	    process::TaskType::User(ref mut address_space) => {
 		let elf = elf_loader::Elf::new(path, address_space).await.expect("Failed to load ELF");
@@ -729,7 +729,7 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 }
 
 #[no_mangle]
-unsafe extern "C" fn syscall_inner(mut stack_frame: process::GeneralPurposeRegisters) -> ! {
+unsafe extern "C" fn syscall_inner(stack_frame: process::GeneralPurposeRegisters) -> ! {
     let rsp: u64;
     core::arch::asm!(
 	"mov {rsp}, gs:[{sp}]",

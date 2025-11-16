@@ -76,7 +76,7 @@ impl VenixFrameAllocator {
 	    });
 	}
 
-	for i in 0 .. self.next {
+	for _ in 0 .. self.next {
             if let Some(first_region_entry) = free_regions.last_entry() {
 		let start_addr = first_region_entry.get().start;
 		let end_addr = first_region_entry.get().end;

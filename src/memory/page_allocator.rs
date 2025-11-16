@@ -37,10 +37,6 @@ impl VenixPageAllocator {
 	}
     }
 
-    pub fn get_hhdm_offset(&self) -> u64 {
-	self.hhdm_offset
-    }
-
     unsafe fn gather_unused_regions_from_page(
 	&self,
 	level: u8,

@@ -7,7 +7,6 @@ use core::pin::Pin;
 use core::future::Future;
 use core::task::Waker;
 
-use crate::sys::vfs;
 use crate::drivers::hpet;
 use crate::sys::syscall;
 use crate::process;
@@ -59,7 +58,7 @@ pub fn kthread_start(f: fn() -> !) {
 }
 
 pub fn get_current_pid() -> u64 {    
-    let mut running_process = RUNNING_PROCESS
+    let running_process = RUNNING_PROCESS
 	.get()
 	.expect("RUNNING_PROCESS not initialized")
 	.read();
@@ -174,13 +173,6 @@ fn poll_process_future(pid: u64, future: Arc<Mutex<Pin<Box<dyn Future<Output = s
 	    .get()
 	    .expect("RUNNING_PROCESS not initialized")
 	    .write();
-	let mut process_tbl = PROCESS_TABLE
-	    .get()
-	    .expect("PROCESS_TABLE not initialized")
-	    .write();
-
-	let process = process_tbl.get_mut(&pid).unwrap();
-	// Switch to address space
 	*running_process = Some(pid);
     }
 

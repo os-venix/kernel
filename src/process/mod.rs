@@ -135,7 +135,7 @@ impl Process {
 	let mut task_type = self.task_type.write();
 	match &mut *task_type {
 	    TaskType::Kernel => {
-		let mut address_space = memory::user_address_space::AddressSpace::new();
+		let address_space = memory::user_address_space::AddressSpace::new();
 		*task_type = TaskType::User(address_space);
 	    },
 	    // TODO: will this break any file I/O, mmap, etc?
