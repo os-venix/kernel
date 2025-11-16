@@ -38,7 +38,7 @@ struct PageVirtPhys {
 pub struct AddressSpace {
     pt4: PhysFrame,
     free_regions: Vec<MemoryRegion>,
-    mapped_regions: BTreeMap<VirtAddr, PhysAddr>,
+    pub mapped_regions: BTreeMap<VirtAddr, PhysAddr>,
 }
 
 impl AddressSpace {

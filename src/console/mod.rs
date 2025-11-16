@@ -126,7 +126,9 @@ impl driver::Device for ConsoleDevice {
 	};
 
 	let printk = crate::PRINTK.get().expect("Unable to get printk");
+	log::info!("a");
 	printk.write_str(s);
+	log::info!("b");
 
 	Ok(size)
     }

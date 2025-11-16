@@ -3,6 +3,7 @@ use anyhow::{anyhow, Result};
 use xmas_elf::{header, ElfFile, program::{SegmentData, Type}};
 use core::{slice, default::Default};
 use x86_64::VirtAddr;
+use alloc::vec;
 
 use crate::sys;
 use crate::memory;
@@ -91,11 +92,8 @@ impl Elf {
 
 	{
 	    let size_to_zero = highest_virt_addr.expect("No loadable sections were found") - lowest_virt_addr.expect("No loadable sections were found");
-
-	    let data_to_z = unsafe {
-		slice::from_raw_parts_mut(virt_start_addr.as_mut_ptr::<u8>(), size_to_zero as usize)
-	    };
-	    data_to_z.fill_with(Default::default);
+	    let empty_buf = vec![0; size_to_zero as usize];
+	    memory::copy_to_user(address_space, virt_start_addr, empty_buf.as_slice());
 	}
 
 	for program_header in elf.program_iter() {
@@ -127,10 +125,7 @@ impl Elf {
 	    };
 
 	    if program_header.file_size() != 0 {
-		let data_to = unsafe {
-		    slice::from_raw_parts_mut(virt_header_start_addr.as_mut_ptr::<u8>(), program_header.file_size() as usize)
-		};
-		data_to.copy_from_slice(data);
+		memory::copy_to_user(address_space, virt_header_start_addr, data);
 	    }
 	}
 

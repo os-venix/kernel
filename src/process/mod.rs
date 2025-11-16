@@ -281,22 +281,19 @@ impl Process {
 	let envvars = self.envvars.read();
 	let args = self.args.read();
 
-	let rsp = match *task_type {
+	let mut address_space: &mut memory::user_address_space::AddressSpace = match *task_type {
 	    TaskType::Kernel => panic!("Attempted to start a user process on a kernel task"),
 	    // TODO: will this break any file I/O, mmap, etc?
-	    TaskType::User(ref mut address_space) => {
-		let (rsp, _) = {
-		    match memory::user_allocate(
-			8 * 1024 * 1024,  // 8MiB
-			memory::MemoryAllocationType::RAM,
-			memory::MemoryAccessRestriction::User,
-			address_space) {
-			Ok(i) => i,
-			Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
-		    }
-		};
-		rsp
-	    },
+	    TaskType::User(ref mut address_space) => address_space,
+	};
+
+	let (rsp, _) = match memory::user_allocate(
+	    8 * 1024 * 1024,  // 8MiB
+	    memory::MemoryAllocationType::RAM,
+	    memory::MemoryAccessRestriction::User,
+	    address_space) {
+	    Ok(i) => i,
+	    Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
 	};
 	context.rsp = rsp.as_u64() + 8 * 1024 * 1024;  // Start at the end of the stack and grow down
 
@@ -306,7 +303,7 @@ impl Process {
 	let args_buf_size: usize = args.iter()
 	    .map(|arg| arg.len() + 1)
 	    .sum();
-	
+
 	context.rsp -= envvars_buf_size as u64 + args_buf_size as u64;
 	let stack_ptr = VirtAddr::new(context.rsp);
 	let data_to = unsafe {
@@ -314,22 +311,24 @@ impl Process {
 		stack_ptr.as_mut_ptr::<u8>(),
 		envvars_buf_size + args_buf_size)
 	};
-
 	let mut current_offs = envvars_buf_size + args_buf_size;
 	let mut envvar_p: Vec<u64> = Vec::new();
 	for envvar in envvars.clone() {
 	    let envvar_len = envvar.len() + 1;
 	    let envvar_cstring = CString::new(envvar.as_str()).unwrap();
-	    data_to[current_offs - envvar_len..current_offs].copy_from_slice(envvar_cstring.as_bytes_with_nul());
+	    memory::copy_to_user(
+		address_space, stack_ptr + (current_offs - envvar_len) as u64, envvar_cstring.as_bytes_with_nul());
 	    current_offs -= envvar_len;
 
 	    envvar_p.push(context.rsp + current_offs as u64);
 	}
+
 	let mut args_p: Vec<u64> = Vec::new();
 	for arg in args.clone() {
 	    let arg_len = arg.len() + 1;
 	    let arg_cstring = CString::new(arg.as_str()).unwrap();
-	    data_to[current_offs - arg_len..current_offs].copy_from_slice(arg_cstring.as_bytes_with_nul());
+	    memory::copy_to_user(
+		address_space, stack_ptr + (current_offs - arg_len) as u64, arg_cstring.as_bytes_with_nul());
 
 	    current_offs -= arg_len;
 	    args_p.push(context.rsp + current_offs as u64);
@@ -341,50 +340,33 @@ impl Process {
 	/* padding = */(3 * 8);
 	let alignment = context.rsp % 16;
 	context.rsp -= alignment;  // Align the stack to a u128, as required by the standard
-	let stack_ptr = VirtAddr::new(context.rsp).as_mut_ptr::<u64>();
 
-	unsafe {
-	    let mut sp = stack_ptr; // mutable walking pointer of type *mut u64
-
-	    // argc
-	    core::ptr::write_unaligned(sp, args.len() as u64);
-	    sp = sp.add(1);
-
-	    // argv[0..n]
-	    for arg in &args_p {
-		core::ptr::write_unaligned(sp, *arg);
-		sp = sp.add(1);
-	    }
-
-	    // NULL after argv
-	    core::ptr::write_unaligned(sp, 0);
-	    sp = sp.add(1);
-
-	    // envp[0..n]
-	    for env in &envvar_p {
-		core::ptr::write_unaligned(sp, *env);
-		sp = sp.add(1);
-	    }
-
-	    // NULL after envp
-	    core::ptr::write_unaligned(sp, 0);
-	    sp = sp.add(1);
-
-	    // auxv entries (key, value)
-	    for auxv in auxvs.iter() {
-		core::ptr::write_unaligned(sp, auxv.auxv_type);
-		sp = sp.add(1);
-		core::ptr::write_unaligned(sp, auxv.value);
-		sp = sp.add(1);
-	    }
-
-	    // write padding (as bytes)
-	    let mut pad_ptr = sp as *mut u8;
-	    for _ in 0..alignment {
-		core::ptr::write(pad_ptr, 0u8);
-		pad_ptr = pad_ptr.add(1);
-	    }
+	let mut buf: Vec<u8> = Vec::new();
+	// argc
+	buf.extend_from_slice(&(args.len() as u64).to_ne_bytes());
+	// argv[0..n]
+	for arg in &args_p {
+	    buf.extend_from_slice(&(*arg).to_ne_bytes());
 	}
+	// NULL after argv
+	buf.extend_from_slice(&0u64.to_ne_bytes());
+
+	// envp[0..n]
+	for env in &envvar_p {
+	    buf.extend_from_slice(&(*env).to_ne_bytes());
+	}
+	// NULL after envp
+	buf.extend_from_slice(&0u64.to_ne_bytes());
+
+	// auxv entries (key, value)
+	for auxv in auxvs.iter() {
+	    buf.extend_from_slice(&auxv.auxv_type.to_ne_bytes());
+	    buf.extend_from_slice(&auxv.value.to_ne_bytes());
+	}
+
+	// padding
+	buf.resize(buf.len() + alignment as usize, 0);
+	memory::copy_to_user(address_space, VirtAddr::new(context.rsp), buf.as_slice());
 
 	*state = TaskState::Running;
     }

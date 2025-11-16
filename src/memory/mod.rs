@@ -15,6 +15,7 @@ use x86_64::structures::paging::{
 use x86_64::registers::control::Cr3;
 use alloc::vec::Vec;
 use limine::memory_map::Entry;
+use alloc::slice;
 
 mod frame_allocator;
 mod page_allocator;
@@ -38,6 +39,7 @@ pub enum MemoryAllocationType {
     RAM,
     MMIO(u64),
     DMA,
+    USER_BUFFER(Vec<PhysAddr>),
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -246,6 +248,9 @@ pub fn kernel_allocate(
 		.map(|addr| PhysFrame::containing_address(start + addr))
 		.collect()
 	},
+	MemoryAllocationType::USER_BUFFER(buf) => buf.iter()
+	    .map(|p| PhysFrame::from_start_address(*p).unwrap())
+	    .collect(),
     };
 
     let mut mapper = KERNEL_PAGE_TABLE.write();
@@ -286,4 +291,63 @@ pub fn allocate_mmio(
 pub fn get_ptr_in_hhdm(phys_addr: PhysAddr) -> VirtAddr {
     let hhdm = DIRECT_MAP_OFFSET.get().expect("Could not read HHDM");
     VirtAddr::new(phys_addr.as_u64() + hhdm)
+}
+
+#[derive(Debug)]
+pub enum CopyError {
+    Fault,               // page not present / translation failed
+    Permission,          // page present but not writable by user
+    TempAllocFailed,     // couldn't allocate temporary kernel mapping
+    Partial(usize),      // copied an amount but failed afterwards (optional)
+}
+
+pub fn copy_to_user(
+    address_space: &user_address_space::AddressSpace, dest: VirtAddr, src: &[u8]) -> Result<(), CopyError> {
+    if src.is_empty() {
+	return Ok(());
+    }
+
+    let total_len = src.len() as u64;
+    let first_page_index = dest.as_u64() / 4096;
+    let last_page_index = (dest.as_u64() + total_len - 1) / 4096;
+    let n_pages = (last_page_index - first_page_index + 1) as usize;
+
+    // 1) Walk all pages and validate presence + writability, collecting phys page bases.
+    // We also need the per-page user offset and per-page copy length.
+    let mut phys_pages: Vec<PhysAddr> = Vec::with_capacity(n_pages);
+
+    // We'll maintain an offset into the src buffer that we are copying.
+    let mut cur_vaddr = dest.as_u64();
+
+    for page_idx in 0..n_pages {
+        // Translate the start of this page (virtual address)
+        let page_base_vaddr = VirtAddr::new((cur_vaddr / 4096) * 4096);
+        match address_space.mapped_regions.get(&page_base_vaddr) {
+            Some(phys_page_base) => phys_pages.push(*phys_page_base),  // TODO: this should validate permissions. The page should be both user accessible, and writable
+            None => return Err(CopyError::Fault),  // Page is not in the shadow map. Ithasn't been mapped
+        }
+
+        // advance
+        cur_vaddr = page_base_vaddr.as_u64() + 4096; // next page start (even if dest started in middle)
+    }
+
+    let kernel_buf = match kernel_allocate(n_pages as u64 * 4096, MemoryAllocationType::USER_BUFFER(phys_pages)) {
+	Ok((buf, _)) => buf,
+	Err(_) => return Err(CopyError::TempAllocFailed),
+    };
+
+    let data_to = unsafe {
+	slice::from_raw_parts_mut((kernel_buf + (dest.as_u64() % 4096)).as_mut_ptr::<u8>(), src.len())
+    };
+
+    data_to.copy_from_slice(src);
+
+    let mut mapper = KERNEL_PAGE_TABLE.write();
+    for i in 0 .. n_pages {
+	let p: Page<Size4KiB> = Page::from_start_address(kernel_buf + i as u64 * 4096).expect("Malformed start address");
+	let (_, flush) = mapper.as_mut().unwrap().unmap(p).expect("Attempting to unmap page failed");
+	flush.flush();
+    }
+
+    Ok(())
 }
