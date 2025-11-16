@@ -42,23 +42,15 @@ pub struct AddressSpace {
 
 impl AddressSpace {
     pub fn new() -> Self {
-	unsafe {
-	    memory::switch_to_kernel()
-	};
-
-	log::info!("0");
 	let (virt, phys) = memory::kernel_allocate(
 	    4096, memory::MemoryAllocationType::RAM).expect("Allocation failed");
-	log::info!("1");
 	
 	let data_to_z = unsafe {
 	    slice::from_raw_parts_mut(virt.as_mut_ptr::<u8>(), 4096 as usize)
 	};
-	
-	log::info!("2");
+
 	data_to_z.fill_with(Default::default);
 
-	log::info!("3");
 	let pt4: &mut PageTable = unsafe {
 	    &mut *virt.as_mut_ptr::<PageTable>()
 	};
@@ -78,12 +70,6 @@ impl AddressSpace {
 	    pt4[i as usize] = level_4_table[i as usize].clone();
 	}
 
-	log::info!("4");
-	unsafe {
-	    memory::switch_to_user()
-	};
-
-	log::info!("5");
 	let p4_size: u64 = 1 << 39;
 	AddressSpace {
 	    pt4: frame,

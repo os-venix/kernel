@@ -133,39 +133,14 @@ impl Process {
 
     pub fn execve(self: Arc<Self>, new_args: Vec<String>, new_envvars: Vec<String>) {
 	let mut task_type = self.task_type.write();
-	let rsp = match &mut *task_type {
+	match &mut *task_type {
 	    TaskType::Kernel => {
 		let mut address_space = memory::user_address_space::AddressSpace::new();
-
-		let (rsp, _) = {
-		    match memory::user_allocate(
-			8 * 1024 * 1024,  // 8MiB
-			memory::MemoryAllocationType::RAM,
-			memory::MemoryAccessRestriction::User,
-			&mut address_space) {
-			Ok(i) => i,
-			Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
-		    }
-		};
-
 		*task_type = TaskType::User(address_space);
-		rsp
 	    },
 	    // TODO: will this break any file I/O, mmap, etc?
 	    TaskType::User(ref mut address_space) => {
 		address_space.clear_user_space();
-
-		let (rsp, _) = {
-		    match memory::user_allocate(
-			8 * 1024 * 1024,  // 8MiB
-			memory::MemoryAllocationType::RAM,
-			memory::MemoryAccessRestriction::User,
-			address_space) {
-			Ok(i) => i,
-			Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
-		    }
-		};
-		rsp
 	    },
 	};
 
@@ -181,11 +156,6 @@ impl Process {
 	context.rflags = 0x202;
 	*auxvs = Vec::new();
 	*signals = BTreeMap::new();
-
-	{
-	    let mut context = self.context.write();
-	    context.rsp = rsp.as_u64() + 8 * 1024 * 1024;  // Start at the end of the stack and grow down
-	}
     }
 
     pub fn from_existing(&self, rip: u64) -> Self {
@@ -310,6 +280,25 @@ impl Process {
 	let auxvs = self.auxvs.read();
 	let envvars = self.envvars.read();
 	let args = self.args.read();
+
+	let rsp = match *task_type {
+	    TaskType::Kernel => panic!("Attempted to start a user process on a kernel task"),
+	    // TODO: will this break any file I/O, mmap, etc?
+	    TaskType::User(ref mut address_space) => {
+		let (rsp, _) = {
+		    match memory::user_allocate(
+			8 * 1024 * 1024,  // 8MiB
+			memory::MemoryAllocationType::RAM,
+			memory::MemoryAccessRestriction::User,
+			address_space) {
+			Ok(i) => i,
+			Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
+		    }
+		};
+		rsp
+	    },
+	};
+	context.rsp = rsp.as_u64() + 8 * 1024 * 1024;  // Start at the end of the stack and grow down
 
 	let envvars_buf_size: usize = envvars.iter()
 	    .map(|env_var| env_var.len() + 1)

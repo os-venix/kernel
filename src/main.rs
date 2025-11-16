@@ -226,7 +226,7 @@ fn init_setup() -> ! {
 
     // Loop until we can stat init executable; that implies the filesystem has been successfully mounted
     loop {
-	let (ret, err) = unsafe {
+	let (ret, _) = unsafe {
 	    syscall::do_syscall6(0x05, path_ptr, 0, 0, 0, 0, 0)
 	};
 
