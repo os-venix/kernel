@@ -166,27 +166,6 @@ pub fn user_allocate(
 	range
     };
 
-    fn inner_map(mapper: &mut OffsetPageTable,
-		 page_range: PageRangeInclusive,
-		 frame_range: Vec<PhysFrame>,
-		 access_restriction: &MemoryAccessRestriction) -> Result<(), MapToError<Size4KiB>> {
-	let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
-
-	for (page, &frame) in page_range.zip(frame_range.iter()) {
-	    let flags = match *access_restriction {
-		MemoryAccessRestriction::Kernel => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL,
-		MemoryAccessRestriction::User => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
-		MemoryAccessRestriction::UserByStart(_) => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
-	    };
-
-	    unsafe {
-		mapper.map_to(page, frame, flags, frame_allocator.as_mut().expect("Attempted to use missing frame allocator"))?.flush();
-	    };
-	}
-
-	Ok(())
-    }
-
     let direct_map_offset = DIRECT_MAP_OFFSET.get().expect("No direct map offset");
     let pt4_addr = match access_restriction {
 	MemoryAccessRestriction::Kernel => unreachable!(),
@@ -200,7 +179,20 @@ pub fn user_allocate(
 	OffsetPageTable::new(pt4, VirtAddr::new(*direct_map_offset))
     };
 
-    inner_map(&mut mapper, page_range, frame_range.clone(), &access_restriction)?;
+    let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
+
+    for (page, &frame) in page_range.zip(frame_range.iter()) {
+	address_space.assign_virt_phys(page.start_address(), frame.start_address());
+	let flags = match access_restriction {
+	    MemoryAccessRestriction::Kernel => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL,
+	    MemoryAccessRestriction::User => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+	    MemoryAccessRestriction::UserByStart(_) => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+	};
+
+	unsafe {
+	    mapper.map_to(page, frame, flags, frame_allocator.as_mut().expect("Attempted to use missing frame allocator"))?.flush();
+	};
+    }
 
     Ok((page_range.start.start_address(), frame_range.iter().map(|frame| frame.start_address()).collect()))
 }

@@ -16,6 +16,7 @@ use x86_64::structures::paging::{
 };
 use x86_64::registers::control::{Cr3, Cr3Flags};
 use alloc::vec::Vec;
+use alloc::collections::BTreeMap;
 use anyhow::{anyhow, Result};
 use alloc::slice;
 
@@ -37,7 +38,7 @@ struct PageVirtPhys {
 pub struct AddressSpace {
     pt4: PhysFrame,
     free_regions: Vec<MemoryRegion>,
-    mapped_regions: Vec<MemoryRegion>,
+    mapped_regions: BTreeMap<VirtAddr, PhysAddr>,
 }
 
 impl AddressSpace {
@@ -77,7 +78,7 @@ impl AddressSpace {
 		start: 0x100000,
 		end: (p4_size as u64) * 255,  // Anywhere in the lower half
             }]),
-	    mapped_regions: Vec::new(),
+	    mapped_regions: BTreeMap::new(),
 	}
     }
 
@@ -156,6 +157,21 @@ impl AddressSpace {
 	self.pt4.start_address().as_u64()
     }
 
+    fn map_a_region(&mut self, region: MemoryRegion) {
+	let mut pa = region.start;
+	while pa < region.end {
+	    let va = VirtAddr::new(pa);
+	    self.mapped_regions.insert(va, PhysAddr::new(0));
+	    pa += 4096;
+	}
+    }
+
+    pub fn assign_virt_phys(&mut self, virt: VirtAddr, phys: PhysAddr) {
+	if let Some(entry) = self.mapped_regions.get_mut(&virt) {
+	    *entry = phys;
+	}
+    }
+
     // Returns the first virtaddr in the range
     pub fn get_page_range(&mut self, size: u64) -> VirtAddr {
 	let size_in_pages = size/4096 + if size % 4096 != 0 { 1 } else { 0 };
@@ -166,19 +182,20 @@ impl AddressSpace {
 	    }
 	    if self.free_regions[idx].end - self.free_regions[idx].start == size_in_pages*4096 {
 		let region = self.free_regions.remove(idx);
-		self.mapped_regions.push(region.clone());
-
 		let sign_extended = ((region.start << 16) as i64) >> 16;
+
+		self.map_a_region(region);
 		return VirtAddr::new(sign_extended as u64);
 	    } else if self.free_regions[idx].end - self.free_regions[idx].start > size_in_pages * 4096 {
 		let start = self.free_regions[idx].start;
 		self.free_regions[idx].start += size_in_pages * 4096;
-		self.mapped_regions.push(MemoryRegion {
+		let sign_extended = ((start << 16) as i64) >> 16;
+
+		self.map_a_region(MemoryRegion {
 		    start: start,
 		    end: start + size_in_pages * 4096,
-		});		
-
-		let sign_extended = ((start << 16) as i64) >> 16;
+		});
+		    
 		return VirtAddr::new(sign_extended as u64);
 	    }
 	}
@@ -199,14 +216,14 @@ impl AddressSpace {
 		self.free_regions[idx].end - self.free_regions[idx].start == (size_in_pages as u64) * 4096) {
 		// Remove the whole region
 		let region = self.free_regions.remove(idx);
-		self.mapped_regions.push(region);
+		self.map_a_region(region);
 		return Ok(());
 	    } else if self.free_regions[idx].start < addr && (
 		self.free_regions[idx].start < addr + (size_in_pages as u64) * 4096) && (
 		self.free_regions[idx].end == addr + (size_in_pages as u64) * 4096) {
 		// Resize region so that it ends where the alloc starts 
 		self.free_regions[idx].end = addr;
-		self.mapped_regions.push(MemoryRegion {
+		self.map_a_region(MemoryRegion {
 		    start: addr,
 		    end: addr + size_in_pages as u64 * 4096,
 		});
@@ -222,7 +239,7 @@ impl AddressSpace {
 		    start: addr + (size_in_pages as u64) * 4096,
 		    end: old_end,
 		});
-		self.mapped_regions.push(MemoryRegion {
+		self.map_a_region(MemoryRegion {
 		    start: addr,
 		    end: addr + size_in_pages as u64 * 4096,
 		});
@@ -232,7 +249,7 @@ impl AddressSpace {
 		self.free_regions[idx].end > addr + (size_in_pages as u64) * 4096) {
 		// Resize region so that it starts where the alloc ends
 		self.free_regions[idx].start = addr + (size_in_pages as u64) * 4096;
-		self.mapped_regions.push(MemoryRegion {
+		self.map_a_region(MemoryRegion {
 		    start: addr,
 		    end: addr + size_in_pages as u64 * 4096,
 		});
@@ -256,15 +273,13 @@ impl AddressSpace {
 
 	let mut frame_allocator = memory::VENIX_FRAME_ALLOCATOR.write();
 
-	for region in self.mapped_regions.iter() {
-	    for start in (region.start .. region.end).step_by(4096) {
-		let p: Page<Size4KiB> = Page::from_start_address(VirtAddr::new(start)).expect("Malformed start address");
-		let (frame, flush) = offset_pt.unmap(p).expect("Attempting to unmap page failed");
-		unsafe {
-		    frame_allocator.as_mut().expect("Attempted to clear userspace before memory initialised").deallocate_frame(frame);
-		}
-		flush.flush();
+	for (virt, phys) in self.mapped_regions.iter() {
+	    let p: Page<Size4KiB> = Page::from_start_address(*virt).expect("Malformed start address");
+	    let (frame, flush) = offset_pt.unmap(p).expect("Attempting to unmap page failed");
+	    unsafe {
+		frame_allocator.as_mut().expect("Attempted to clear userspace before memory initialised").deallocate_frame(frame);
 	    }
+	    flush.flush();
 	}
 
 	let user_page_range = PageRangeInclusive {
@@ -280,6 +295,6 @@ impl AddressSpace {
 	    start: 0x100000,
 	    end: (p4_size as u64) * 255,  // Anywhere in the lower half
         }]);
-	self.mapped_regions = Vec::new();
+	self.mapped_regions = BTreeMap::new();
     }
 }
