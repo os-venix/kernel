@@ -468,3 +468,41 @@ pub fn copy_string_from_user(
         cursor = VirtAddr::new(cursor.as_u64() + PAGE_SIZE as u64);
     }
 }
+
+pub fn copy_value_from_user<T: Copy>(
+    address_space: &user_address_space::AddressSpace,
+    user_ptr: VirtAddr,
+) -> Result<T, CopyError> {
+    use core::{mem, ptr};
+    let size = mem::size_of::<T>();
+
+    let bytes = copy_from_user(address_space, user_ptr, size)?;
+    let mut tmp = mem::MaybeUninit::<T>::uninit();
+
+    unsafe {
+        ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            tmp.as_mut_ptr() as *mut u8,
+            size,
+        );
+
+        Ok(tmp.assume_init())
+    }
+}
+
+pub fn copy_value_to_user<T: Copy>(
+    address_space: &user_address_space::AddressSpace,
+    user_ptr: VirtAddr,
+    value: &T,
+) -> Result<(), CopyError> {
+    use core::{mem, slice};
+    let size = mem::size_of::<T>();
+
+    let bytes: &[u8] = unsafe {
+        slice::from_raw_parts(
+            (value as *const T) as *const u8,
+            size,
+        )
+    };
+    copy_to_user(address_space, user_ptr, bytes)
+}

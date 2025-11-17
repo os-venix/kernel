@@ -691,19 +691,13 @@ async fn sys_sigaction(signum: u64, new_sigaction: u64, old_sigaction: u64) -> S
 	if let Some(signal) = process.get_current_signal_handler(signum) {
 	    let sigaction = signal::create_sigaction(signal);
 
-	    // Convert to a slice
-	    let raw_ptr = &sigaction as *const signal::SigAction as *const u8;
-	    let size = core::mem::size_of::<signal::SigAction>();
-
-	    let bytes: &[u8] = unsafe { core::slice::from_raw_parts(raw_ptr, size) };
-
-
 	    {
 		let mut task_type = process.task_type.write();
 		match *task_type {
 		    process::TaskType::Kernel => unimplemented!(),
 		    process::TaskType::User(ref mut address_space) =>
-			match memory::copy_to_user(address_space, VirtAddr::new(new_sigaction), bytes) {
+			match memory::copy_value_to_user::<signal::SigAction>(
+			    address_space, VirtAddr::new(new_sigaction), &sigaction) {
 			    Ok(s) => (),
 			    Err(_) => {
 				return SyscallResult {
@@ -723,18 +717,9 @@ async fn sys_sigaction(signum: u64, new_sigaction: u64, old_sigaction: u64) -> S
 	    match *task_type {
 		process::TaskType::Kernel => unimplemented!(),
 		process::TaskType::User(ref mut address_space) =>
-		    match memory::copy_from_user(address_space, VirtAddr::new(new_sigaction), size_of::<signal::SigAction>()) {
-			Ok(s) => {
-			    let mut sa = core::mem::MaybeUninit::<signal::SigAction>::uninit();
-			    unsafe {
-				ptr::copy_nonoverlapping(
-				    s.as_ptr(),
-				    sa.as_mut_ptr() as *mut u8,
-				    s.len());
-
-				sa.assume_init()
-			    }
-			},
+		    match memory::copy_value_from_user::<signal::SigAction>(
+			address_space, VirtAddr::new(new_sigaction)) {
+			Ok(s) => s,
 			Err(_) => {
 			    return SyscallResult {
 				return_value: 0xFFFF_FFFF_FFFF_FFFF,
@@ -761,22 +746,31 @@ async fn sys_sigprocmask(how: u64, set: u64, oldset: u64) -> SyscallResult {
 	let mut task_type = process.task_type.write();
 	match *task_type {
 	    process::TaskType::Kernel => unimplemented!(),
-	    process::TaskType::User(ref mut address_space) => match memory::copy_from_user(address_space, VirtAddr::new(set), size_of::<u64>()) {
-		Ok(s) => u64::from_ne_bytes(s.try_into().unwrap()),
-		Err(_) => {
-		    return SyscallResult {
-			return_value: 0xFFFF_FFFF_FFFF_FFFF,
-			err_num: CanonicalError::EINVAL as u64
-		    };
+	    process::TaskType::User(ref mut address_space) =>
+		match memory::copy_value_from_user::<u64>(address_space, VirtAddr::new(set)) {
+		    Ok(s) => s,
+		    Err(_) => {
+			return SyscallResult {
+			    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+			    err_num: CanonicalError::EINVAL as u64
+			};
+		    },
 		},
-	    },
 	}
     };
 
     if oldset != 0 {
-	unsafe {
-	    let s = oldset as *mut u64;
-	    *s = process.get_current_sigprocmask();
+	let old_val = process.get_current_sigprocmask();
+
+	let mut task_type = process.task_type.write();
+	match *task_type {
+	    process::TaskType::Kernel => unimplemented!(),
+	    process::TaskType::User(ref mut address_space) => if let Err(_) = memory::copy_value_to_user::<u64>(address_space, VirtAddr::new(oldset), &old_val) {
+		return SyscallResult {
+		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		    err_num: CanonicalError::EINVAL as u64
+		};
+	    }
 	}
     }
 
