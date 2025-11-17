@@ -182,21 +182,19 @@ impl AddressSpace {
 	    }
 	    if self.free_regions[idx].end - self.free_regions[idx].start == size_in_pages*4096 {
 		let region = self.free_regions.remove(idx);
-		let sign_extended = ((region.start << 16) as i64) >> 16;
 
-		self.map_a_region(region);
-		return VirtAddr::new(sign_extended as u64);
+		self.map_a_region(region.clone());
+		return VirtAddr::new(region.start);
 	    } else if self.free_regions[idx].end - self.free_regions[idx].start > size_in_pages * 4096 {
 		let start = self.free_regions[idx].start;
 		self.free_regions[idx].start += size_in_pages * 4096;
-		let sign_extended = ((start << 16) as i64) >> 16;
 
 		self.map_a_region(MemoryRegion {
 		    start: start,
 		    end: start + size_in_pages * 4096,
 		});
 		    
-		return VirtAddr::new(sign_extended as u64);
+		return VirtAddr::new(start);
 	    }
 	}
 	panic!("OOM");
