@@ -1,6 +1,7 @@
 use core::ffi::c_int;
 
 #[repr(C)]
+#[derive(Copy, Clone)]
 pub struct SigAction {
     sa_handler: usize,
     sa_mask: u64,
@@ -21,15 +22,13 @@ pub struct SignalHandler {
     flags: u64,  // This will get fleshed out in due course}
 }
 
-pub fn parse_sigaction(sigaction: u64) -> SignalHandler {
-    let sa = sigaction as *const SigAction;
-
+pub fn parse_sigaction(sigaction: SigAction) -> SignalHandler {
     unsafe {
 	SignalHandler {
-	    handler: (*sa).sa_handler,
-	    mask: (*sa).sa_mask,
-	    handler_type: if ((*sa).sa_mask & (1 << 4)) != 0 { HandlerType::SigAction } else { HandlerType::Handler },
-	    flags: (*sa).sa_flags as u64,
+	    handler: sigaction.sa_handler,
+	    mask: sigaction.sa_mask,
+	    handler_type: if (sigaction.sa_mask & (1 << 4)) != 0 { HandlerType::SigAction } else { HandlerType::Handler },
+	    flags: sigaction.sa_flags as u64,
 	}
     }
 }
