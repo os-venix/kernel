@@ -143,7 +143,7 @@ unsafe impl Send for Keyboard {}
 unsafe impl Sync for Keyboard {}
 
 impl driver::Device for Keyboard {
-    fn read(self: Arc<Self>, _offset: u64, _size: u64, _access_restriction: memory::MemoryAccessRestriction) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
+    fn read(self: Arc<Self>, _offset: u64, _size: u64) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
 	unimplemented!();
     }
     fn write(&self, _buf: *const u8, _size: u64) -> Result<u64, ()> {

@@ -323,7 +323,7 @@ unsafe impl Send for IdeDrive { }
 unsafe impl Sync for IdeDrive { }
 
 impl driver::Device for IdeDrive {
-    fn read(self: Arc<Self>, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
+    fn read(self: Arc<Self>, offset: u64, size: u64) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
 	if self.drive_type != DriveType::ATA {
 	    return Box::pin(async move { Err(syscall::CanonicalError::EIO) });
 	}
@@ -331,7 +331,7 @@ impl driver::Device for IdeDrive {
 
 	match mode {
 	    Mode::PIO => Box::pin(async move { self.clone().pio_read(offset, size).await }),
-	    _ => Box::pin(async move { self.clone().dma_read(offset, size, access_restriction).await }),
+	    _ => Box::pin(async move { self.clone().dma_read(offset, size).await }),
 	}
     }
 
@@ -522,7 +522,7 @@ impl IdeDrive {
 	Ok(bytes::Bytes::from(data_from))
     }
 
-    async fn dma_read(&self, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, syscall::CanonicalError> {
+    async fn dma_read(&self, offset: u64, size: u64) -> Result<Bytes, syscall::CanonicalError> {
 	let ctl = self.controller.lock();
 
 	// We don't (yet) support multiple PRDs per transfer

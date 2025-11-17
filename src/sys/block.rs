@@ -86,7 +86,7 @@ pub struct GptDevice {
 impl GptDevice {
     async fn new(device: Arc<dyn driver::Device + Send + Sync>) -> Option<Arc<GptDevice>> {
 	let (mbr, pth, partition_entries) = {
-	    let mbr_buf = match device.clone().read(0, 1, memory::MemoryAccessRestriction::Kernel).await {
+	    let mbr_buf = match device.clone().read(0, 1).await {
 		Ok(a) => a,
 		Err(e) => {
 		    log::info!("Failed to read boot sector - {:?}", e);
@@ -102,7 +102,7 @@ impl GptDevice {
 		return None;
 	    }
 
-	    let pth_buf = device.clone().read(1, 1, memory::MemoryAccessRestriction::Kernel).await.expect("Failed to read Partition Table Header");
+	    let pth_buf = device.clone().read(1, 1).await.expect("Failed to read Partition Table Header");
 	    let pth = unsafe {
 		ptr::read(pth_buf.as_ptr() as *const PartitionTableHeader)
 	    };
@@ -116,7 +116,7 @@ impl GptDevice {
 
 	    let pt_size_in_sector_bytes = pth.partition_entry_array_size + (512 - (pth.partition_entry_array_size % 512));  // Total amount, aligned to page boundaries
 	    let pt_size_in_sectors = pt_size_in_sector_bytes / 512;
-	    let pt_buf = device.clone().read(2, pt_size_in_sectors as u64, memory::MemoryAccessRestriction::Kernel).await.expect("Could not read Partition Entry table");
+	    let pt_buf = device.clone().read(2, pt_size_in_sectors as u64).await.expect("Could not read Partition Entry table");
 
 	    let mut partition_entries: Vec<PartitionEntry> = Vec::new();
 
@@ -160,7 +160,7 @@ impl GptDevice {
 	Some(device_arc)
     }
 
-    pub async fn read(&self, partition: u32, starting_block: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> Result<Bytes, ()> {
+    pub async fn read(&self, partition: u32, starting_block: u64, size: u64) -> Result<Bytes, ()> {
 	if partition as usize >= self.pt.len() {
 	    return Err(());
 	}
@@ -175,7 +175,7 @@ impl GptDevice {
 	    return Err(());
 	}
 
-	match self.dev.clone().read(adjusted_start, size, access_restriction).await {
+	match self.dev.clone().read(adjusted_start, size).await {
 	    Ok(a) => Ok(a),
 	    Err(_) => Err(())
 	}

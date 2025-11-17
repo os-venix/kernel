@@ -63,7 +63,7 @@ impl ConsoleDevice {
 }
 
 impl driver::Device for ConsoleDevice {
-    fn read(self: Arc<Self>, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
+    fn read(self: Arc<Self>, offset: u64, size: u64) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
 	struct Wait {
 	    size: u64
 	}

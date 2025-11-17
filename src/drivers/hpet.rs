@@ -251,7 +251,7 @@ pub struct HpetDevice {}
 unsafe impl Send for HpetDevice { }
 unsafe impl Sync for HpetDevice { }
 impl driver::Device for HpetDevice {
-    fn read(self: Arc<Self>, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
+    fn read(self: Arc<Self>, offset: u64, size: u64) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
 	panic!("Shouldn't have attempted to read from the HPET. That makes no sense.");
     }
     fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()> {

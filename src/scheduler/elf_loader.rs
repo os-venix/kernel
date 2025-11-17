@@ -1,7 +1,6 @@
 use alloc::string::String;
 use anyhow::{anyhow, Result};
 use xmas_elf::{header, ElfFile, program::{SegmentData, Type}};
-use core::{slice, default::Default};
 use x86_64::VirtAddr;
 use alloc::vec;
 

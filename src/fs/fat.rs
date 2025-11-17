@@ -177,7 +177,7 @@ impl Fat16Fs {
 	    let root_directory_size_lba = root_directory_size_sectors / sectors_per_lba;
 
 	    self.dev.read(
-		*partition, root_directory_lba as u64, root_directory_size_lba as u64, memory::MemoryAccessRestriction::Kernel)
+		*partition, root_directory_lba as u64, root_directory_size_lba as u64)
 	};
 
 	inner.await.expect("Couldn't read root directory")
@@ -196,7 +196,7 @@ impl Fat16Fs {
 	    let fat_size_lba = fat_size_sectors / sectors_per_lba;
 
 	    self.dev.read(
-		*partition, fat_lba as u64, fat_size_lba as u64, memory::MemoryAccessRestriction::Kernel)
+		*partition, fat_lba as u64, fat_size_lba as u64)
 	};
 
 	let fat_buf_ptr = inner.await.expect("Couldn't read FAT").as_ptr();
@@ -415,10 +415,10 @@ impl vfs::FileSystem for Fat16Fs {
 	    let mut file_size: usize = 0 as usize;
 
 	    for path_part in parts {
-		let (inode, access) = match self.find_dir_entry(path_part.to_string(), current_buf_ptr)
+		let inode = match self.find_dir_entry(path_part.to_string(), current_buf_ptr)
 		    .expect(&format!("Could not find file {}", path)) {
-			Entry::DIRECTORY(i) => (i, memory::MemoryAccessRestriction::Kernel),
-			Entry::FILE(i) => (i, memory::MemoryAccessRestriction::User),
+			Entry::DIRECTORY(i) => i,
+			Entry::FILE(i) => i,
 		    };
 
 		// This is FAT16, no high cluster
@@ -483,7 +483,7 @@ impl vfs::FileSystem for Fat16Fs {
 
 		    current_buf_ptr = self.dev.read(
 			partition, cluster_lba as u64,
-			(size_lba as u64) * cluster_strings_to_read[0].1, access).await.expect("Couldn't read file")
+			(size_lba as u64) * cluster_strings_to_read[0].1).await.expect("Couldn't read file")
 			.as_ptr();
 
 		    file_size = inode.file_size as usize;
@@ -586,8 +586,7 @@ impl vfs::FileSystem for Fat16Fs {
 
 		    current_buf_ptr = self.dev.read(
 			partition, cluster_lba as u64,
-			(size_lba as u64) * cluster_strings_to_read[0].1,
-			memory::MemoryAccessRestriction::Kernel).await.expect("Couldn't read file")
+			(size_lba as u64) * cluster_strings_to_read[0].1).await.expect("Couldn't read file")
 			.as_ptr();
 		} else {
 		    // Not supported
@@ -638,7 +637,7 @@ fn detect_fat_fs(boot_record: BootRecord) -> FatFsType {
 }
 
 pub async fn register_fat_fs(dev: Arc<block::GptDevice>, partition: u32) {    
-    let boot_record_buf_ptr = dev.read(partition, 0, 1, memory::MemoryAccessRestriction::Kernel).await.expect("Failed to read (possible) FAT boot record").as_ptr();
+    let boot_record_buf_ptr = dev.read(partition, 0, 1).await.expect("Failed to read (possible) FAT boot record").as_ptr();
     let boot_record = unsafe {
 	ptr::read(boot_record_buf_ptr as *const BootRecord)
     };

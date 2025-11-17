@@ -10,7 +10,6 @@ use x86_64::structures::paging::{
     PageTable,
     PageTableFlags,
     OffsetPageTable,
-    page::PageRangeInclusive,
 };
 use x86_64::registers::control::Cr3;
 use alloc::vec::Vec;
@@ -330,7 +329,7 @@ pub fn copy_to_user(
     // We'll maintain an offset into the src buffer that we are copying.
     let mut cur_vaddr = dest.as_u64();
 
-    for page_idx in 0..n_pages {
+    for _ in 0..n_pages {
         // Translate the start of this page (virtual address)
         let page_base_vaddr = VirtAddr::new((cur_vaddr / 4096) * 4096);
         match address_space.mapped_regions.get(&page_base_vaddr) {
@@ -380,7 +379,7 @@ pub fn copy_from_user(
     // We'll maintain an offset into the src buffer that we are copying.
     let mut cur_vaddr = src.as_u64();
 
-    for page_idx in 0..n_pages {
+    for _ in 0..n_pages {
         // Translate the start of this page (virtual address)
         let page_base_vaddr = VirtAddr::new((cur_vaddr / 4096) * 4096);
         match address_space.mapped_regions.get(&page_base_vaddr) {
@@ -399,7 +398,6 @@ pub fn copy_from_user(
 
     let mut result: Vec<u8> = Vec::with_capacity(len);
     let mut remaining = len;
-    let mut dst_offset = 0usize;
 
     for i in 0 .. n_pages {
         let kva = (kernel_buf + (i as u64) * 4096).as_ptr::<u8>();
@@ -421,7 +419,6 @@ pub fn copy_from_user(
 
         remaining -= to_copy;
         if remaining == 0 { break; }
-        dst_offset += to_copy;
     }
 
     let mut mapper = KERNEL_PAGE_TABLE.write();

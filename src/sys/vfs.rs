@@ -57,25 +57,18 @@ impl FileDescriptor {
 	}
     }
 
-    pub async fn read(&mut self, buf: u64, len: u64) -> Result<u64, syscall::CanonicalError> {
-	let read_buffer = match self {
+    pub async fn read(&mut self, len: u64) -> Result<bytes::Bytes, syscall::CanonicalError> {
+	match self {
 	    FileDescriptor::File { file_name, current_offset, file_system, local_name } => {
 		let read_buffer = file_system.clone().read(local_name.clone(), *current_offset, len).await?;
 		*current_offset += len;
-		read_buffer
+		Ok(read_buffer)
 	    },
 	    FileDescriptor::Pipe { buffer } => {
 		let to_read = cmp::min(len as usize, buffer.len());
-		buffer.split_to(to_read).freeze()
+		Ok(buffer.split_to(to_read).freeze())
 	    },
-	};
-
-	let data_to = unsafe {
-	    slice::from_raw_parts_mut(buf as *mut u8, read_buffer.len())
-	};
-	data_to.copy_from_slice(read_buffer.as_ref());
-
-	Ok(read_buffer.len() as u64)
+	}
     }
 
     pub fn write(&mut self, buf: u64, len: u64) -> Result<u64> {

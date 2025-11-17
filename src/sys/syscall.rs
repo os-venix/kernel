@@ -17,6 +17,7 @@ use num_enum::TryFromPrimitive;
 use alloc::ffi::CString;
 use core::ptr;
 use spin::RwLock;
+use core::slice;
 
 use crate::sys::ioctl;
 use crate::gdt;
@@ -126,14 +127,39 @@ async fn sys_read(fd: u64, buf: u64, count: u64) -> SyscallResult {
     // };
 
     let mut w = actual_fd.file_description.write();
-    match w.read(buf, count).await {
-	Ok(len) => SyscallResult {
-	    return_value: len,
-	    err_num: CanonicalError::EOK as u64,
-	},
-	Err(_) => SyscallResult {
+    let read_buffer = match w.read(count).await {
+	Ok(b) => b,
+	Err(_) => return SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
 	    err_num: CanonicalError::EIO as u64
+	},
+    };
+
+    let process = scheduler::get_current_process();
+    let mut task_type = process.task_type.write();
+    match *task_type {
+	process::TaskType::Kernel => {
+	    let data_to = unsafe {
+		slice::from_raw_parts_mut(buf as *mut u8, read_buffer.len())
+	    };
+	    data_to.copy_from_slice(read_buffer.as_ref());
+
+	    SyscallResult {
+		return_value: read_buffer.len() as u64,
+		err_num: CanonicalError::EOK as u64,
+	    }
+	},
+	process::TaskType::User(ref mut address_space) => {
+	    match memory::copy_to_user(address_space, VirtAddr::new(buf), read_buffer.to_vec().as_slice()) {
+		Ok(()) => SyscallResult {
+		    return_value: read_buffer.len() as u64,
+		    err_num: CanonicalError::EOK as u64,
+		},
+		Err(_) => SyscallResult {
+		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		    err_num: CanonicalError::EIO as u64,  // TODO: This is probably not EIO. Look up what it should be canonically
+		},
+	    }
 	},
     }
 }
@@ -163,8 +189,6 @@ pub async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
 	    },
 	},
     };
-
-    log::info!("{}", path);
 
     // TODO: check that the file exists
     // Bottom 3 bits are mode. We don't currently enforce mode, but in order to progress, let's strip it out.

@@ -31,7 +31,7 @@ pub trait Bus {
 }
 
 pub trait Device {
-    fn read(self: Arc<Self>, offset: u64, size: u64, access_restriction: memory::MemoryAccessRestriction) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>>;
+    fn read(self: Arc<Self>, offset: u64, size: u64) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>>;
     fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()>;
     fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()>;
 }
@@ -77,7 +77,7 @@ impl vfs::FileSystem for DevFS {
 		    .expect("Attempted to access device table before it is initialised").write();
 		let device = device_tbl.get(device_id as usize)
 		    .expect("Attempted to access device that does not exist");
-		device.clone().read(offset, len, memory::MemoryAccessRestriction::User)
+		device.clone().read(offset, len)
 	    }.await
 	})
     }
