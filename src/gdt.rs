@@ -6,6 +6,8 @@ use x86_64::instructions::segmentation::{CS, DS, ES, FS, GS, SS, Segment};
 use x86_64::registers::model_specific::Msr;
 use spin::Once;
 
+use core::arch::asm;
+
 use crate::memory;
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
@@ -34,7 +36,7 @@ pub struct ProcessorControlBlock {
     pub tss: TaskStateSegment,
 
     pub tmp_user_stack_ptr: usize,
-    pub user_cr3: u64,
+    pub kernel_cr3: u64,
 }
 
 pub fn init() {
@@ -77,6 +79,9 @@ pub fn init() {
     let tss_selector = pcb.gdt.append(Descriptor::tss_segment(&pcb.tss));
 
     pcb.gdt_selectors = Selectors { code_selector, data_selector, user_code_selector, user_data_selector, tss_selector };
+    unsafe {
+        asm!("mov {}, cr3", out(reg) pcb.kernel_cr3, options(nomem, nostack, preserves_flags));
+    }
     
     pcb.gdt.load();
     unsafe {

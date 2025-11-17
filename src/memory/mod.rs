@@ -16,6 +16,7 @@ use x86_64::registers::control::Cr3;
 use alloc::vec::Vec;
 use limine::memory_map::Entry;
 use alloc::slice;
+use alloc::string::String;
 
 mod frame_allocator;
 mod page_allocator;
@@ -301,6 +302,16 @@ pub enum CopyError {
     Partial(usize),      // copied an amount but failed afterwards (optional)
 }
 
+#[derive(Debug)]
+pub enum UserStringCopyError {
+    Fault,               // page not present / translation failed
+    Permission,          // page present but not writable by user
+    TempAllocFailed,     // couldn't allocate temporary kernel mapping
+    Partial(usize),      // copied an amount but failed afterwards (optional)
+    TooLong,             // attempted to copy a string >1MiB
+    InvalidUtf8,         // couldn't translate the string
+}
+
 pub fn copy_to_user(
     address_space: &user_address_space::AddressSpace, dest: VirtAddr, src: &[u8]) -> Result<(), CopyError> {
     if src.is_empty() {
@@ -312,7 +323,7 @@ pub fn copy_to_user(
     let last_page_index = (dest.as_u64() + total_len - 1) / 4096;
     let n_pages = (last_page_index - first_page_index + 1) as usize;
 
-    // 1) Walk all pages and validate presence + writability, collecting phys page bases.
+    // Walk all pages and validate presence + writability, collecting phys page bases.
     // We also need the per-page user offset and per-page copy length.
     let mut phys_pages: Vec<PhysAddr> = Vec::with_capacity(n_pages);
 
@@ -350,4 +361,113 @@ pub fn copy_to_user(
     }
 
     Ok(())
+}
+
+pub fn copy_from_user(
+    address_space: &user_address_space::AddressSpace, src: VirtAddr, len: usize) -> Result<Vec<u8>, CopyError> {
+    if len == 0 {
+	return Ok(Vec::new());
+    }
+
+    let first_page_index = src.as_u64() / 4096;
+    let last_page_index = (src.as_u64() + len as u64 - 1) / 4096;
+    let n_pages = (last_page_index - first_page_index + 1) as usize;
+
+    // Walk all pages and validate presence + writability, collecting phys page bases.
+    // We also need the per-page user offset and per-page copy length.
+    let mut phys_pages: Vec<PhysAddr> = Vec::with_capacity(n_pages);
+
+    // We'll maintain an offset into the src buffer that we are copying.
+    let mut cur_vaddr = src.as_u64();
+
+    for page_idx in 0..n_pages {
+        // Translate the start of this page (virtual address)
+        let page_base_vaddr = VirtAddr::new((cur_vaddr / 4096) * 4096);
+        match address_space.mapped_regions.get(&page_base_vaddr) {
+            Some(phys_page_base) => phys_pages.push(*phys_page_base),  // TODO: this should validate permissions. The page should be both user accessible, and writable
+            None => return Err(CopyError::Fault),  // Page is not in the shadow map. Ithasn't been mapped
+        }
+
+        // advance
+        cur_vaddr = page_base_vaddr.as_u64() + 4096; // next page start (even if dest started in middle)
+    }
+
+    let kernel_buf = match kernel_allocate(n_pages as u64 * 4096, MemoryAllocationType::USER_BUFFER(phys_pages)) {
+	Ok((buf, _)) => buf,
+	Err(_) => return Err(CopyError::TempAllocFailed),
+    };
+
+    let mut result: Vec<u8> = Vec::with_capacity(len);
+    let mut remaining = len;
+    let mut dst_offset = 0usize;
+
+    for i in 0 .. n_pages {
+        let kva = (kernel_buf + (i as u64) * 4096).as_ptr::<u8>();
+        // For first page, start at user_buf % PAGE_SIZE; otherwise 0.
+        let page_offset = if i == 0 {
+            (src.as_u64() % 4096) as usize
+        } else {
+            0usize
+        };
+
+        let available_in_page = (4096 as usize) - page_offset;
+        let to_copy = if remaining <= available_in_page { remaining } else { available_in_page };
+
+        // Build a slice from mapped kernel VA and append
+        unsafe {
+            let src_slice = core::slice::from_raw_parts(kva.add(page_offset), to_copy);
+            result.extend_from_slice(src_slice);
+        }
+
+        remaining -= to_copy;
+        if remaining == 0 { break; }
+        dst_offset += to_copy;
+    }
+
+    let mut mapper = KERNEL_PAGE_TABLE.write();
+    for i in 0 .. n_pages {
+	let p: Page<Size4KiB> = Page::from_start_address(kernel_buf + i as u64 * 4096).expect("Malformed start address");
+	let (_, flush) = mapper.as_mut().unwrap().unmap(p).expect("Attempting to unmap page failed");
+	flush.flush();
+    }
+
+    Ok(result)
+}
+
+pub fn copy_string_from_user(
+    address_space: &user_address_space::AddressSpace,
+    user_buf: VirtAddr,
+) -> Result<String, UserStringCopyError> {
+    const PAGE_SIZE: usize = 4096;
+    const MAX_BYTES: usize = 1024 * 1024;  // 1 MB cap to avoid DoS
+
+    let mut cursor = user_buf;
+    let mut collected: Vec<u8> = Vec::new();
+
+    loop {
+        // Copy one page
+        let bytes = copy_from_user(address_space, cursor, PAGE_SIZE)
+            .map_err(|_| UserStringCopyError::Fault)?;
+
+        // Look for NUL terminator
+        if let Some(pos) = bytes.iter().position(|&b| b == 0) {
+            // push everything before the NUL
+            collected.extend_from_slice(&bytes[..pos]);
+
+            // UTF-8 validation
+            return String::from_utf8(collected)
+                .map_err(|_| UserStringCopyError::InvalidUtf8);
+        }
+
+        // No NUL found; append entire page
+        collected.extend_from_slice(&bytes);
+
+        // DoS / runaway prevention
+        if collected.len() > MAX_BYTES {
+            return Err(UserStringCopyError::TooLong);
+        }
+
+        // Move to next page
+        cursor = VirtAddr::new(cursor.as_u64() + PAGE_SIZE as u64);
+    }
 }

@@ -139,19 +139,34 @@ async fn sys_read(fd: u64, buf: u64, count: u64) -> SyscallResult {
 }
 
 pub async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
-    // TODO - this does not check that the file actually exists
-    let path = unsafe {
-	match CStr::from_ptr(path_ptr as *const i8).to_str() {
-	    Ok(path) => String::from(path),
+    let process = scheduler::get_current_process();
+    let mut task_type = process.task_type.write();
+    let path = match *task_type {
+	process::TaskType::Kernel => unsafe {
+	    match CStr::from_ptr(path_ptr as *const i8).to_str() {
+		Ok(path) => String::from(path),
+		Err(_) => {
+		    return SyscallResult {
+			return_value: 0xFFFF_FFFF_FFFF_FFFF,
+			err_num: CanonicalError::EINVAL as u64
+		    };
+		},
+	    }
+	},
+	process::TaskType::User(ref mut address_space) => match memory::copy_string_from_user(address_space, VirtAddr::new(path_ptr)) {
+	    Ok(path) => path,
 	    Err(_) => {
 		return SyscallResult {
 		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
 		    err_num: CanonicalError::EINVAL as u64
 		};
 	    },
-	}
+	},
     };
 
+    log::info!("{}", path);
+
+    // TODO: check that the file exists
     // Bottom 3 bits are mode. We don't currently enforce mode, but in order to progress, let's strip it out.
     // Similarly, there isn't yet a concept of a controlling TTY, so let's not worry about that either for now
     // TODO - support read/write/exec/etc modes
@@ -744,6 +759,8 @@ unsafe extern "C" fn syscall_inner(stack_frame: process::GeneralPurposeRegisters
     let process = scheduler::get_current_process();
     process.clone().set_registers(rsp, rip, stack_frame.r11, &stack_frame);
 
+    log::info!("0x{:x}", rax);
+
     let fut = do_syscall(
 	rax,
 	stack_frame.rdi,
@@ -772,6 +789,10 @@ unsafe extern "C" fn syscall_enter () -> ! {
 	"mov rsp, gs:[{ksp}]",
 
 	"push rax",
+
+	"mov rax, gs:[{kcr3}]",
+	"mov cr3, rax",
+
 	"push rbx",
 	"push rcx",
 	"push rdx",
@@ -793,6 +814,7 @@ unsafe extern "C" fn syscall_enter () -> ! {
 	options(noreturn),
 	sp = const(offset_of!(gdt::ProcessorControlBlock, tmp_user_stack_ptr)),
 	ksp = const(offset_of!(gdt::ProcessorControlBlock, tss) + offset_of!(TaskStateSegment, privilege_stack_table)),
+	kcr3 = const(offset_of!(gdt::ProcessorControlBlock, kernel_cr3)),
     );
 }
 
