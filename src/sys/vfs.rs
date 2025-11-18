@@ -7,6 +7,7 @@ use alloc::slice;
 use bytes;
 use core::cmp;
 use futures_util::future::BoxFuture;
+use alloc::vec::Vec;
 
 use crate::sys::syscall;
 use crate::sys::ioctl;
@@ -71,17 +72,17 @@ impl FileDescriptor {
 	}
     }
 
-    pub fn write(&mut self, buf: u64, len: u64) -> Result<u64> {
+    pub fn write(&mut self, buf: Vec<u8>, len: u64) -> Result<u64> {
 	match self {
 	    FileDescriptor::File { file_name, current_offset, file_system, local_name } => {
-		match file_system.write(local_name.clone(), buf as *const u8, len as usize) {
+		match file_system.write(local_name.clone(), buf.as_ptr(), len as usize) {
 		    Ok(l) => Ok(l),
 		    Err(_) => Err(anyhow!("Unable to write {}", file_name)),
 		}
 	    },
 	    FileDescriptor::Pipe { buffer } => {
 		let user_buf = unsafe {
-		    slice::from_raw_parts(buf as *const u8, len as usize)
+		    slice::from_raw_parts(buf.as_ptr(), len as usize)
 		};
 		buffer.extend_from_slice(user_buf);
 		Ok(len)

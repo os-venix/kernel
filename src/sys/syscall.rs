@@ -18,6 +18,8 @@ use alloc::ffi::CString;
 use core::ptr;
 use spin::RwLock;
 use core::slice;
+use alloc::vec;
+use core::mem;
 
 use crate::sys::ioctl;
 use crate::gdt;
@@ -89,6 +91,15 @@ async fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
     }
 
     let process = scheduler::get_current_process();
+    let kbuf = {
+	let mut task_type = process.task_type.write();
+	match *task_type {
+	    process::TaskType::Kernel => unimplemented!(),
+	    process::TaskType::User(ref mut address_space) => memory::copy_from_user(
+		address_space, VirtAddr::new(buf), count as usize).unwrap(),
+	}
+    };
+
     let actual_fd = process.get_file_descriptor(fd);
     // let actual_fd = match process.get_file_descriptor(fd) {
     // 	Ok(fd) => fd.file_description,
@@ -101,7 +112,7 @@ async fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
     // };
 
     let mut w = actual_fd.file_description.write();
-    match w.write(buf, count) {
+    match w.write(kbuf, count) {
 	Ok(len) => SyscallResult {
 	    return_value: len,
 	    err_num: CanonicalError::EOK as u64,
@@ -267,16 +278,29 @@ async fn sys_ioctl(fd_num: u64, ioctl: u64, buf: u64) -> SyscallResult {
 }
 
 async fn sys_stat(filename: u64, buf: u64) -> SyscallResult {
-    let path = unsafe {
-	match CStr::from_ptr(filename as *const i8).to_str() {
-	    Ok(path) => String::from(path),
+    let process = scheduler::get_current_process();
+    let mut task_type = process.task_type.write();
+    let path = match *task_type {
+	process::TaskType::Kernel => unsafe {
+	    match CStr::from_ptr(filename as *const i8).to_str() {
+		Ok(path) => String::from(path),
+		Err(_) => {
+		    return SyscallResult {
+			return_value: 0xFFFF_FFFF_FFFF_FFFF,
+			err_num: CanonicalError::EINVAL as u64
+		    };
+		},
+	    }
+	},
+	process::TaskType::User(ref mut address_space) => match memory::copy_string_from_user(address_space, VirtAddr::new(filename)) {
+	    Ok(path) => path,
 	    Err(_) => {
 		return SyscallResult {
 		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
 		    err_num: CanonicalError::EINVAL as u64
 		};
 	    },
-	}
+	},
     };
 
     match vfs::stat(path).await {
@@ -525,11 +549,18 @@ async fn sys_pipe(fds: u64, flags: u64) -> SyscallResult {
     let fd1_number = process.clone().emplace_fd(fd1);
     let fd2_number = process.emplace_fd(fd2);
 
-    let ptr = fds as *mut c_int;
-
-    unsafe {
-	*ptr.add(0) = fd1_number as c_int;
-	*ptr.add(1) = fd2_number as c_int;
+    let v = vec![fd1_number, fd2_number];
+    
+    let process = scheduler::get_current_process();
+    let mut task_type = process.task_type.write();
+    match *task_type {
+	process::TaskType::Kernel => unimplemented!(),
+	process::TaskType::User(ref mut address_space) => unsafe {
+	    memory::copy_to_user(
+		address_space, VirtAddr::new(fds), slice::from_raw_parts(
+		    v.as_ptr() as *const u8,
+		    v.len() * mem::size_of::<u64>())).unwrap();
+	},
     }
 
     SyscallResult {
@@ -542,21 +573,13 @@ async fn sys_getcwd(buf: u64, count: u64) -> SyscallResult {
     let process = scheduler::get_current_process();
     let cwd = process.get_cwd();
 
-    let c_string = CString::new(cwd).expect("String contained interior null byte");
-    let bytes = c_string.as_bytes_with_nul();
-
-    if bytes.len() > count as usize {
-	return SyscallResult {
-	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::ERANGE as u64
-	};
-    }
-
-    let dest = buf as *mut u8;
-
-    unsafe {
-        ptr::copy_nonoverlapping(bytes.as_ptr(), dest, bytes.len());
-    }
+    let process = scheduler::get_current_process();
+    let mut task_type = process.task_type.write();
+    match *task_type {
+	process::TaskType::Kernel => unimplemented!(),
+	process::TaskType::User(ref mut address_space) => memory::copy_string_to_user(
+	    address_space, VirtAddr::new(buf), cwd).unwrap(),
+    };
 
     SyscallResult {
 	return_value: 0,
