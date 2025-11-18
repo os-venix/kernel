@@ -91,14 +91,7 @@ async fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
     }
 
     let process = scheduler::get_current_process();
-    let kbuf = {
-	let mut task_type = process.task_type.write();
-	match *task_type {
-	    process::TaskType::Kernel => unimplemented!(),
-	    process::TaskType::User(ref mut address_space) => memory::copy_from_user(
-		address_space, VirtAddr::new(buf), count as usize).unwrap(),
-	}
-    };
+    let kbuf = memory::copy_from_user(VirtAddr::new(buf), count as usize).unwrap();
 
     let actual_fd = process.get_file_descriptor(fd);
     // let actual_fd = match process.get_file_descriptor(fd) {
@@ -146,60 +139,30 @@ async fn sys_read(fd: u64, buf: u64, count: u64) -> SyscallResult {
 	},
     };
 
-    let process = scheduler::get_current_process();
-    let mut task_type = process.task_type.write();
-    match *task_type {
-	process::TaskType::Kernel => {
-	    let data_to = unsafe {
-		slice::from_raw_parts_mut(buf as *mut u8, read_buffer.len())
-	    };
-	    data_to.copy_from_slice(read_buffer.as_ref());
-
-	    SyscallResult {
-		return_value: read_buffer.len() as u64,
-		err_num: CanonicalError::EOK as u64,
-	    }
+    match memory::copy_to_user(VirtAddr::new(buf), read_buffer.to_vec().as_slice()) {
+	Ok(()) => SyscallResult {
+	    return_value: read_buffer.len() as u64,
+	    err_num: CanonicalError::EOK as u64,
 	},
-	process::TaskType::User(ref mut address_space) => {
-	    match memory::copy_to_user(address_space, VirtAddr::new(buf), read_buffer.to_vec().as_slice()) {
-		Ok(()) => SyscallResult {
-		    return_value: read_buffer.len() as u64,
-		    err_num: CanonicalError::EOK as u64,
-		},
-		Err(_) => SyscallResult {
-		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-		    err_num: CanonicalError::EIO as u64,  // TODO: This is probably not EIO. Look up what it should be canonically
-		},
-	    }
+	Err(_) => SyscallResult {
+	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    err_num: CanonicalError::EIO as u64,  // TODO: This is probably not EIO. Look up what it should be canonically
 	},
     }
 }
 
 pub async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
-    let process = scheduler::get_current_process();
-    let mut task_type = process.task_type.write();
-    let path = match *task_type {
-	process::TaskType::Kernel => unsafe {
-	    match CStr::from_ptr(path_ptr as *const i8).to_str() {
-		Ok(path) => String::from(path),
-		Err(_) => {
-		    return SyscallResult {
-			return_value: 0xFFFF_FFFF_FFFF_FFFF,
-			err_num: CanonicalError::EINVAL as u64
-		    };
-		},
-	    }
-	},
-	process::TaskType::User(ref mut address_space) => match memory::copy_string_from_user(address_space, VirtAddr::new(path_ptr)) {
-	    Ok(path) => path,
-	    Err(_) => {
-		return SyscallResult {
-		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-		    err_num: CanonicalError::EINVAL as u64
-		};
-	    },
+    let path = match memory::copy_string_from_user(VirtAddr::new(path_ptr)) {
+	Ok(path) => path,
+	Err(_) => {
+	    return SyscallResult {
+		return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		err_num: CanonicalError::EINVAL as u64
+	    };
 	},
     };
+
+    let process = scheduler::get_current_process();
 
     // TODO: check that the file exists
     // Bottom 3 bits are mode. We don't currently enforce mode, but in order to progress, let's strip it out.
@@ -219,7 +182,6 @@ pub async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
 	};
     }
 
-    let process = scheduler::get_current_process();
     let fd = process::FileDescriptor {
 	flags: flags,
 	file_description: Arc::new(RwLock::new(vfs::FileDescriptor::new(path))),
@@ -278,28 +240,13 @@ async fn sys_ioctl(fd_num: u64, ioctl: u64, buf: u64) -> SyscallResult {
 }
 
 async fn sys_stat(filename: u64, buf: u64) -> SyscallResult {
-    let process = scheduler::get_current_process();
-    let mut task_type = process.task_type.write();
-    let path = match *task_type {
-	process::TaskType::Kernel => unsafe {
-	    match CStr::from_ptr(filename as *const i8).to_str() {
-		Ok(path) => String::from(path),
-		Err(_) => {
-		    return SyscallResult {
-			return_value: 0xFFFF_FFFF_FFFF_FFFF,
-			err_num: CanonicalError::EINVAL as u64
-		    };
-		},
-	    }
-	},
-	process::TaskType::User(ref mut address_space) => match memory::copy_string_from_user(address_space, VirtAddr::new(filename)) {
-	    Ok(path) => path,
-	    Err(_) => {
-		return SyscallResult {
-		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-		    err_num: CanonicalError::EINVAL as u64
-		};
-	    },
+    let path = match memory::copy_string_from_user(VirtAddr::new(filename)) {
+	Ok(path) => path,
+	Err(_) => {
+	    return SyscallResult {
+		return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		err_num: CanonicalError::EINVAL as u64
+	    };
 	},
     };
 
@@ -550,17 +497,11 @@ async fn sys_pipe(fds: u64, flags: u64) -> SyscallResult {
     let fd2_number = process.emplace_fd(fd2);
 
     let v = vec![fd1_number, fd2_number];
-    
-    let process = scheduler::get_current_process();
-    let mut task_type = process.task_type.write();
-    match *task_type {
-	process::TaskType::Kernel => unimplemented!(),
-	process::TaskType::User(ref mut address_space) => unsafe {
-	    memory::copy_to_user(
-		address_space, VirtAddr::new(fds), slice::from_raw_parts(
-		    v.as_ptr() as *const u8,
-		    v.len() * mem::size_of::<u64>())).unwrap();
-	},
+
+    unsafe {
+	memory::copy_to_user(VirtAddr::new(fds), slice::from_raw_parts(
+	    v.as_ptr() as *const u8,
+	    v.len() * mem::size_of::<u64>())).unwrap();
     }
 
     SyscallResult {
@@ -573,13 +514,7 @@ async fn sys_getcwd(buf: u64, count: u64) -> SyscallResult {
     let process = scheduler::get_current_process();
     let cwd = process.get_cwd();
 
-    let process = scheduler::get_current_process();
-    let mut task_type = process.task_type.write();
-    match *task_type {
-	process::TaskType::Kernel => unimplemented!(),
-	process::TaskType::User(ref mut address_space) => memory::copy_string_to_user(
-	    address_space, VirtAddr::new(buf), cwd).unwrap(),
-    };
+    memory::copy_string_to_user(VirtAddr::new(buf), cwd).unwrap();
 
     SyscallResult {
 	return_value: 0,
@@ -596,34 +531,18 @@ async fn sys_fork(start: u64) -> SyscallResult {
 }
 
 pub async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> SyscallResult {
-    let path = unsafe {
-	match CStr::from_ptr(path_ptr as *const i8).to_str() {
-	    Ok(path) => String::from(path),
-	    Err(_) => {
-		return SyscallResult {
-		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-		    err_num: CanonicalError::EINVAL as u64
-		};
-	    },
-	}
-    };
+    let path = memory::copy_string_from_user(VirtAddr::new(path_ptr)).unwrap();
     let mut args = unsafe {
 	let mut args: Vec<String> = Vec::new();
-	let mut argc_ptr = args_ptr as *const u64;
-	while *argc_ptr != 0 {
-	    let arg = CStr::from_ptr(*argc_ptr as u64 as *const i8);
-
-	    match arg.to_str() {
-		Ok(a) => args.push(String::from(a)),
-		Err(_) => {
-		    return SyscallResult {
-			return_value: 0xFFFF_FFFF_FFFF_FFFF,
-			err_num: CanonicalError::EINVAL as u64
-		    };
-		},
+	let mut argc_ptr = VirtAddr::new(args_ptr);
+	loop {
+	    let arg = memory::copy_string_from_user(argc_ptr).unwrap();
+	    if arg.len() == 0 {
+		break;
 	    }
 
-	    argc_ptr = (args_ptr + 8) as *const u64;
+	    args.push(arg);
+	    argc_ptr += 8;
 	}
 
 	args
@@ -633,21 +552,15 @@ pub async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> Sysca
     let envvars = unsafe {
 	let mut envvars: Vec<String> = Vec::new();
 
-	let mut envvar_ptr = envvars_ptr as *const u64;
-	while *envvar_ptr != 0 {
-	    let envvar = CStr::from_ptr(*envvar_ptr as u64 as *const i8);
-
-	    match envvar.to_str() {
-		Ok(a) => envvars.push(String::from(a)),
-		Err(_) => {
-		    return SyscallResult {
-			return_value: 0xFFFF_FFFF_FFFF_FFFF,
-			err_num: CanonicalError::EINVAL as u64
-		    };
-		},
+	let mut envvar_ptr = VirtAddr::new(envvars_ptr);
+	loop {
+	    let envvar = memory::copy_string_from_user(envvar_ptr).unwrap();
+	    if envvar.len() == 0 {
+		break;
 	    }
 
-	    envvar_ptr = (args_ptr + 8) as *const u64;
+	    envvars.push(envvar);
+	    envvar_ptr += 8;
 	}
 
 	envvars
@@ -714,44 +627,30 @@ async fn sys_sigaction(signum: u64, new_sigaction: u64, old_sigaction: u64) -> S
 	if let Some(signal) = process.get_current_signal_handler(signum) {
 	    let sigaction = signal::create_sigaction(signal);
 
-	    {
-		let mut task_type = process.task_type.write();
-		match *task_type {
-		    process::TaskType::Kernel => unimplemented!(),
-		    process::TaskType::User(ref mut address_space) =>
-			match memory::copy_value_to_user::<signal::SigAction>(
-			    address_space, VirtAddr::new(new_sigaction), &sigaction) {
-			    Ok(s) => (),
-			    Err(_) => {
-				return SyscallResult {
-				    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-				    err_num: CanonicalError::EINVAL as u64
-				};
-			    },
-			},
-		}
+	    match memory::copy_value_to_user::<signal::SigAction>(
+		VirtAddr::new(new_sigaction), &sigaction) {
+		Ok(s) => (),
+		Err(_) => {
+		    return SyscallResult {
+			return_value: 0xFFFF_FFFF_FFFF_FFFF,
+			err_num: CanonicalError::EINVAL as u64
+		    };
+		},
 	    }
 	}
     }
 
     if new_sigaction != 0 {
-	let sa = {
-	    let mut task_type = process.task_type.write();
-	    match *task_type {
-		process::TaskType::Kernel => unimplemented!(),
-		process::TaskType::User(ref mut address_space) =>
-		    match memory::copy_value_from_user::<signal::SigAction>(
-			address_space, VirtAddr::new(new_sigaction)) {
-			Ok(s) => s,
-			Err(_) => {
-			    return SyscallResult {
-				return_value: 0xFFFF_FFFF_FFFF_FFFF,
-				err_num: CanonicalError::EINVAL as u64
-			    };
-			},
-		    },
-	    }
+	let sa = match memory::copy_value_from_user::<signal::SigAction>(VirtAddr::new(new_sigaction)) {
+	    Ok(s) => s,
+	    Err(_) => {
+		return SyscallResult {
+		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		    err_num: CanonicalError::EINVAL as u64
+		};
+	    },
 	};
+
 	let signal_handler = signal::parse_sigaction(sa);
 	process.install_signal_handler(signum, signal_handler);
     }
@@ -765,35 +664,23 @@ async fn sys_sigaction(signum: u64, new_sigaction: u64, old_sigaction: u64) -> S
 async fn sys_sigprocmask(how: u64, set: u64, oldset: u64) -> SyscallResult {
     let process = scheduler::get_current_process();
 
-    let newset = {
-	let mut task_type = process.task_type.write();
-	match *task_type {
-	    process::TaskType::Kernel => unimplemented!(),
-	    process::TaskType::User(ref mut address_space) =>
-		match memory::copy_value_from_user::<u64>(address_space, VirtAddr::new(set)) {
-		    Ok(s) => s,
-		    Err(_) => {
-			return SyscallResult {
-			    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-			    err_num: CanonicalError::EINVAL as u64
-			};
-		    },
-		},
-	}
+    let newset = match memory::copy_value_from_user::<u64>(VirtAddr::new(set)) {
+	Ok(s) => s,
+	Err(_) => {
+	    return SyscallResult {
+		return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		err_num: CanonicalError::EINVAL as u64
+	    };
+	},
     };
 
     if oldset != 0 {
 	let old_val = process.get_current_sigprocmask();
-
-	let mut task_type = process.task_type.write();
-	match *task_type {
-	    process::TaskType::Kernel => unimplemented!(),
-	    process::TaskType::User(ref mut address_space) => if let Err(_) = memory::copy_value_to_user::<u64>(address_space, VirtAddr::new(oldset), &old_val) {
-		return SyscallResult {
-		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-		    err_num: CanonicalError::EINVAL as u64
-		};
-	    }
+	if let Err(_) = memory::copy_value_to_user::<u64>(VirtAddr::new(oldset), &old_val) {
+	    return SyscallResult {
+		return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		err_num: CanonicalError::EINVAL as u64
+	    };
 	}
     }
 

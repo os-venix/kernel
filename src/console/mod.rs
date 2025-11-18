@@ -135,20 +135,13 @@ impl driver::Device for ConsoleDevice {
     }
 
     fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()> {
-	let process = scheduler::get_current_process();
-	let mut task_type = process.task_type.write();
-	let mut address_space: &mut memory::user_address_space::AddressSpace = match *task_type {
-	    process::TaskType::Kernel => unimplemented!(),
-	    process::TaskType::User(ref mut address_space) => address_space,
-	};
-
 	match ioctl {
 	    ioctl::IoCtl::TCGETS => {
 		// For now, we'll stub this out
 		Ok(0)
 	    },
 	    ioctl::IoCtl::TCSETS => {
-		let termios = memory::copy_value_from_user::<Termios>(address_space, VirtAddr::new(buf)).unwrap();
+		let termios = memory::copy_value_from_user::<Termios>(VirtAddr::new(buf)).unwrap();
 
 		unsafe {
 		    // Input flags
@@ -173,7 +166,7 @@ impl driver::Device for ConsoleDevice {
 		    printk.get_rows(),
 		    printk.get_cols(),
 		    0, 0]);
-		memory::copy_to_user(address_space, VirtAddr::new(buf), read_buf.as_ref()).unwrap();
+		memory::copy_to_user(VirtAddr::new(buf), read_buf.as_ref()).unwrap();
 		Ok(0)
 	    },
 	    ioctl::IoCtl::TIOCGPGRP => {
@@ -182,7 +175,7 @@ impl driver::Device for ConsoleDevice {
 	    },
 	    ioctl::IoCtl::TIOCSPGRP => {
 		let mut pgrp = self.pgrp.write();
-		*pgrp = memory::copy_value_from_user::<c_int>(address_space, VirtAddr::new(buf)).unwrap() as u64;
+		*pgrp = memory::copy_value_from_user::<c_int>(VirtAddr::new(buf)).unwrap() as u64;
 
 		Ok(0)
 	    },

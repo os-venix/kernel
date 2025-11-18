@@ -92,7 +92,7 @@ impl Elf {
 	{
 	    let size_to_zero = highest_virt_addr.expect("No loadable sections were found") - lowest_virt_addr.expect("No loadable sections were found");
 	    let empty_buf = vec![0; size_to_zero as usize];
-	    memory::copy_to_user(address_space, virt_start_addr, empty_buf.as_slice());
+	    memory::copy_to_user(virt_start_addr, empty_buf.as_slice());
 	}
 
 	for program_header in elf.program_iter() {
@@ -124,7 +124,7 @@ impl Elf {
 	    };
 
 	    if program_header.file_size() != 0 {
-		memory::copy_to_user(address_space, virt_header_start_addr, data);
+		memory::copy_to_user(virt_header_start_addr, data);
 	    }
 	}
 

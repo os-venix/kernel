@@ -20,6 +20,8 @@ use alloc::string::String;
 mod frame_allocator;
 mod page_allocator;
 pub mod user_address_space;
+use crate::scheduler;
+use crate::process;
 
 static KERNEL_PAGE_TABLE: RwLock<Option<OffsetPageTable>> = RwLock::new(None);
 static KERNEL_PAGE_FRAME: RwLock<Option<PhysFrame>> = RwLock::new(None);
@@ -311,7 +313,7 @@ pub enum UserStringCopyError {
     InvalidUtf8,         // couldn't translate the string
 }
 
-pub fn copy_to_user(
+fn copy_to_user_internal(
     address_space: &user_address_space::AddressSpace, dest: VirtAddr, src: &[u8]) -> Result<(), CopyError> {
     if src.is_empty() {
 	return Ok(());
@@ -362,7 +364,7 @@ pub fn copy_to_user(
     Ok(())
 }
 
-pub fn copy_from_user(
+fn copy_from_user_internal(
     address_space: &user_address_space::AddressSpace, src: VirtAddr, len: usize) -> Result<Vec<u8>, CopyError> {
     if len == 0 {
 	return Ok(Vec::new());
@@ -431,10 +433,38 @@ pub fn copy_from_user(
     Ok(result)
 }
 
-pub fn copy_string_from_user(
-    address_space: &user_address_space::AddressSpace,
-    user_buf: VirtAddr,
-) -> Result<String, UserStringCopyError> {
+pub fn copy_to_user(dest: VirtAddr, src: &[u8]) -> Result<(), CopyError> {
+    let process = scheduler::get_current_process();
+    let mut task_type = process.task_type.write();
+    match *task_type {
+	process::TaskType::Kernel => {
+	    let data_to = unsafe {
+		slice::from_raw_parts_mut(dest.as_mut_ptr::<u8>(), src.len())
+	    };
+	    data_to.copy_from_slice(src);
+
+	    Ok(())
+	},
+	process::TaskType::User(ref mut address_space) => copy_to_user_internal(address_space, dest, src),
+    }
+}
+
+pub fn copy_from_user(src: VirtAddr, len: usize) -> Result<Vec<u8>, CopyError> {
+    let process = scheduler::get_current_process();
+    let mut task_type = process.task_type.write();
+    match *task_type {
+	process::TaskType::Kernel => {
+	    let data_to = unsafe {
+		slice::from_raw_parts(src.as_ptr::<u8>(), len)
+	    };
+
+	    Ok(data_to.to_vec())
+	},
+	process::TaskType::User(ref mut address_space) => copy_from_user_internal(address_space, src, len),
+    }
+}
+
+pub fn copy_string_from_user(user_buf: VirtAddr) -> Result<String, UserStringCopyError> {
     const PAGE_SIZE: usize = 4096;
     const MAX_BYTES: usize = 1024 * 1024;  // 1 MB cap to avoid DoS
 
@@ -443,7 +473,7 @@ pub fn copy_string_from_user(
 
     loop {
         // Copy one page
-        let bytes = copy_from_user(address_space, cursor, PAGE_SIZE)
+        let bytes = copy_from_user(cursor, PAGE_SIZE)
             .map_err(|_| UserStringCopyError::Fault)?;
 
         // Look for NUL terminator
@@ -469,14 +499,22 @@ pub fn copy_string_from_user(
     }
 }
 
-pub fn copy_value_from_user<T: Copy>(
-    address_space: &user_address_space::AddressSpace,
-    user_ptr: VirtAddr,
-) -> Result<T, CopyError> {
+pub fn copy_string_to_user(dst: VirtAddr, src: String) -> Result<(), CopyError> {
+    // Ensure C-string termination. Avoid reallocating if the user already provided a null.
+    let mut bytes = src.into_bytes();
+    if !bytes.ends_with(&[0]) {
+        bytes.push(0);
+    }
+
+    // Delegate to the generic byte-copying function.
+    copy_to_user(dst, &bytes)
+}
+
+pub fn copy_value_from_user<T: Copy>(user_ptr: VirtAddr) -> Result<T, CopyError> {
     use core::{mem, ptr};
     let size = mem::size_of::<T>();
 
-    let bytes = copy_from_user(address_space, user_ptr, size)?;
+    let bytes = copy_from_user(user_ptr, size)?;
     let mut tmp = mem::MaybeUninit::<T>::uninit();
 
     unsafe {
@@ -490,11 +528,7 @@ pub fn copy_value_from_user<T: Copy>(
     }
 }
 
-pub fn copy_value_to_user<T: Copy>(
-    address_space: &user_address_space::AddressSpace,
-    user_ptr: VirtAddr,
-    value: &T,
-) -> Result<(), CopyError> {
+pub fn copy_value_to_user<T: Copy>(user_ptr: VirtAddr, value: &T) -> Result<(), CopyError> {
     use core::{mem, slice};
     let size = mem::size_of::<T>();
 
@@ -504,5 +538,5 @@ pub fn copy_value_to_user<T: Copy>(
             size,
         )
     };
-    copy_to_user(address_space, user_ptr, bytes)
+    copy_to_user(user_ptr, bytes)
 }

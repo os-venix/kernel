@@ -276,24 +276,28 @@ impl Process {
     pub fn init_stack_and_start(self: Arc<Self>) {
 	let mut context = self.context.write();
 	let mut state = self.state.write();
-	let mut task_type = self.task_type.write();
 	let auxvs = self.auxvs.read();
 	let envvars = self.envvars.read();
 	let args = self.args.read();
 
-	let mut address_space: &mut memory::user_address_space::AddressSpace = match *task_type {
-	    TaskType::Kernel => panic!("Attempted to start a user process on a kernel task"),
-	    // TODO: will this break any file I/O, mmap, etc?
-	    TaskType::User(ref mut address_space) => address_space,
-	};
+	let rsp = {
+	    let mut task_type = self.task_type.write();
+	    let mut address_space: &mut memory::user_address_space::AddressSpace = match *task_type {
+		TaskType::Kernel => panic!("Attempted to start a user process on a kernel task"),
+		// TODO: will this break any file I/O, mmap, etc?
+		TaskType::User(ref mut address_space) => address_space,
+	    };
 
-	let (rsp, _) = match memory::user_allocate(
-	    8 * 1024 * 1024,  // 8MiB
-	    memory::MemoryAllocationType::RAM,
-	    memory::MemoryAccessRestriction::User,
-	    address_space) {
-	    Ok(i) => i,
-	    Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
+	    let (rsp, _) = match memory::user_allocate(
+		8 * 1024 * 1024,  // 8MiB
+		memory::MemoryAllocationType::RAM,
+		memory::MemoryAccessRestriction::User,
+		address_space) {
+		Ok(i) => i,
+		Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
+	    };
+
+	    rsp
 	};
 	context.rsp = rsp.as_u64() + 8 * 1024 * 1024;  // Start at the end of the stack and grow down
 
@@ -317,7 +321,7 @@ impl Process {
 	    let envvar_len = envvar.len() + 1;
 	    let envvar_cstring = CString::new(envvar.as_str()).unwrap();
 	    memory::copy_to_user(
-		address_space, stack_ptr + (current_offs - envvar_len) as u64, envvar_cstring.as_bytes_with_nul());
+		stack_ptr + (current_offs - envvar_len) as u64, envvar_cstring.as_bytes_with_nul());
 	    current_offs -= envvar_len;
 
 	    envvar_p.push(context.rsp + current_offs as u64);
@@ -328,7 +332,7 @@ impl Process {
 	    let arg_len = arg.len() + 1;
 	    let arg_cstring = CString::new(arg.as_str()).unwrap();
 	    memory::copy_to_user(
-		address_space, stack_ptr + (current_offs - arg_len) as u64, arg_cstring.as_bytes_with_nul());
+		stack_ptr + (current_offs - arg_len) as u64, arg_cstring.as_bytes_with_nul());
 
 	    current_offs -= arg_len;
 	    args_p.push(context.rsp + current_offs as u64);
@@ -366,7 +370,7 @@ impl Process {
 
 	// padding
 	buf.resize(buf.len() + alignment as usize, 0);
-	memory::copy_to_user(address_space, VirtAddr::new(context.rsp), buf.as_slice());
+	memory::copy_to_user(VirtAddr::new(context.rsp), buf.as_slice());
 
 	*state = TaskState::Running;
     }
