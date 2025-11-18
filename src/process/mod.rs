@@ -425,17 +425,6 @@ impl Process {
 	let get_next_fd = || {
 	    use core::u64;
 
-	    // Fast path: try next-after-max
-	    if let Some((&max_key, _)) = file_descriptors.iter().next_back() {
-		if max_key < u64::MAX {
-		    let candidate = max_key + 1;
-		    if !file_descriptors.contains_key(&candidate) {
-			return candidate;
-		    }
-		}
-	    }
-
-	    // Slow path: scan from 0 up to u64::MAX
 	    for i in 0..=u64::MAX {
 		if !file_descriptors.contains_key(&i) {
 		    return i;

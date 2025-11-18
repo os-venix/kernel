@@ -199,7 +199,7 @@ fn init_setup() -> ! {
 
     // Second, actually run init
     let path_cstring = CString::new("/usr/bin/zsh").unwrap();
-    let args_strs: Vec<&str> = vec![];
+    let args_strs: Vec<&str> = vec!["-xv"];
     let env_strs: Vec<&str> = vec!["PATH=/bin", "USER=root", "LD_SHOW_AUXV=1"];
 
     let args_cstrings: Vec<CString> = args_strs.iter()

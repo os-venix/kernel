@@ -496,12 +496,12 @@ async fn sys_pipe(fds: u64, flags: u64) -> SyscallResult {
     let fd1_number = process.clone().emplace_fd(fd1);
     let fd2_number = process.emplace_fd(fd2);
 
-    let v = vec![fd1_number, fd2_number];
+    let v = vec![fd1_number as u32, fd2_number as u32];
 
     unsafe {
 	memory::copy_to_user(VirtAddr::new(fds), slice::from_raw_parts(
 	    v.as_ptr() as *const u8,
-	    v.len() * mem::size_of::<u64>())).unwrap();
+	    v.len() * mem::size_of::<u32>())).unwrap();
     }
 
     SyscallResult {
@@ -739,8 +739,6 @@ unsafe extern "C" fn syscall_inner(stack_frame: process::GeneralPurposeRegisters
 
     let process = scheduler::get_current_process();
     process.clone().set_registers(rsp, rip, stack_frame.r11, &stack_frame);
-
-    log::info!("0x{:x}", rax);
 
     let fut = do_syscall(
 	rax,
