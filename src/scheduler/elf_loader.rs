@@ -6,6 +6,8 @@ use alloc::vec;
 
 use crate::sys;
 use crate::memory;
+use crate::process;
+use crate::scheduler;
 
 pub struct Elf {
     pub entry: u64,
@@ -16,7 +18,7 @@ pub struct Elf {
 }
 
 impl Elf {
-    pub async fn new(file_name: String, address_space: &mut memory::user_address_space::AddressSpace) -> Result<Elf> {
+    pub async fn new(file_name: String) -> Result<Elf> {
 	let stat = sys::vfs::stat(file_name.clone()).await?;
 	let file_contents = match sys::vfs::read(file_name.clone(), /* offset= */ 0, /* size= */ stat.size.unwrap()).await {
 	    Ok(f) => f,
@@ -57,36 +59,46 @@ impl Elf {
 	    }
 	}
 
-	let virt_start_addr = match elf.header.pt2.type_().as_type() {
-	    header::Type::Executable => {
-		let virt_start_addr = VirtAddr::new(lowest_virt_addr.expect("No loadable sections were found"));
+	let virt_start_addr = {
+	    let process = scheduler::get_current_process();
+	    let mut task_type = process.task_type.write();
 
-		match memory::user_allocate(
-		    highest_virt_addr.expect("No loadable sections were found") - lowest_virt_addr.expect("No loadable sections were found"),
-		    memory::MemoryAllocationType::RAM,
-		    memory::MemoryAccessRestriction::UserByStart(virt_start_addr),
-		    address_space) {
-		    Ok(_) => (),
-		    Err(e) => {
-			return Err(anyhow!("Could not allocate memory for {}: {:?}", file_name, e));
+	    match *task_type {
+		process::TaskType::Kernel => unreachable!(),
+		process::TaskType::User(ref mut address_space) => {
+		    match elf.header.pt2.type_().as_type() {
+			header::Type::Executable => {
+			    let virt_start_addr = VirtAddr::new(lowest_virt_addr.expect("No loadable sections were found"));
+
+			    match memory::user_allocate(
+				highest_virt_addr.expect("No loadable sections were found") - lowest_virt_addr.expect("No loadable sections were found"),
+				memory::MemoryAllocationType::RAM,
+				memory::MemoryAccessRestriction::UserByStart(virt_start_addr),
+				address_space) {
+				Ok(_) => (),
+				Err(e) => {
+				    return Err(anyhow!("Could not allocate memory for {}: {:?}", file_name, e));
+				}
+			    }
+
+			    virt_start_addr
+			},
+			header::Type::SharedObject => {
+			    let (start, _) = match memory::user_allocate(
+				highest_virt_addr.expect("No loadable sections were found") - lowest_virt_addr.expect("No loadable sections were found"),
+				memory::MemoryAllocationType::RAM,
+				memory::MemoryAccessRestriction::User,
+				address_space) {
+				Ok(i) => i,
+				Err(e) => panic!("Could not allocate memory for {}: {:?}", file_name, e),
+			    };
+
+			    start
+			},
+			_ => unimplemented!(),
 		    }
-		}
-
-		virt_start_addr
-	    },
-	    header::Type::SharedObject => {
-		let (start, _) = match memory::user_allocate(
-		    highest_virt_addr.expect("No loadable sections were found") - lowest_virt_addr.expect("No loadable sections were found"),
-		    memory::MemoryAllocationType::RAM,
-		    memory::MemoryAccessRestriction::User,
-		    address_space) {
-		    Ok(i) => i,
-		    Err(e) => panic!("Could not allocate memory for {}: {:?}", file_name, e),
-		};
-
-		start
-	    },
-	    _ => unimplemented!(),
+		},
+	    }
 	};
 
 	{

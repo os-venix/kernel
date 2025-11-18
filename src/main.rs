@@ -101,7 +101,7 @@ fn panic(info: &PanicInfo) -> ! {
     // if let Some(printk) = PRINTK.get() {
     // 	printk.clear();
     // }
-//    log::error!("{}", info);
+    log::error!("{}", info);
     loop {}
 }
 

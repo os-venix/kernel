@@ -532,14 +532,16 @@ async fn sys_fork(start: u64) -> SyscallResult {
 
 pub async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> SyscallResult {
     let path = memory::copy_string_from_user(VirtAddr::new(path_ptr)).unwrap();
-    let mut args = unsafe {
+    let mut args = {
 	let mut args: Vec<String> = Vec::new();
 	let mut argc_ptr = VirtAddr::new(args_ptr);
 	loop {
-	    let arg = memory::copy_string_from_user(argc_ptr).unwrap();
-	    if arg.len() == 0 {
+	    let argp = memory::copy_value_from_user::<VirtAddr>(argc_ptr).unwrap();
+	    if argp == VirtAddr::new(0) {
 		break;
 	    }
+	    
+	    let arg = memory::copy_string_from_user(argp).unwrap();
 
 	    args.push(arg);
 	    argc_ptr += 8;
@@ -554,10 +556,12 @@ pub async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> Sysca
 
 	let mut envvar_ptr = VirtAddr::new(envvars_ptr);
 	loop {
-	    let envvar = memory::copy_string_from_user(envvar_ptr).unwrap();
-	    if envvar.len() == 0 {
+	    let envvarp = memory::copy_value_from_user::<VirtAddr>(envvar_ptr).unwrap();
+	    if envvarp == VirtAddr::new(0) {
 		break;
 	    }
+
+	    let envvar = memory::copy_string_from_user(envvarp).unwrap();
 
 	    envvars.push(envvar);
 	    envvar_ptr += 8;
@@ -569,17 +573,9 @@ pub async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> Sysca
     let process = scheduler::get_current_process();
     process.clone().execve(args, envvars);
 
-    {
-	let mut task_type = process.task_type.write();
-	match *task_type {
-	    process::TaskType::Kernel => unreachable!(),
-	    process::TaskType::User(ref mut address_space) => {
-		let elf = elf_loader::Elf::new(path, address_space).await.expect("Failed to load ELF");
-		let ld = elf_loader::Elf::new(String::from("/usr/lib/ld.so"), address_space).await.expect("Failed to load ld.so");
-		process.clone().attach_loaded_elf(elf, ld);
-	    },
-	};
-    }
+    let elf = elf_loader::Elf::new(path).await.expect("Failed to load ELF");
+    let ld = elf_loader::Elf::new(String::from("/usr/lib/ld.so")).await.expect("Failed to load ld.so");
+    process.clone().attach_loaded_elf(elf, ld);
 
     process.clone().init_stack_and_start();
 
