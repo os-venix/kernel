@@ -9,7 +9,6 @@ use crate::console;
 use crate::driver;
 use crate::drivers::usb::protocol as usb_protocol;
 use crate::drivers::usb::usb;
-use crate::memory;
 use crate::sys::syscall;
 use crate::sys::ioctl;
 

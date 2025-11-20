@@ -4,7 +4,6 @@ use spin::{RwLock, Mutex};
 use alloc::string::String;
 use x86_64::VirtAddr;
 use alloc::ffi::CString;
-use alloc::slice;
 use alloc::vec;
 use alloc::collections::BTreeMap;
 use alloc::boxed::Box;
@@ -282,7 +281,7 @@ impl Process {
 
 	let rsp = {
 	    let mut task_type = self.task_type.write();
-	    let mut address_space: &mut memory::user_address_space::AddressSpace = match *task_type {
+	    let address_space: &mut memory::user_address_space::AddressSpace = match *task_type {
 		TaskType::Kernel => panic!("Attempted to start a user process on a kernel task"),
 		// TODO: will this break any file I/O, mmap, etc?
 		TaskType::User(ref mut address_space) => address_space,
@@ -290,7 +289,6 @@ impl Process {
 
 	    let (rsp, _) = match memory::user_allocate(
 		8 * 1024 * 1024,  // 8MiB
-		memory::MemoryAllocationType::RAM,
 		memory::MemoryAccessRestriction::User,
 		address_space) {
 		Ok(i) => i,
@@ -310,11 +308,7 @@ impl Process {
 
 	context.rsp -= envvars_buf_size as u64 + args_buf_size as u64;
 	let stack_ptr = VirtAddr::new(context.rsp);
-	let data_to = unsafe {
-	    slice::from_raw_parts_mut(
-		stack_ptr.as_mut_ptr::<u8>(),
-		envvars_buf_size + args_buf_size)
-	};
+
 	let mut current_offs = envvars_buf_size + args_buf_size;
 	let mut envvar_p: Vec<u64> = Vec::new();
 	for envvar in envvars.clone() {

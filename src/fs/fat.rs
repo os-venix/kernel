@@ -13,7 +13,6 @@ use alloc::boxed::Box;
 use crate::sys::block;
 use crate::sys::syscall;
 use crate::sys::vfs;
-use crate::memory;
 use crate::sys::ioctl;
 
 #[derive(Debug)]
@@ -293,62 +292,6 @@ impl Fat16Fs {
 	(None, cnt)
     }
 
-    async fn get_dir_entries(&self, path: String) -> Option<Vec<Entry>> {
-	if path != "/" {
-	    panic!("Attempted to read from non-root directory. Not implemented.");
-	}
-
-	let root_dir_buf = self.get_root_directory().await;
-	let root_directory_entries = {
-	    self.boot_record.read().root_directory_entries
-	};
-
-	let mut ptr = 0;
-	let mut files: Vec<Entry> = Vec::new();
-	while ptr < root_directory_entries {
-	    let (maybe_fn, offset) = self.get_filename(root_dir_buf.as_ptr(), ptr as usize);
-	    ptr += offset as u16;
-
-	    if let Some(file_name) = maybe_fn {
-		let directory_entry = unsafe {
-		    ptr::read(root_dir_buf.as_ptr().wrapping_add(ptr as usize * 32) as *const DirectoryEntry)
-		};
-
-		if directory_entry.attributes & 0x10 != 0 {
-		    files.push(Entry::DIRECTORY(INode {
-			file_name: file_name,
-			file_size: directory_entry.file_size,
-			start_cluster: directory_entry.cluster_low as u32,
-		    }));
-		} else {
-		    files.push(Entry::FILE(INode {
-			file_name: file_name,
-			file_size: directory_entry.file_size,
-			start_cluster: directory_entry.cluster_low as u32,
-		    }));
-		}
-
-		ptr += 1;
-	    } else {
-		let directory_entry = unsafe {
-		    ptr::read(root_dir_buf.as_ptr().wrapping_add(ptr as usize * 32) as *const DirectoryEntry)
-		};
-
-		if directory_entry.file_name[0].to_u8() == 0x00 {
-		    break;
-		} else if directory_entry.file_name[0].to_u8() == 0xE5 {
-		    ptr += 1;
-		    continue;
-		} else if directory_entry.attributes & 0x08 != 0 {
-		    ptr += 1;
-		    continue;
-		}
-	    }
-	}
-
-	Some(files)
-    }
-
     fn find_dir_entry(&self, path: String, dir_buf_ptr: *const u8) -> Option<Entry> {
 	let mut ptr = 0;
 	loop {
@@ -400,7 +343,7 @@ impl Fat16Fs {
 }
 
 impl vfs::FileSystem for Fat16Fs {
-    fn ioctl(&self, path: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()> {
+    fn ioctl(&self, _path: String, _ioctl: ioctl::IoCtl, _buf: u64) -> Result<u64, ()> {
 	// ioctls are devices only
 	Err(())
     }

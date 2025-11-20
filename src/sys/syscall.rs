@@ -1,6 +1,5 @@
 use core::mem::offset_of;
 use x86_64::structures::tss::TaskStateSegment;
-use core::ffi::{CStr, c_int};
 use alloc::string::String;
 use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{FsBase, Efer, EferFlags, SFMask, Star, LStar};
@@ -14,8 +13,6 @@ use core::pin::Pin;
 use alloc::sync::Arc;
 use spin::Mutex;
 use num_enum::TryFromPrimitive;
-use alloc::ffi::CString;
-use core::ptr;
 use spin::RwLock;
 use core::slice;
 use alloc::vec;
@@ -453,7 +450,6 @@ async fn sys_mmap(start_val: u64, count: u64, r8: u64) -> SyscallResult {
 	    let (start, _) = if start_val == 0 {
 		match memory::user_allocate(
 		    count,
-		    memory::MemoryAllocationType::RAM,
 		    memory::MemoryAccessRestriction::User,
 		    address_space) {
 		    Ok(i) => i,
@@ -462,7 +458,6 @@ async fn sys_mmap(start_val: u64, count: u64, r8: u64) -> SyscallResult {
 	    } else {
 		match memory::user_allocate(
 		    count,
-		    memory::MemoryAllocationType::RAM,
 		    memory::MemoryAccessRestriction::UserByStart(VirtAddr::new(start_val)),
 		    address_space) {
 		    Ok(i) => i,
@@ -551,24 +546,19 @@ pub async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> Sysca
     };
     args.insert(0, path.clone());
 
-    let envvars = unsafe {
-	let mut envvars: Vec<String> = Vec::new();
-
-	let mut envvar_ptr = VirtAddr::new(envvars_ptr);
-	loop {
-	    let envvarp = memory::copy_value_from_user::<VirtAddr>(envvar_ptr).unwrap();
-	    if envvarp == VirtAddr::new(0) {
-		break;
-	    }
-
-	    let envvar = memory::copy_string_from_user(envvarp).unwrap();
-
-	    envvars.push(envvar);
-	    envvar_ptr += 8;
+    let mut envvars: Vec<String> = Vec::new();
+    let mut envvar_ptr = VirtAddr::new(envvars_ptr);
+    loop {
+	let envvarp = memory::copy_value_from_user::<VirtAddr>(envvar_ptr).unwrap();
+	if envvarp == VirtAddr::new(0) {
+	    break;
 	}
 
-	envvars
-    };
+	let envvar = memory::copy_string_from_user(envvarp).unwrap();
+
+	envvars.push(envvar);
+	envvar_ptr += 8;
+    }
 
     let process = scheduler::get_current_process();
     process.clone().execve(args, envvars);

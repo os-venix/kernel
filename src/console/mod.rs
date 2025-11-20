@@ -18,8 +18,6 @@ use x86_64::VirtAddr;
 
 use crate::sys::ioctl;
 use crate::sys::syscall;
-use crate::scheduler;
-use crate::process;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -66,7 +64,7 @@ impl ConsoleDevice {
 }
 
 impl driver::Device for ConsoleDevice {
-    fn read(self: Arc<Self>, offset: u64, size: u64) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
+    fn read(self: Arc<Self>, _offset: u64, size: u64) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
 	struct Wait {
 	    size: u64
 	}
@@ -143,19 +141,17 @@ impl driver::Device for ConsoleDevice {
 	    ioctl::IoCtl::TCSETS => {
 		let termios = memory::copy_value_from_user::<Termios>(VirtAddr::new(buf)).unwrap();
 
-		unsafe {
-		    // Input flags
-		    let mut crnl = self.crnl.write();
-		    let mut nlcr = self.nlcr.write();
-		    *crnl = termios.iflag & 2 != 0;
-		    *nlcr = termios.iflag & 0x20 != 0;
+		// Input flags
+		let mut crnl = self.crnl.write();
+		let mut nlcr = self.nlcr.write();
+		*crnl = termios.iflag & 2 != 0;
+		*nlcr = termios.iflag & 0x20 != 0;
 
-		    // Local flags
-		    let mut canonical = self.canonical.write();
-		    let mut local_loopback = self.local_loopback.write();
-		    *canonical = termios.lflag & 0x10 != 0;
-		    *local_loopback = termios.lflag & 0x01 != 0;
-		}
+		// Local flags
+		let mut canonical = self.canonical.write();
+		let mut local_loopback = self.local_loopback.write();
+		*canonical = termios.lflag & 0x10 != 0;
+		*local_loopback = termios.lflag & 0x01 != 0;
 
 		Err(())
 	    },

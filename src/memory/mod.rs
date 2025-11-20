@@ -46,7 +46,6 @@ pub enum MemoryAllocationType {
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum MemoryAccessRestriction {
-    Kernel,
     User,
     UserByStart(VirtAddr),
 }
@@ -136,12 +135,10 @@ pub fn kernel_allocate_early(size: u64) -> Result<VirtAddr, MapToError<Size4KiB>
 
 pub fn user_allocate(
     size: u64,
-    _alloc_type: MemoryAllocationType,
     access_restriction: MemoryAccessRestriction,
     address_space: &mut user_address_space::AddressSpace) -> Result<(VirtAddr, Vec<PhysAddr>), MapToError<Size4KiB>> {
     let page_range = {
 	let start = match access_restriction {
-	    MemoryAccessRestriction::Kernel => panic!("Attempted to use user_allocate() for kernel"),
 	    MemoryAccessRestriction::User => address_space.get_page_range(size),
 	    MemoryAccessRestriction::UserByStart(addr) => match address_space.get_page_range_from_start(addr, size as usize) {
 		Ok(_) => addr,
@@ -172,7 +169,6 @@ pub fn user_allocate(
 
     let direct_map_offset = DIRECT_MAP_OFFSET.get().expect("No direct map offset");
     let pt4_addr = match access_restriction {
-	MemoryAccessRestriction::Kernel => unreachable!(),
 	MemoryAccessRestriction::User => address_space.get_pt4() + direct_map_offset,
 	MemoryAccessRestriction::UserByStart(_) => address_space.get_pt4() + direct_map_offset,
     };
@@ -188,7 +184,6 @@ pub fn user_allocate(
     for (page, &frame) in page_range.zip(frame_range.iter()) {
 	address_space.assign_virt_phys(page.start_address(), frame.start_address());
 	let flags = match access_restriction {
-	    MemoryAccessRestriction::Kernel => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL,
 	    MemoryAccessRestriction::User => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
 	    MemoryAccessRestriction::UserByStart(_) => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
 	};

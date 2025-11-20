@@ -12,7 +12,6 @@ use x86_64::structures::tss::TaskStateSegment;
 
 use crate::driver;
 use crate::fs::fat;
-use crate::memory;
 use crate::scheduler;
 use crate::process;
 use crate::gdt;

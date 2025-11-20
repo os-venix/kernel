@@ -134,7 +134,6 @@ impl AddressSpace {
 	for entry in complete_map {
 	    memory::user_allocate(
 		4096,
-		memory::MemoryAllocationType::RAM,
 		memory::MemoryAccessRestriction::UserByStart(entry.virt_start),
 		self).expect("Unable to allocate to copy userspace");
 	    
@@ -271,7 +270,7 @@ impl AddressSpace {
 
 	let mut frame_allocator = memory::VENIX_FRAME_ALLOCATOR.write();
 
-	for (virt, phys) in self.mapped_regions.iter() {
+	for (virt, _) in self.mapped_regions.iter() {
 	    let p: Page<Size4KiB> = Page::from_start_address(*virt).expect("Malformed start address");
 	    let (frame, flush) = offset_pt.unmap(p).expect("Attempting to unmap page failed");
 	    unsafe {

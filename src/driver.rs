@@ -13,7 +13,6 @@ use crate::sys::acpi;
 use crate::sys::syscall;
 use crate::sys::vfs;
 use crate::sys::ioctl;
-use crate::memory;
 
 pub trait Driver {
     fn init(&self, info: &Box<dyn DeviceTypeIdentifier>);

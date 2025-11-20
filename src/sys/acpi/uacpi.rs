@@ -74,6 +74,7 @@ enum UacpiInitLevel {
 }
 
 #[repr(C)]
+#[allow(dead_code)]
 enum UacpiLogLevel {
     Error = 1,
     Warn,
@@ -83,6 +84,7 @@ enum UacpiLogLevel {
 }
 
 #[repr(C)]
+#[allow(dead_code)]
 pub enum InterruptModel {
     Pic,
     IoApic,
@@ -90,6 +92,7 @@ pub enum InterruptModel {
 }
 
 #[repr(C)]
+#[allow(dead_code)]
 struct UacpiPciAddress {
     segment: u16,
     bus: u8,
@@ -98,6 +101,7 @@ struct UacpiPciAddress {
 }
 
 #[derive(Copy, Clone)]
+#[allow(dead_code)]
 struct PortRange {
     pub base: u16,
     pub length: u16,
@@ -105,9 +109,11 @@ struct PortRange {
 
 #[repr(C)]
 #[derive(Eq, PartialEq, Copy, Clone)]
+#[allow(dead_code)]
 pub struct Namespace(pub u64);
 
 #[repr(C)]
+#[allow(dead_code)]
 pub enum UacpiObjectType {
     Uninitialized,
     Integer,
@@ -131,6 +137,7 @@ pub enum UacpiObjectType {
 }
 
 #[repr(C)]
+#[allow(dead_code)]
 pub struct UacpiIdString {
     size: u32,
     contents: *const c_char,
@@ -144,11 +151,13 @@ impl UacpiIdString {
 }
 
 #[repr(C)]
+#[allow(dead_code)]
 pub struct UacpiObject {
     dummy: u8,
 }
 
 #[repr(C)]
+#[allow(dead_code)]
 pub struct UacpiObjectArray {
     objects: *mut *mut UacpiObject,
     count: usize,
@@ -574,6 +583,7 @@ extern "C" fn uacpi_kernel_get_rsdp(rdsp_address: *mut u64) -> UacpiStatus {
     }
 }
 
+#[allow(dead_code)]
 extern "C" {
     fn uacpi_initialize(flags: u64) -> UacpiStatus;
     fn uacpi_namespace_load() -> UacpiStatus;

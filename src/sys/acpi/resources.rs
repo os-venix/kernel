@@ -5,6 +5,7 @@ use crate::sys::acpi::{Namespace, UacpiIterationDecision, UacpiStatus};
 use crate::utils::__IncompleteArrayField;
 
 #[repr(u32)]
+#[allow(dead_code)]
 enum UacpiResourceType {
     Irq,
     ExtendedIrq,
@@ -52,6 +53,7 @@ enum UacpiResourceType {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+#[allow(dead_code)]
 struct UacpiResourceSource {
     index: u8,
     index_present: bool,
@@ -61,6 +63,7 @@ struct UacpiResourceSource {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+#[allow(dead_code)]
 struct UacpiResourceIrq {
     pub length_kind: u8,
     pub triggering: u8,
@@ -73,6 +76,7 @@ struct UacpiResourceIrq {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+#[allow(dead_code)]
 struct UacpiResourceExtendedIrq {
     pub direction: u8,
     pub triggering: u8,
@@ -86,6 +90,7 @@ struct UacpiResourceExtendedIrq {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+#[allow(dead_code)]
 struct UacpiFixedMemory32 {
     pub write_status: u8,
     pub address: u32,
@@ -93,6 +98,7 @@ struct UacpiFixedMemory32 {
 }
 
 #[repr(C)]
+#[allow(dead_code)]
 union UacpiResourceUnion {
     irq: UacpiResourceIrq,
     extended_irq: UacpiResourceExtendedIrq,
@@ -100,6 +106,7 @@ union UacpiResourceUnion {
 }
 
 #[repr(C)]
+#[allow(dead_code)]
 struct UacpiResource {
     resource_type: UacpiResourceType,
     length: u32,
@@ -108,12 +115,14 @@ struct UacpiResource {
 }
 
 #[repr(C)]
+#[allow(dead_code)]
 struct UacpiResources {
     length: usize,
     entries: *mut UacpiResource,
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum Resource {
     Irq {
 	triggering: u8,

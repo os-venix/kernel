@@ -72,7 +72,6 @@ impl Elf {
 
 			    match memory::user_allocate(
 				highest_virt_addr.expect("No loadable sections were found") - lowest_virt_addr.expect("No loadable sections were found"),
-				memory::MemoryAllocationType::RAM,
 				memory::MemoryAccessRestriction::UserByStart(virt_start_addr),
 				address_space) {
 				Ok(_) => (),
@@ -86,7 +85,6 @@ impl Elf {
 			header::Type::SharedObject => {
 			    let (start, _) = match memory::user_allocate(
 				highest_virt_addr.expect("No loadable sections were found") - lowest_virt_addr.expect("No loadable sections were found"),
-				memory::MemoryAllocationType::RAM,
 				memory::MemoryAccessRestriction::User,
 				address_space) {
 				Ok(i) => i,

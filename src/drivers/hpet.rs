@@ -251,13 +251,13 @@ pub struct HpetDevice {}
 unsafe impl Send for HpetDevice { }
 unsafe impl Sync for HpetDevice { }
 impl driver::Device for HpetDevice {
-    fn read(self: Arc<Self>, offset: u64, size: u64) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
+    fn read(self: Arc<Self>, _offset: u64, _size: u64) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
 	panic!("Shouldn't have attempted to read from the HPET. That makes no sense.");
     }
-    fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()> {
+    fn write(&self, _buf: *const u8, _size: u64) -> Result<u64, ()> {
 	panic!("Shouldn't have attempted to write to the HPET. That makes no sense.");
     }
-    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()> {
+    fn ioctl(self: Arc<Self>, _ioctl: ioctl::IoCtl, _buf: u64) -> Result<u64, ()> {
 	panic!("Shouldn't have attempted to ioctl to the HPET. That makes no sense.");
     }
 }
@@ -311,7 +311,7 @@ impl driver::Driver for HpetDriver {
 	}
     }
 
-    fn check_new_device(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
+    fn check_new_device(&self, _info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
 	!HPET.is_completed()
     }
 }

@@ -23,13 +23,11 @@ pub struct SignalHandler {
 }
 
 pub fn parse_sigaction(sigaction: SigAction) -> SignalHandler {
-    unsafe {
-	SignalHandler {
-	    handler: sigaction.sa_handler,
-	    mask: sigaction.sa_mask,
-	    handler_type: if (sigaction.sa_mask & (1 << 4)) != 0 { HandlerType::SigAction } else { HandlerType::Handler },
-	    flags: sigaction.sa_flags as u64,
-	}
+    SignalHandler {
+	handler: sigaction.sa_handler,
+	mask: sigaction.sa_mask,
+	handler_type: if (sigaction.sa_mask & (1 << 4)) != 0 { HandlerType::SigAction } else { HandlerType::Handler },
+	flags: sigaction.sa_flags as u64,
     }
 }
 

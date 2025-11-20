@@ -16,6 +16,7 @@ use crate::utils::__IncompleteArrayField;
 type ForeachNamespaceCallbackPtr = unsafe extern "C" fn (user: *mut c_void, namespace: Namespace, depth: u32) -> UacpiIterationDecision;
 
 #[repr(C)]
+#[allow(dead_code)]
 struct UacpiPciRoutingTableEntry {
     address: u32,
     index: u32,
@@ -24,6 +25,7 @@ struct UacpiPciRoutingTableEntry {
 }
 
 #[repr(C)]
+#[allow(dead_code)]
 struct UacpiPciRoutingTable {
     num_entries: usize,
     entries: __IncompleteArrayField<UacpiPciRoutingTableEntry>,
@@ -43,6 +45,7 @@ bitfield! {
 }
 
 #[repr(C)]
+#[allow(dead_code)]
 struct UacpiPnpIdList {
     num_ids: u32,
     size: u32,
@@ -50,6 +53,7 @@ struct UacpiPnpIdList {
 }
 
 #[repr(C)]
+#[allow(dead_code)]
 struct UacpiNamespaceNodeInfo {
     size: u32,
 
@@ -77,6 +81,7 @@ bitfield! {
 }
 
 #[derive(PartialEq, Eq, Clone)]
+#[allow(dead_code)]
 pub struct SystemBusDeviceIdentifier {
     pub namespace: Namespace,
     pub hid: Option<String>,
@@ -107,6 +112,7 @@ impl fmt::Display for SystemBusDeviceIdentifier {
 }
 
 #[derive(Debug, Eq, PartialOrd)]
+#[allow(dead_code)]
 pub struct PciInterruptFunction {
     pub device: u8,
     pub function: Option<u8>,
