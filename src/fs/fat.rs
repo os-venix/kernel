@@ -505,20 +505,19 @@ impl vfs::FileSystem for Fat16Fs {
 			let boot_record = self.boot_record.read();
 			let sectors_per_lba = boot_record.bytes_per_sector as u64 / 512;
 
-			let root_directory_size_sectors: u64 = ((boot_record.root_directory_entries as u64 * 32) +
-								(boot_record.bytes_per_sector as u64 - 1))
-			    / boot_record.bytes_per_sector as u64;
+			let root_directory_size_sectors: u64 = (boot_record.root_directory_entries as u64 * 32)
+			    .div_ceil(boot_record.bytes_per_sector as u64);
 
 			let first_data_sector: u64 = boot_record.reserved_sectors as u64 +
 			    (boot_record.number_of_fats as u64 * boot_record.sectors_per_fat as u64) +
-			    root_directory_size_sectors as u64;
+			    root_directory_size_sectors;
 
 			let cluster_sector: u64 = ((cluster_strings_to_read[0].0 as u64 - 2) * boot_record.sectors_per_cluster as u64)
 			    + first_data_sector;
 
 			let cluster_lba = cluster_sector * sectors_per_lba;
 
-			let size_sectors = 1 * boot_record.sectors_per_cluster as u64;
+			let size_sectors = boot_record.sectors_per_cluster as u64;
 			(cluster_lba, size_sectors / sectors_per_lba)
 		    };
 
@@ -528,13 +527,12 @@ impl vfs::FileSystem for Fat16Fs {
 		    };
 
 		    current_buf_ptr = self.dev.read(
-			partition, cluster_lba as u64,
-			(size_lba as u64) * cluster_strings_to_read[0].1).await.expect("Couldn't read file")
+			partition, cluster_lba,
+			size_lba * cluster_strings_to_read[0].1).await.expect("Couldn't read file")
 			.as_ptr();
 		} else {
 		    // Not supported
 		    panic!("More than one cluster string attempted to be loaded: {:?}", cluster_strings_to_read);
-		    //		return Err(());
 		}
 	    }
 
@@ -567,16 +565,16 @@ fn detect_fat_fs(boot_record: BootRecord) -> FatFsType {
 	boot_record.sectors_in_volume as u32
     };
     let fat_size = boot_record.sectors_per_fat;
-    let root_dir_sectors = ((boot_record.root_directory_entries * 32) + (boot_record.bytes_per_sector - 1)) / boot_record.bytes_per_sector;
+    let root_dir_sectors = (boot_record.root_directory_entries * 32).div_ceil(boot_record.bytes_per_sector);
     let data_sectors = total_sectors - (boot_record.reserved_sectors + (boot_record.number_of_fats as u16 * fat_size) + root_dir_sectors) as u32;
     let total_clusters = data_sectors / boot_record.sectors_per_cluster as u32;
 
     if total_clusters < 4085 {
-	return FatFsType::FAT12;
+	FatFsType::FAT12
     } else if total_clusters < 65525 {
-	return FatFsType::FAT16;
+	FatFsType::FAT16
     } else {
-	return FatFsType::FAT32;
+	FatFsType::FAT32
     }
 }
 

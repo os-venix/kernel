@@ -157,39 +157,39 @@ impl Process {
 	*signals = BTreeMap::new();
     }
 
-    pub fn from_existing(&self, rip: u64) -> Self {
+    pub fn from_existing(old: &Self, rip: u64) -> Self {
 	let signals = {
-	    let old_signals = self.signals.read();
+	    let old_signals = old.signals.read();
 	    old_signals.clone()
 	};
 
 	let auxvs = {
-	    let old_auxvs = self.auxvs.read();
+	    let old_auxvs = old.auxvs.read();
 	    old_auxvs.clone()
 	};
 
 	let (cs, ss) = {
-	    let old_context = self.context.read();
+	    let old_context = old.context.read();
 	    (old_context.cs, old_context.ss)
 	};
 
 	let file_descriptors = {
-	    let old_fds = self.file_descriptors.read();
+	    let old_fds = old.file_descriptors.read();
 	    old_fds.clone()
 	};
 
 	let args = {
-	    let old_args = self.args.read();
+	    let old_args = old.args.read();
 	    old_args.clone()
 	};
 
 	let envvars = {
-	    let old_envvars = self.envvars.read();
+	    let old_envvars = old.envvars.read();
 	    old_envvars.clone()
 	};
 
 	let task_type = {
-	    let old_task_type = self.task_type.read();
+	    let old_task_type = old.task_type.read();
 
 	    match &*old_task_type {
 		TaskType::Kernel => TaskType::Kernel,
@@ -198,7 +198,7 @@ impl Process {
 		    unsafe {
 			new_address_space.switch_to();
 		    }
-		    new_address_space.create_copy_of_address_space(&address_space);
+		    new_address_space.create_copy_of_address_space(address_space);
 
 		    TaskType::User(new_address_space)
 		},
@@ -206,13 +206,13 @@ impl Process {
 	};
 
 	let cwd = {
-	    let old_cwd = self.cwd.read();
+	    let old_cwd = old.cwd.read();
 	    old_cwd.clone()
 	};
 
 	let sigmask = {
-	    let old_sigmask = self.sigmask.read();
-	    old_sigmask.clone()
+	    let old_sigmask = old.sigmask.read();
+	    *old_sigmask
 	};
 
 	Process {
@@ -401,7 +401,7 @@ impl Process {
 
     pub fn get_context(&self) -> ProcessContext {
 	let context = self.context.read();
-	context.clone()
+	*context
     }
 
     pub fn get_state(&self) -> TaskState {
@@ -417,59 +417,33 @@ impl Process {
     pub fn emplace_fd(self: Arc<Self>, fd: FileDescriptor) -> u64 {
 	let mut file_descriptors = self.file_descriptors.write();
 
-	let get_next_fd = || {
-	    use core::u64;
-
-	    for i in 0..=u64::MAX {
-		if !file_descriptors.contains_key(&i) {
-		    return i;
-		}
+	for i in 0..=u64::MAX {
+	    if let alloc::collections::btree_map::Entry::Vacant(e) = file_descriptors.entry(i) {
+		e.insert(fd);
+		return i;
 	    }
+	}
 
-	    // Should be unreachable unless every possible key is used
-	    panic!("No available u64 keys left!");
-	};
-
-	let fd_num = get_next_fd();
-	file_descriptors.insert(fd_num, fd);
-
-	fd_num
+	// Should be unreachable unless every possible key is used
+	panic!("No available u64 keys left!");
     }
 
     // TODO: better error handling for out of FDs
-    pub fn emplace_fd_at(self: Arc<Self>, fd: FileDescriptor, mut fd_num: u64, try_greater: bool) -> u64 {
+    pub fn emplace_fd_at(self: Arc<Self>, fd: FileDescriptor, fd_num: u64, try_greater: bool) -> u64 {
 	let mut file_descriptors = self.file_descriptors.write();
 
 	if file_descriptors.contains_key(&fd_num) && !try_greater {
 	    panic!("No available file descriptors");
 	}
 
-	if file_descriptors.contains_key(&fd_num) {
-	    let get_next_fd = || {
-		// Fast path: try just above the largest key
-		if let Some((&max_key, _)) = file_descriptors.iter().next_back() {
-		    // If max_key is below min_key, jump to fd_num itself
-		    let candidate = max_key.saturating_add(1).max(fd_num);
-		    if !file_descriptors.contains_key(&candidate) {
-			return candidate;
-		    }
-		}
-
-		// Slow path: linearly scan starting from min_key
-		for i in fd_num..=u64::MAX {
-		    if !file_descriptors.contains_key(&i) {
-			return i;
-		    }
-		}
-
-		panic!("No available u64 keys left from {} onward!", fd_num);
-	    };
-
-	    fd_num = get_next_fd();
+	for i in fd_num..=u64::MAX {
+	    if let alloc::collections::btree_map::Entry::Vacant(e) = file_descriptors.entry(i) {
+		e.insert(fd);
+		return i;
+	    }
 	}
 
-	file_descriptors.insert(fd_num, fd);
-	fd_num
+	panic!("No available u64 keys left from {} onward!", fd_num);
     }
 
     pub fn set_fd_flags(self: Arc<Self>, fd: u64, flags: u64) {
@@ -485,7 +459,7 @@ impl Process {
     pub fn close_fd(self: Arc<Self>, fd: u64) {
 	let mut file_descriptors = self.file_descriptors.write();
 
-	return match file_descriptors.remove(&fd) {
+	match file_descriptors.remove(&fd) {
 	    Some(_) => (),
 	    None => panic!("No open FD found"),
 	}
@@ -519,12 +493,12 @@ impl Process {
 
     pub fn signal_mask_block(self: Arc<Self>, newset: u64) {
 	let mut sigmask = self.sigmask.write();
-	*sigmask = (*sigmask) | newset;
+	*sigmask |= newset;
     }
 
     pub fn signal_mask_unblock(self: Arc<Self>, newset: u64) {
 	let mut sigmask = self.sigmask.write();
-	*sigmask = (*sigmask) & !newset;
+	*sigmask &= !newset;
     }
 
     pub fn signal_mask_setmask(self: Arc<Self>, newset: u64) {

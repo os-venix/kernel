@@ -46,17 +46,14 @@ impl Elf {
 		continue;
 	    }
 
-	    if lowest_virt_addr == None {
-		lowest_virt_addr = Some(program_header.virtual_addr());
-	    } else if program_header.virtual_addr() < lowest_virt_addr.expect("Eh") {
+	    if lowest_virt_addr.is_none() || program_header.virtual_addr() < lowest_virt_addr.expect("Eh") {
 		lowest_virt_addr = Some(program_header.virtual_addr());
 	    }
 
-	    if highest_virt_addr == None {
-		highest_virt_addr = Some(program_header.virtual_addr() + program_header.mem_size());
-	    } else if program_header.virtual_addr() + program_header.mem_size() > highest_virt_addr.expect("Eh") {
-		highest_virt_addr = Some(program_header.virtual_addr() + program_header.mem_size());
-	    }
+	    if highest_virt_addr.is_none() ||
+		program_header.virtual_addr() + program_header.mem_size() > highest_virt_addr.expect("Eh") {
+		    highest_virt_addr = Some(program_header.virtual_addr() + program_header.mem_size());
+		}
 	}
 
 	let virt_start_addr = {

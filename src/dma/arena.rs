@@ -1,6 +1,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
-use core::{mem::MaybeUninit, ptr, sync::atomic::{AtomicUsize, Ordering}, slice, usize};
+use core::{mem::MaybeUninit, ptr, sync::atomic::{AtomicUsize, Ordering}, slice};
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::memory;

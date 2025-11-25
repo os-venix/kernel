@@ -211,7 +211,7 @@ impl<K: core::fmt::Debug, V: core::fmt::Debug> core::fmt::Debug for VecMap<K, V>
     }
 }
 
-fn reorder_vec<T>(vec: &mut Vec<T>, order: impl Iterator<Item = usize>) {
+fn reorder_vec<T>(vec: &mut [T], order: impl Iterator<Item = usize>) {
     use core::mem::MaybeUninit;
     let mut buffer: Vec<MaybeUninit<T>> = vec.iter().map(|_| MaybeUninit::uninit()).collect();
     for (from, to) in order.enumerate() {
@@ -245,7 +245,7 @@ impl<'a, K: PartialEq + Copy + 'a, V: Copy + 'a> Extend<(&'a K, &'a V)> for VecM
     }
 }
 
-impl<'a, K: PartialEq, V> Extend<(K, V)> for VecMap<K, V> {
+impl<K: PartialEq, V> Extend<(K, V)> for VecMap<K, V> {
     fn extend<T: IntoIterator<Item = (K, V)>>(&mut self, iter: T) {
         for (key, value) in iter.into_iter() {
             self.insert(key, value);
@@ -297,7 +297,7 @@ impl<K, V> IntoIterator for VecMap<K, V> {
     type IntoIter = IntoIter<K, V>;
     fn into_iter(self) -> Self::IntoIter {
         IntoIter {
-            iter: self.keys.into_iter().zip(self.values.into_iter()),
+            iter: self.keys.into_iter().zip(self.values),
         }
     }
 }
@@ -451,7 +451,7 @@ pub struct Keys<'a, K: 'a, V> {
     _phantom: core::marker::PhantomData<V>,
 }
 
-impl<'a, K, V> Clone for Keys<'a, K, V> {
+impl<K, V> Clone for Keys<'_, K, V> {
     fn clone(&self) -> Self {
         Keys {
             iter: self.iter.clone(),
@@ -468,7 +468,7 @@ pub struct Values<'a, K, V: 'a> {
     _phantom: core::marker::PhantomData<K>,
 }
 
-impl<'a, K, V> Clone for Values<'a, K, V> {
+impl<K, V> Clone for Values<'_, K, V> {
     fn clone(&self) -> Self {
         Values {
             iter: self.iter.clone(),

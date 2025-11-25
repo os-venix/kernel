@@ -15,7 +15,6 @@ use spin::Mutex;
 use num_enum::TryFromPrimitive;
 use spin::RwLock;
 use core::slice;
-use alloc::vec;
 use core::mem;
 
 use crate::sys::ioctl;
@@ -492,7 +491,7 @@ async fn sys_pipe(fds: u64, flags: u64) -> SyscallResult {
     let fd1_number = process.clone().emplace_fd(fd1);
     let fd2_number = process.emplace_fd(fd2);
 
-    let v = vec![fd1_number as u32, fd2_number as u32];
+    let v = [fd1_number as u32, fd2_number as u32];
 
     unsafe {
 	memory::copy_to_user(VirtAddr::new(fds), slice::from_raw_parts(

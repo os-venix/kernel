@@ -9,17 +9,13 @@ pub mod vector_map;
 pub struct __IncompleteArrayField<T>(core::marker::PhantomData<T>);
 impl<T> __IncompleteArrayField<T> {
     #[inline]
-    pub fn new() -> Self {
-        __IncompleteArrayField(core::marker::PhantomData)
-    }
-    #[inline]
     pub unsafe fn as_ptr(&self) -> *const T {
-        core::mem::transmute(self)
+	self as *const Self as *const T
     }
     #[inline]
     #[allow(dead_code)]
     pub unsafe fn as_mut_ptr(&mut self) -> *mut T {
-        core::mem::transmute(self)
+	self as *mut Self as *mut T
     }
     #[inline]
     pub unsafe fn as_slice(&self, len: usize) -> &[T] {
@@ -39,7 +35,8 @@ impl<T> fmt::Debug for __IncompleteArrayField<T> {
 impl<T> Clone for __IncompleteArrayField<T> {
     #[inline]
     fn clone(&self) -> Self {
-        Self::new()
+	//        Self::new()
+	*self
     }
 }
 impl<T> Copy for __IncompleteArrayField<T> {}

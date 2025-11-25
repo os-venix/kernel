@@ -115,9 +115,7 @@ impl driver::Device for ConsoleDevice {
 	    }
 	}
 
-	Box::pin(async move {
-	    Wait { size }.await
-	})
+	Box::pin(Wait { size })
     }
 
     fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()> {
@@ -167,7 +165,7 @@ impl driver::Device for ConsoleDevice {
 	    },
 	    ioctl::IoCtl::TIOCGPGRP => {
 		let pgrp = self.pgrp.read();
-		Ok(pgrp.clone())
+		Ok(*pgrp)
 	    },
 	    ioctl::IoCtl::TIOCSPGRP => {
 		let mut pgrp = self.pgrp.write();

@@ -70,7 +70,7 @@ pub fn get_current_process() -> Arc<process::Process> {
     let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 
     if let Some(pid) = *running_process {
-	return process_tbl[&pid].clone();
+	process_tbl[&pid].clone()
     } else {
 	panic!("Attempted to access user address space when no process is running");
     }
@@ -88,7 +88,8 @@ pub fn fork_current_process(rip: u64) -> u64 {
 	let running_process = RUNNING_PROCESS.get().expect("Attempted to access running process before it is initialised").read();
 	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
 
-	let new_process = process_tbl[&running_process.expect("No running process")].from_existing(rip);
+	let new_process = process::Process::from_existing(
+	    &process_tbl[&running_process.expect("No running process")], rip);
 
 	process_tbl.insert(pid, Arc::new(new_process));
     };
@@ -109,11 +110,9 @@ pub fn exit(exit_code: u64) -> ! {
 	    // Free associated memory, and drop the process
 	    let current_process = process_tbl.get_mut(&pid).unwrap().clone();
 	    let mut task_type = current_process.task_type.write();
-	    match *task_type {
-		process::TaskType::User(ref mut address_space) => {
-		    address_space.clear_user_space();
-		},
-		_ => (),
+
+	    if let process::TaskType::User(ref mut address_space) = *task_type {
+		address_space.clear_user_space();
 	    }
 	    process_tbl.remove(&pid);
 	} else {
@@ -124,8 +123,10 @@ pub fn exit(exit_code: u64) -> ! {
     schedule_next();
 }
 
-fn get_futures_to_poll() -> BTreeMap<u64, (Arc<Mutex<Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + 'static>>>>, Option<Waker>)> {
-    let mut r: BTreeMap<u64, (Arc<Mutex<Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + 'static>>>>, Option<Waker>)> = BTreeMap::new();
+type SyscallFuture = Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + 'static>>;
+
+fn get_futures_to_poll() -> BTreeMap<u64, (Arc<Mutex<SyscallFuture>>, Option<Waker>)> {
+    let mut r: BTreeMap<u64, (Arc<Mutex<SyscallFuture>>, Option<Waker>)> = BTreeMap::new();
     let mut process_tbl = PROCESS_TABLE
 	.get()
 	.expect("PROCESS_TABLE not initialized")
@@ -182,7 +183,7 @@ fn poll_process_future(pid: u64, future: Arc<Mutex<Pin<Box<dyn Future<Output = s
 		.get()
 		.expect("PROCESS_TABLE not initialized")
 		.write();
-	    process_tbl.get_mut(&pid).unwrap().clone().syscall_return(result.return_value as u64, result.err_num);
+	    process_tbl.get_mut(&pid).unwrap().clone().syscall_return(result.return_value, result.err_num);
         }
         core::task::Poll::Pending => {	    
 	    let mut process_tbl = PROCESS_TABLE
@@ -217,7 +218,7 @@ fn next_task() -> process::ProcessContext {
     tasks.sort_by_key(|(pid, _)| *pid); // Ensure stable order
 
     // Get current PID
-    let current_pid = running_process.clone();
+    let current_pid = *running_process;
 
     // Find index of current process (if any)
     let start_idx = current_pid
@@ -241,13 +242,10 @@ fn next_task() -> process::ProcessContext {
 
 		// Switch to address space
 		let mut task_type = process.task_type.write();
-		match *task_type {
-		    process::TaskType::User(ref mut address_space) => {
-			unsafe {
-			    address_space.switch_to();
-			}
-		    },
-		    _ => (),
+		if let process::TaskType::User(ref mut address_space) = *task_type {
+		    unsafe {
+			address_space.switch_to();
+		    }
 		}
 
 		return process.get_context();

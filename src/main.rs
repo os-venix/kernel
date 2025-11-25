@@ -240,5 +240,5 @@ fn init_setup() -> ! {
 	syscall::do_syscall6(0x3b, path_ptr, args_ptr, envvars_ptr, 0, 0, 0);
     }
 
-    loop {}  // This shouldn't happen, due to the execve above. However, Rust needs it to satisfy bounds checks
+    panic!("init exec failed");
 }
