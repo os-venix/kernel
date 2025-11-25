@@ -143,7 +143,7 @@ pub fn init_io_apics(bsp_apic_id: u64) {
     for over in interrupt_source_overrides.iter() {
 	irq_to_gsi.insert(over.isa_source, over.global_system_interrupt);
 
-	find_ioapic(over.global_system_interrupt, &mut ioapics)
+	ioapics.iter_mut().find(|apic| (*apic).contains_gsi(over.global_system_interrupt))
 	    .unwrap_or_else(|| panic!("Unable to find an I/O APIC for legacy IRQ {}/GSI {}",
 			over.isa_source,
 			over.global_system_interrupt))
@@ -172,7 +172,7 @@ pub fn init_io_apics(bsp_apic_id: u64) {
 
 	irq_to_gsi.insert(legacy_irq, legacy_irq as u32);
 
-	find_ioapic(legacy_irq as u32, &mut ioapics)
+	ioapics.iter_mut().find(|apic| (*apic).contains_gsi(legacy_irq as u32))
 	    .unwrap_or_else(|| panic!("Unable to find an I/O APIC for legacy IRQ {}", legacy_irq))
 	    .map_interrupt(
 		legacy_irq as u32,
@@ -183,19 +183,10 @@ pub fn init_io_apics(bsp_apic_id: u64) {
     }
 }
 
-fn find_ioapic(gsi: u32, ioapics: &mut Vec<IoApic>) -> Option<&mut IoApic> {
-    for apic in ioapics {
-	if (*apic).contains_gsi(gsi) {
-	    return Some(apic);
-	}
-    }
-
-    None
-}
-
 pub fn get_irq_for_gsi(gsi: u32) -> u8 {
     let mut ioapics = IOAPICS.call_once(|| RwLock::new(Vec::<IoApic>::new())).write();
-    let io_apic = find_ioapic(gsi, &mut ioapics).unwrap_or_else(|| panic!("GSI {} not found", gsi));
+    let io_apic = ioapics.iter_mut().find(|apic| (*apic).contains_gsi(gsi))
+	.unwrap_or_else(|| panic!("GSI {} not found", gsi));
 
     match io_apic.get_irq_for_gsi(gsi) {
 	Some(irq) => irq,
@@ -205,7 +196,8 @@ pub fn get_irq_for_gsi(gsi: u32) -> u8 {
 
 pub fn enable_gsi(gsi: u32) {
     let mut ioapics = IOAPICS.call_once(|| RwLock::new(Vec::<IoApic>::new())).write();
-    let io_apic = find_ioapic(gsi, &mut ioapics).unwrap_or_else(|| panic!("GSI {} not found", gsi));
+    let io_apic = ioapics.iter_mut().find(|apic| (*apic).contains_gsi(gsi))
+	.unwrap_or_else(|| panic!("GSI {} not found", gsi));
 
     io_apic.enable_gsi(gsi);
 }
@@ -215,7 +207,8 @@ pub fn enable_irq(irq: u8) {
     let gsi = irq_to_gsi.get(&irq).unwrap();
 
     let mut ioapics = IOAPICS.call_once(|| RwLock::new(Vec::<IoApic>::new())).write();
-    let io_apic = find_ioapic(*gsi, &mut ioapics).unwrap_or_else(|| panic!("GSI {} not found", gsi));
+    let io_apic = ioapics.iter_mut().find(|apic| (*apic).contains_gsi(*gsi))
+	.unwrap_or_else(|| panic!("GSI {} not found", gsi));
 
     io_apic.enable_gsi(*gsi);
 }

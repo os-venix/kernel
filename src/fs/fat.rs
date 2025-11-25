@@ -28,8 +28,8 @@ struct INode {
 }
 
 enum Entry {
-    FILE(INode),
-    DIRECTORY(INode),
+    File(INode),
+    Directory(INode),
 }
 
 #[repr(C, packed(1))]
@@ -223,9 +223,7 @@ impl Fat16Fs {
 		ptr::read(dir.wrapping_add(entry * 32) as *const DirectoryEntry)
 	    };
 
-	    if directory_entry.file_name[0].to_u8() == 0x00 {
-		return (None, cnt);
-	    } else if directory_entry.file_name[0].to_u8() == 0xE5 {
+	    if directory_entry.file_name[0].to_u8() == 0x00 || directory_entry.file_name[0].to_u8() == 0xE5 {
 		return (None, cnt);
 	    }
 
@@ -304,12 +302,12 @@ impl Fat16Fs {
 		};
 
 		if directory_entry.attributes & 0x10 != 0 {
-		    return Some(Entry::DIRECTORY(INode {
+		    return Some(Entry::Directory(INode {
 			file_size: directory_entry.file_size,
 			start_cluster: directory_entry.cluster_low as u32,
 		    }));
 		} else {
-		    return Some(Entry::FILE(INode {
+		    return Some(Entry::File(INode {
 			file_size: directory_entry.file_size,
 			start_cluster: directory_entry.cluster_low as u32,
 		    }));
@@ -321,10 +319,7 @@ impl Fat16Fs {
 
 		if directory_entry.file_name[0].to_u8() == 0x00 {
 		    break;
-		} else if directory_entry.file_name[0].to_u8() == 0xE5 {
-		    ptr += 1;
-		    continue;
-		} else if directory_entry.attributes & 0x08 != 0 {
+		} else if directory_entry.file_name[0].to_u8() == 0xE5 || directory_entry.attributes & 0x08 != 0 {
 		    ptr += 1;
 		    continue;
 		}
@@ -353,8 +348,8 @@ impl vfs::FileSystem for Fat16Fs {
 	    for path_part in parts {
 		let inode = match self.find_dir_entry(path_part.to_string(), current_buf_ptr)
 		    .unwrap_or_else(|| panic!("Could not find file {}", path)) {
-			Entry::DIRECTORY(i) => i,
-			Entry::FILE(i) => i,
+			Entry::Directory(i) => i,
+			Entry::File(i) => i,
 		    };
 
 		// This is FAT16, no high cluster
@@ -377,15 +372,11 @@ impl vfs::FileSystem for Fat16Fs {
 		let mut cluster_strings_to_read: Vec<(u16, u64)> = Vec::new();
 		let mut current_start: u16 = 0;
 		for (idx, entry) in clusters_to_read.iter().enumerate() {
-		    if idx == 0 {
-			current_start = *entry;
-		    } else if *entry != (clusters_to_read[idx - 1] + 1) {
+		    if idx == 0 || *entry != (clusters_to_read[idx - 1] + 1) {
 			current_start = *entry;
 		    }
 
-		    if idx == clusters_to_read.len() - 1 {
-			cluster_strings_to_read.push((current_start, (*entry as u64 - current_start as u64) + 1));
-		    } else if (*entry + 1) != clusters_to_read[idx + 1] {
+		    if idx == clusters_to_read.len() - 1 || (*entry + 1) != clusters_to_read[idx + 1] {
 			cluster_strings_to_read.push((current_start, (*entry as u64 - current_start as u64) + 1));
 		    }
 		}
@@ -451,8 +442,8 @@ impl vfs::FileSystem for Fat16Fs {
 
 	    for path_part in parts {
 		let inode = match self.find_dir_entry(path_part.to_string(), current_buf_ptr).ok_or(())? {
-		    Entry::DIRECTORY(i) => i,
-		    Entry::FILE(i) => {
+		    Entry::Directory(i) => i,
+		    Entry::File(i) => {
 			file_size = i.file_size as usize;
 			break;
 		    },
@@ -478,15 +469,11 @@ impl vfs::FileSystem for Fat16Fs {
 		let mut cluster_strings_to_read: Vec<(u16, u64)> = Vec::new();
 		let mut current_start: u16 = 0;
 		for (idx, entry) in clusters_to_read.iter().enumerate() {
-		    if idx == 0 {
-			current_start = *entry;
-		    } else if *entry != (clusters_to_read[idx - 1] + 1) {
+		    if idx == 0 || *entry != (clusters_to_read[idx - 1] + 1) {
 			current_start = *entry;
 		    }
 
-		    if idx == clusters_to_read.len() - 1 {
-			cluster_strings_to_read.push((current_start, (*entry as u64 - current_start as u64) + 1));
-		    } else if (*entry + 1) != clusters_to_read[idx + 1] {
+		    if idx == clusters_to_read.len() - 1 || (*entry + 1) != clusters_to_read[idx + 1] {
 			cluster_strings_to_read.push((current_start, (*entry as u64 - current_start as u64) + 1));
 		    }
 		}

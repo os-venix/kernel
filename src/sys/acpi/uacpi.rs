@@ -43,17 +43,17 @@ pub enum UacpiStatus {
     Denied = 20,
 
     // all ERRORS THAT HAVE BYTECODE-RELATED ORIGIN SHOULD GO HERE
-    AmlUndefinedReference = 0x0_eff0000,
-    AmlInvalidNamestring = 0x0_eff0001,
-    AmlObjectAlreadyExists = 0x0_eff0002,
-    AmlInvalidOpcode = 0x0_eff0003,
-    AmlIncompatibleObjectType = 0x0_eff0004,
-    AmlBadEncoding = 0x0_eff0005,
-    AmlOutOfBoundsIndex = 0x0_eff0006,
-    AmlSyncLevelTooHigh = 0x0_eff0007,
-    AmlInvalidResource = 0x0_eff0008,
-    AmlLoopTimeout = 0x0_eff0009,
-    AmlCallStackDepthLimit = 0x0_eff000_a,
+    AmlUndefinedReference = 0x0eff_0000,
+    AmlInvalidNamestring = 0x0eff_0001,
+    AmlObjectAlreadyExists = 0x0eff_0002,
+    AmlInvalidOpcode = 0x0eff_0003,
+    AmlIncompatibleObjectType = 0x0eff_0004,
+    AmlBadEncoding = 0x0eff_0005,
+    AmlOutOfBoundsIndex = 0x0eff_0006,
+    AmlSyncLevelTooHigh = 0x0eff_0007,
+    AmlInvalidResource = 0x0eff_0008,
+    AmlLoopTimeout = 0x0eff_0009,
+    AmlCallStackDepthLimit = 0x0eff_000a,
 }
 
 #[repr(C)]

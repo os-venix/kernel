@@ -2,6 +2,7 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, Pag
 use lazy_static::lazy_static;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
+use alloc::vec;
 use spin::{Once, RwLock};
 use alloc::boxed::Box;
 
@@ -165,8 +166,7 @@ pub fn add_handler_to_irq(irq: u8, handler: Box<(dyn Fn() + Send + Sync)>) {
     if let Some(v) = handler_funcs.get_mut(&irq) {
 	v.push(handler);
     } else {
-	let mut v = Vec::<Box<(dyn Fn() + Send + Sync)>>::new();
-	v.push(handler);
+	let mut v = vec![handler];
 	handler_funcs.insert(irq, v);
     }
 }
