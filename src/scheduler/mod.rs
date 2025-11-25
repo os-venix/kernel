@@ -140,7 +140,7 @@ fn get_futures_to_poll() -> BTreeMap<u64, (Arc<Mutex<SyscallFuture>>, Option<Wak
 		let dummy: Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + 'static>> = Box::pin(async {		
 		    syscall::SyscallResult {
 			return_value: 0,
-			err_num: syscall::CanonicalError::EOK as u64,
+			err_num: syscall::CanonicalError::Ok as u64,
 		    }
 		});
 		let future_taken = core::mem::replace(future, Arc::new(Mutex::new(dummy)));

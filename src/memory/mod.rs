@@ -40,9 +40,9 @@ pub struct MemoryRegion {
 
 #[derive(PartialEq, Eq)]
 pub enum MemoryAllocationType {
-    RAM,
-    MMIO(u64),
-    DMA,
+    Ram,
+    Mmio(u64),
+    Dma,
     UserBuffer(Vec<PhysAddr>),
 }
 
@@ -216,7 +216,7 @@ pub fn kernel_allocate(
     };
 
     let frame_range: Vec<PhysFrame> = match alloc_type {
-	MemoryAllocationType::RAM => {
+	MemoryAllocationType::Ram => {
 	    let mut range = Vec::new();	    
 	    let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
 
@@ -228,12 +228,12 @@ pub fn kernel_allocate(
 
 	    range
 	},
-	MemoryAllocationType::MMIO(start_addr) =>
+	MemoryAllocationType::Mmio(start_addr) =>
 	    (0 .. size)
 	    .step_by(4096)
 	    .map(|addr| PhysFrame::containing_address(PhysAddr::new(start_addr + addr)))
 	    .collect(),
-	MemoryAllocationType::DMA => {
+	MemoryAllocationType::Dma => {
 	    let aligned_size = ((size + 4095) / 4096) * 4096;
 
 	    let start = {
@@ -278,7 +278,7 @@ pub fn allocate_mmio(
 
     let allocated_region = kernel_allocate(
 	total_size as u64,
-	MemoryAllocationType::MMIO(start_phys_addr as u64)
+	MemoryAllocationType::Mmio(start_phys_addr as u64)
     )?.0;
 
     let offset_from_start = phys_addr - start_phys_addr;

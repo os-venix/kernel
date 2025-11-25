@@ -45,7 +45,7 @@ pub struct AddressSpace {
 impl AddressSpace {
     pub fn new() -> Self {
 	let (virt, phys) = memory::kernel_allocate(
-	    4096, memory::MemoryAllocationType::RAM).expect("Allocation failed");
+	    4096, memory::MemoryAllocationType::Ram).expect("Allocation failed");
 	
 	let data_to_z = unsafe {
 	    slice::from_raw_parts_mut(virt.as_mut_ptr::<u8>(), 4096_usize)

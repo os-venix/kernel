@@ -3,7 +3,7 @@ use alloc::boxed::Box;
 use crate::drivers::pcie;
 use crate::driver;
 
-mod ide;
+mod controller;
 
 pub fn init() {
     let ide_driver = IdeDriver {};
@@ -44,9 +44,9 @@ impl driver::Driver for IdeDriver {
 	};
 
 	log::info!("Primary IDE Bus:");
-	ide::detect_drives(control_primary_base, io_primary_base, busmaster_primary_base);
+	controller::detect_drives(control_primary_base, io_primary_base, busmaster_primary_base);
 	log::info!("Secondary IDE Bus:");
-	ide::detect_drives(control_secondary_base, io_secondary_base, busmaster_secondary_base);
+	controller::detect_drives(control_secondary_base, io_secondary_base, busmaster_secondary_base);
     }
 
     fn check_device(&self, info: &dyn driver::DeviceTypeIdentifier) -> bool {

@@ -104,7 +104,7 @@ impl Process {
 	
 	let (rsp, _) = match memory::kernel_allocate(
 	    8 * 1024 * 1024,  // 8MiB
-	    memory::MemoryAllocationType::RAM) {
+	    memory::MemoryAllocationType::Ram) {
 	    Ok(i) => i,
 	    Err(e) => panic!("Could not allocate stack memory for process: {:?}", e),
 	};

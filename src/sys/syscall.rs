@@ -30,14 +30,14 @@ use crate::process;
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum CanonicalError {
-    EOK = 0,
-    ENOENT = 2,
-    EIO = 5,
-    EBADF = 9,
-    EAGAIN = 11,
-    EACCESS = 13,
-    EINVAL = 22,
-    ERANGE = 34,
+    Ok = 0,
+    NoEnt = 2,
+    Io = 5,
+    Badf = 9,
+    Again = 11,
+    Access = 13,
+    Inval = 22,
+    Range = 34,
 }
 
 #[repr(u64)]
@@ -65,7 +65,7 @@ pub fn init() {
     let (kernel_code, kernel_data, user_code, user_data) = gdt::get_code_selectors();
 
     Star::write(user_code, user_data, kernel_code, kernel_data).expect("Unable to set STAR");
-    LStar::write(VirtAddr::new(syscall_enter as u64));
+    LStar::write(VirtAddr::new(syscall_enter as usize as u64));
 
     unsafe {
 	Efer::update(|old_flags| *old_flags |= EferFlags::SYSTEM_CALL_EXTENSIONS);
@@ -83,7 +83,7 @@ async fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
 
 	return SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::EIO as u64
+	    err_num: CanonicalError::Io as u64
 	};
     }
 
@@ -96,7 +96,7 @@ async fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
     // 	Err(_) => {
     // 	    return SyscallResult {
     // 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
-    // 		err_num: CanonicalError::EBADF as u64
+    // 		err_num: CanonicalError::Badf as u64
     // 	    };
     // 	},
     // };
@@ -105,11 +105,11 @@ async fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
     match w.write(kbuf, count) {
 	Ok(len) => SyscallResult {
 	    return_value: len,
-	    err_num: CanonicalError::EOK as u64,
+	    err_num: CanonicalError::Ok as u64,
 	},
 	Err(_) => SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::EIO as u64
+	    err_num: CanonicalError::Io as u64
 	},
     }
 }
@@ -132,18 +132,18 @@ async fn sys_read(fd: u64, buf: u64, count: u64) -> SyscallResult {
 	Ok(b) => b,
 	Err(_) => return SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::EIO as u64
+	    err_num: CanonicalError::Io as u64
 	},
     };
 
     match memory::copy_to_user(VirtAddr::new(buf), read_buffer.to_vec().as_slice()) {
 	Ok(()) => SyscallResult {
 	    return_value: read_buffer.len() as u64,
-	    err_num: CanonicalError::EOK as u64,
+	    err_num: CanonicalError::Ok as u64,
 	},
 	Err(_) => SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::EIO as u64,  // TODO: This is probably not EIO. Look up what it should be canonically
+	    err_num: CanonicalError::Io as u64,  // TODO: This is probably not EIO. Look up what it should be canonically
 	},
     }
 }
@@ -154,7 +154,7 @@ pub async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
 	Err(_) => {
 	    return SyscallResult {
 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
-		err_num: CanonicalError::EINVAL as u64
+		err_num: CanonicalError::Inval as u64
 	    };
 	},
     };
@@ -171,11 +171,11 @@ pub async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
 	unimplemented!();
     }
 
-    if let Err(_) = vfs::stat(path.clone()).await {
+    if vfs::stat(path.clone()).await.is_err() {
 	// File does not exist
 	return SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::EACCESS as u64
+	    err_num: CanonicalError::Access as u64
 	};
     }
 
@@ -188,7 +188,7 @@ pub async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
 
     SyscallResult {
 	return_value: fd_num,
-	err_num: CanonicalError::EOK as u64,
+	err_num: CanonicalError::Ok as u64,
     }
 }
 
@@ -227,11 +227,11 @@ async fn sys_ioctl(fd_num: u64, ioctl: u64, buf: u64) -> SyscallResult {
     match r.ioctl(op, buf) {
 	Ok(ret) => SyscallResult {
 	    return_value: ret,
-	    err_num: CanonicalError::EOK as u64,
+	    err_num: CanonicalError::Ok as u64,
 	},
 	Err(_) => SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::EIO as u64
+	    err_num: CanonicalError::Io as u64
 	},
     }
 }
@@ -242,7 +242,7 @@ async fn sys_stat(filename: u64, _buf: u64) -> SyscallResult {
 	Err(_) => {
 	    return SyscallResult {
 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
-		err_num: CanonicalError::EINVAL as u64
+		err_num: CanonicalError::Inval as u64
 	    };
 	},
     };
@@ -250,7 +250,7 @@ async fn sys_stat(filename: u64, _buf: u64) -> SyscallResult {
     match vfs::stat(path).await {
 	Ok(_ret) => SyscallResult {
 	    return_value: 0,
-	    err_num: CanonicalError::EOK as u64
+	    err_num: CanonicalError::Ok as u64
 	},
 	Err(e) => SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
@@ -268,14 +268,14 @@ async fn sys_fstat(fd: u64, _buf: u64) -> SyscallResult {
 	vfs::FileDescriptor::File { file_name, .. } => file_name.clone(),
 	_ => return SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::EINVAL as u64,
+	    err_num: CanonicalError::Inval as u64,
 	}
     };
 
     match vfs::stat(path).await {
 	Ok(_ret) => SyscallResult {
 	    return_value: 0,
-	    err_num: CanonicalError::EOK as u64
+	    err_num: CanonicalError::Ok as u64
 	},
 	Err(e) => SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
@@ -300,7 +300,7 @@ async fn sys_dup(fd_num: u64) -> SyscallResult {
     let new_fd = process.emplace_fd(actual_fd);
     SyscallResult {
 	return_value: new_fd,
-	err_num: CanonicalError::EOK as u64,
+	err_num: CanonicalError::Ok as u64,
     }
 }
 
@@ -311,7 +311,7 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
 	    log::info!("Got fcntl number 0x{:x}", operation);
 	    return SyscallResult {
 		return_value:0xFFFF_FFFF_FFFF_FFFF,
-		err_num: CanonicalError::EINVAL as u64,
+		err_num: CanonicalError::Inval as u64,
 	    };
 //	    unimplemented!();
 	},
@@ -334,7 +334,7 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
 	    let new_fd = process.emplace_fd_at(actual_fd, param, true);
 	    SyscallResult {
 		return_value: new_fd,
-		err_num: CanonicalError::EOK as u64,
+		err_num: CanonicalError::Ok as u64,
 	    }
 	},
 	FcntlOperation::GetFD => {
@@ -352,7 +352,7 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
 
 	    SyscallResult {
 		return_value: actual_fd.flags,
-		err_num: CanonicalError::EOK as u64,
+		err_num: CanonicalError::Ok as u64,
 	    }
 	},
 	FcntlOperation::SetFD => {
@@ -369,7 +369,7 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
 	    process.set_fd_flags(fd_num, param);
 	    SyscallResult {
 		return_value: 0,
-		err_num: CanonicalError::EOK as u64,
+		err_num: CanonicalError::Ok as u64,
 	    }
 	},
     }
@@ -392,7 +392,7 @@ async fn sys_seek(fd_num: u64, offset: u64, whence: u64) -> SyscallResult {
     if whence > 3 || whence == 0 {
 	return SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::EINVAL as u64
+	    err_num: CanonicalError::Inval as u64
 	};
     }
 
@@ -400,11 +400,11 @@ async fn sys_seek(fd_num: u64, offset: u64, whence: u64) -> SyscallResult {
     match w.seek(offset, whence).await {
 	Ok(offs) => SyscallResult {
 	    return_value: offs,
-	    err_num: CanonicalError::EOK as u64,
+	    err_num: CanonicalError::Ok as u64,
 	},
 	Err(_) => SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::EINVAL as u64
+	    err_num: CanonicalError::Inval as u64
 	},
     }
 }
@@ -413,7 +413,7 @@ async fn sys_mmap(start_val: u64, count: u64, r8: u64) -> SyscallResult {
     if count == 0 {
 	return SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::EINVAL as u64
+	    err_num: CanonicalError::Inval as u64
 	};
     }
 
@@ -429,7 +429,7 @@ async fn sys_mmap(start_val: u64, count: u64, r8: u64) -> SyscallResult {
 	    let (start, _) = if start_val == 0 {
 		match memory::kernel_allocate(
 		    count,
-		    memory::MemoryAllocationType::RAM) {
+		    memory::MemoryAllocationType::Ram) {
 		    Ok(i) => i,
 		    Err(e) => panic!("Could not allocate memory for mmap: {:?}", e),
 		}
@@ -471,7 +471,7 @@ async fn sys_mmap(start_val: u64, count: u64, r8: u64) -> SyscallResult {
 
     SyscallResult {
 	return_value: start.as_u64(),
-	err_num: CanonicalError::EOK as u64,
+	err_num: CanonicalError::Ok as u64,
     }
 }
 
@@ -501,7 +501,7 @@ async fn sys_pipe(fds: u64, flags: u64) -> SyscallResult {
 
     SyscallResult {
 	return_value: 0,
-	err_num: CanonicalError::EOK as u64,
+	err_num: CanonicalError::Ok as u64,
     }
 }
     
@@ -513,7 +513,7 @@ async fn sys_getcwd(buf: u64, _count: u64) -> SyscallResult {
 
     SyscallResult {
 	return_value: 0,
-	err_num: CanonicalError::EOK as u64,
+	err_num: CanonicalError::Ok as u64,
     }
 }
 
@@ -521,7 +521,7 @@ async fn sys_fork(start: u64) -> SyscallResult {
     let pid = scheduler::fork_current_process(start);
     SyscallResult {
 	return_value: pid,
-	err_num: CanonicalError::EOK as u64,
+	err_num: CanonicalError::Ok as u64,
     }
 }
 
@@ -570,13 +570,13 @@ pub async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> Sysca
     if let Err(_e) = process.clone().init_stack_and_start() {
 	return SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::EIO as u64,
+	    err_num: CanonicalError::Io as u64,
 	};
     }
 
     SyscallResult {
 	return_value: 0,
-	err_num: CanonicalError::EOK as u64,
+	err_num: CanonicalError::Ok as u64,
     }
 }
 
@@ -584,7 +584,7 @@ async fn sys_getpid() -> SyscallResult {
     let pid = scheduler::get_current_pid();
     SyscallResult {
 	return_value: pid,
-	err_num: CanonicalError::EOK as u64,
+	err_num: CanonicalError::Ok as u64,
     }
 }
 
@@ -592,7 +592,7 @@ async fn sys_getppid() -> SyscallResult {
     // We don't yet support process parentage
     SyscallResult {
 	return_value: 0,
-	err_num: CanonicalError::EOK as u64,
+	err_num: CanonicalError::Ok as u64,
     }
 }
 
@@ -600,7 +600,7 @@ async fn sys_getpgid() -> SyscallResult {
     // We don't yet support process groups
     SyscallResult {
 	return_value: 0,
-	err_num: CanonicalError::EOK as u64,
+	err_num: CanonicalError::Ok as u64,
     }
 }
 
@@ -624,7 +624,7 @@ async fn sys_sigaction(signum: u64, new_sigaction: u64, old_sigaction: u64) -> S
 		Err(_) => {
 		    return SyscallResult {
 			return_value: 0xFFFF_FFFF_FFFF_FFFF,
-			err_num: CanonicalError::EINVAL as u64
+			err_num: CanonicalError::Inval as u64
 		    };
 		},
 	    }
@@ -637,7 +637,7 @@ async fn sys_sigaction(signum: u64, new_sigaction: u64, old_sigaction: u64) -> S
 	    Err(_) => {
 		return SyscallResult {
 		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-		    err_num: CanonicalError::EINVAL as u64
+		    err_num: CanonicalError::Inval as u64
 		};
 	    },
 	};
@@ -648,7 +648,7 @@ async fn sys_sigaction(signum: u64, new_sigaction: u64, old_sigaction: u64) -> S
 
     SyscallResult {
 	return_value: 0,
-	err_num: CanonicalError::EOK as u64,
+	err_num: CanonicalError::Ok as u64,
     }
 }
 
@@ -660,7 +660,7 @@ async fn sys_sigprocmask(how: u64, set: u64, oldset: u64) -> SyscallResult {
 	Err(_) => {
 	    return SyscallResult {
 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
-		err_num: CanonicalError::EINVAL as u64
+		err_num: CanonicalError::Inval as u64
 	    };
 	},
     };
@@ -670,7 +670,7 @@ async fn sys_sigprocmask(how: u64, set: u64, oldset: u64) -> SyscallResult {
 	if memory::copy_value_to_user::<u64>(VirtAddr::new(oldset), &old_val).is_err() {
 	    return SyscallResult {
 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
-		err_num: CanonicalError::EINVAL as u64
+		err_num: CanonicalError::Inval as u64
 	    };
 	}
     }
@@ -681,13 +681,13 @@ async fn sys_sigprocmask(how: u64, set: u64, oldset: u64) -> SyscallResult {
 	3 => process.signal_mask_setmask(newset),
 	_ => return SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::EINVAL as u64,
+	    err_num: CanonicalError::Inval as u64,
 	},
     }
 
     SyscallResult {
 	return_value: 0,
-	err_num: CanonicalError::EOK as u64,
+	err_num: CanonicalError::Ok as u64,
     }
 }
 

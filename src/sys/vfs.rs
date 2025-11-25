@@ -172,7 +172,7 @@ fn get_mount_point(path: &str) -> Result<(Arc<dyn FileSystem + Send + Sync>, Str
     if let Some(filesystem) = fs {
 	Ok((filesystem, file_name))
     } else {
-	Err(syscall::CanonicalError::ENOENT)
+	Err(syscall::CanonicalError::NoEnt)
     }
 }
 
@@ -186,6 +186,6 @@ pub async fn stat(file: String) -> Result<Stat, syscall::CanonicalError> {
 
     return match fs.stat(file_name).await {
 	Ok(l) => Ok(l),
-	Err(_) => Err(syscall::CanonicalError::ENOENT),
+	Err(_) => Err(syscall::CanonicalError::NoEnt),
     };
 }

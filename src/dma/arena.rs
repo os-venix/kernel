@@ -27,7 +27,7 @@ impl<'a> Arena {
     #[must_use]
     pub fn new() -> Self {	
 	let (arena_buf_virt, arena_buf_phys) = memory::kernel_allocate(
-	    4096, memory::MemoryAllocationType::DMA)
+	    4096, memory::MemoryAllocationType::Dma)
 	    .expect("Unable to allocate memory for DMA arena");
 
         Arena {

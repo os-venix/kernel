@@ -57,7 +57,7 @@ impl vfs::FileSystem for DevFS {
 	    .collect::<Vec<&str>>();
 	if parts.len() != 1 {
 	    return Box::pin(async move {
-		Err(syscall::CanonicalError::EINVAL)
+		Err(syscall::CanonicalError::Inval)
 	    });
 	}
 
@@ -65,7 +65,7 @@ impl vfs::FileSystem for DevFS {
 	    match self.file_table.read().get(parts[0]) {
 		Some(id) => *id,
 		None => return Box::pin(async move {
-		    Err(syscall::CanonicalError::EACCESS)
+		    Err(syscall::CanonicalError::Access)
 		}),
 	    }
 	};

@@ -322,7 +322,7 @@ unsafe impl Sync for IdeDrive { }
 impl driver::Device for IdeDrive {
     fn read(self: Arc<Self>, offset: u64, size: u64) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
 	if self.drive_type != DriveType::Ata {
-	    return Box::pin(async move { Err(syscall::CanonicalError::EIO) });
+	    return Box::pin(async move { Err(syscall::CanonicalError::Io) });
 	}
 	let mode = self.ident.get_mode();
 
@@ -498,7 +498,7 @@ impl IdeDrive {
 
 	let buf_ptr = memory::kernel_allocate(
 	    size,
-	    memory::MemoryAllocationType::RAM)
+	    memory::MemoryAllocationType::Ram)
 	    .expect("Unable to allocate heap").0.as_mut_ptr::<u16>();
 
 	let buf_u16 = unsafe {
@@ -528,7 +528,7 @@ impl IdeDrive {
 	}
 
 	let (buf_virt, buf_phys) = memory::kernel_allocate(
-	    size * 512, memory::MemoryAllocationType::DMA)
+	    size * 512, memory::MemoryAllocationType::Dma)
 	    .expect("Unable to allocate a PDRT memory region");
 
 	let mut compacted_phys_addr = {

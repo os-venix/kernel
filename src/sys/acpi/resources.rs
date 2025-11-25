@@ -48,7 +48,7 @@ enum UacpiResourceType {
 
     ClockInput,
 
-    UacpiResourceTypeEndTag,
+    ResourceTypeEndTag,
 }
 
 #[repr(C)]

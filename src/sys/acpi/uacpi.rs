@@ -9,6 +9,8 @@ use spin::Once;
 use x86_64::PhysAddr;
 use x86_64::instructions::port::Port;
 use x86_64::registers::rflags;
+use core::fmt;
+use core::fmt::Display;
 
 use crate::sys::acpi::acpi_lock::{Mutex, Semaphore};
 use crate::drivers::pcie;
@@ -143,10 +145,12 @@ pub struct UacpiIdString {
     contents: *const c_char,
 }
 
-impl UacpiIdString {
-    pub fn to_string(&self) -> String {
-	let cstr = unsafe { CStr::from_ptr(self.contents) };
-	String::from_utf8_lossy(cstr.to_bytes()).to_string()
+impl Display for UacpiIdString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // SAFETY: `self.contents` must be a valid NUL-terminated C string.
+        let cstr = unsafe { CStr::from_ptr(self.contents) };
+        let s = String::from_utf8_lossy(cstr.to_bytes());
+        f.write_str(&s)
     }
 }
 
