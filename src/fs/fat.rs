@@ -4,7 +4,6 @@ use alloc::vec::Vec;
 use core::ascii;
 use core::ptr;
 use spin::RwLock;
-use alloc::format;
 use bytes;
 use alloc::slice;
 use futures_util::future::BoxFuture;

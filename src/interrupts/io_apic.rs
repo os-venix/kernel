@@ -3,7 +3,6 @@ use core::ptr::{read_volatile, write_volatile};
 use ::acpi::platform::interrupt::{TriggerMode, Polarity};
 use ::acpi::InterruptModel;
 use alloc::vec::Vec;
-use alloc::format;
 use alloc::collections::btree_map::BTreeMap;
 
 use crate::interrupts::IRQ_BASE;
@@ -102,7 +101,7 @@ impl IoApic {
     }
 
     pub fn get_irq_for_gsi(&self, gsi: u32) -> Option<u8> {
-	self.gsi_to_irq.get(&gsi).map(|&i| i)
+	self.gsi_to_irq.get(&gsi).copied()
     }
 
     pub fn enable_gsi(&self, gsi: u32) {

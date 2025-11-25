@@ -99,7 +99,7 @@ impl Keyboard {
 	    protocol,
 	    hid_descriptor,
 	    poll_interval: endpoint.interval,
-	    endpoint_num: endpoint_num,
+	    endpoint_num,
 	    current_active_key: RwLock::new(None),
 	}
     }
