@@ -153,7 +153,7 @@ pub fn mount(mount_point: String, fs: Arc<dyn FileSystem + Send + Sync>) {
     mount_table.insert(mount_point, fs);
 }
 
-fn get_mount_point(path: &String) -> Result<(Arc<dyn FileSystem + Send + Sync>, String), syscall::CanonicalError> {
+fn get_mount_point(path: &str) -> Result<(Arc<dyn FileSystem + Send + Sync>, String), syscall::CanonicalError> {
     let mut fs: Option<Arc<dyn FileSystem + Send + Sync>> = None;
     let mut file_name: String = String::new();
     let mut current_mount_point = String::new();

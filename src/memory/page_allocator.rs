@@ -3,6 +3,7 @@ use x86_64::{
     VirtAddr,
     structures::paging::{PageTable, page_table::PageTableFlags}};
 use alloc::vec::Vec;
+use core::cmp::Ordering;
 
 #[derive(Debug)]
 struct MemoryRegion {
@@ -73,18 +74,11 @@ impl VenixPageAllocator {
 	    let mut compacted_entries: Vec<MemoryRegion> = Vec::new();
 	    let mut current_start: u64 = 0;
 	    for (idx, entry) in entries.iter().enumerate() {
-		if idx == 0 {
-		    current_start = entry.start;
-		} else if entry.start != entries[idx - 1].end {
+		if idx == 0 || entry.start != entries[idx - 1].end {
 		    current_start = entry.start;
 		}
 
-		if idx == entries.len() - 1 {
-		    compacted_entries.push(MemoryRegion {
-			start: current_start,
-			end: entry.end,
-		    });
-		} else if entry.end != entries[idx + 1].start {
+		if idx == entries.len() - 1 || entry.end != entries[idx + 1].start {
 		    compacted_entries.push(MemoryRegion {
 			start: current_start,
 			end: entry.end,
@@ -130,18 +124,11 @@ impl VenixPageAllocator {
 	    let mut compacted_entries: Vec<MemoryRegion> = Vec::new();
 	    let mut current_start: u64 = 0;
 	    for (idx, entry) in uncompacted_entries.iter().enumerate() {
-		if idx == 0 {
-		    current_start = entry.start;
-		} else if entry.start != uncompacted_entries[idx - 1].end {
+		if idx == 0 || entry.start != uncompacted_entries[idx - 1].end {
 		    current_start = entry.start;
 		}
 
-		if idx == uncompacted_entries.len() - 1 {
-		    compacted_entries.push(MemoryRegion {
-			start: current_start,
-			end: entry.end,
-		    });
-		} else if entry.end != uncompacted_entries[idx].start {
+		if idx == uncompacted_entries.len() - 1 || entry.end != uncompacted_entries[idx].start {
 		    compacted_entries.push(MemoryRegion {
 			start: current_start,
 			end: entry.end,
@@ -165,13 +152,17 @@ impl VenixPageAllocator {
 
 	if let Some(ref mut free_regions) = self.free_regions {
 	    for idx in 0 .. free_regions.len() {
-		if free_regions[idx].end - free_regions[idx].start == size_in_pages * 4096 {
-		    let region = free_regions.remove(idx);
-		    return VirtAddr::new_truncate(region.start);
-		} else if free_regions[idx].end - free_regions[idx].start > size_in_pages * 4096 {
-		    let start = free_regions[idx].start;
-		    free_regions[idx].start += size_in_pages * 4096;
-		    return VirtAddr::new_truncate(start);
+		match (free_regions[idx].end - free_regions[idx].start).cmp(&(size_in_pages * 4096)) {
+		    Ordering::Equal => {
+			let region = free_regions.remove(idx);
+			return VirtAddr::new_truncate(region.start);
+		    },
+		    Ordering::Greater => {
+			let start = free_regions[idx].start;
+			free_regions[idx].start += size_in_pages * 4096;
+			return VirtAddr::new_truncate(start);
+		    },
+		    Ordering::Less => (),
 		}
 	    }
 	    panic!("Kernel OOM");

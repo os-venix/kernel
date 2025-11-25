@@ -17,7 +17,7 @@ use crate::dma::arena;
 use crate::drivers::pcie;
 use crate::driver;
 use crate::memory;
-use crate::drivers::usb::usb;
+use crate::drivers::usb::usbdevice;
 
 const USBCMD: u16 = 0x00;
 const USBSTS: u16 = 0x02;
@@ -520,20 +520,20 @@ impl<'a> UhciBus<'a> {
 	Ok(())
     }
 
-    fn build_transfer(&self, address: u8, transfer: usb::UsbTransfer) -> UhciTransfer {
+    fn build_transfer(&self, address: u8, transfer: usbdevice::UsbTransfer) -> UhciTransfer {
 	let mut uhci_transfer = UhciTransfer::new();
 	if let Some(c) = transfer.callback {
 	    uhci_transfer.set_callback(c);
 	}
 
 	let (data_per_xfer, is_low_speed) = match transfer.speed {
-	    usb::PortSpeed::LowSpeed => (8, true),
-	    usb::PortSpeed::FullSpeed => (1023, false),
+	    usbdevice::PortSpeed::LowSpeed => (8, true),
+	    usbdevice::PortSpeed::FullSpeed => (1023, false),
 	};
 
 	match transfer.transfer_type {
-	    usb::TransferType::ControlRead(ref setup_packet) => {
-		let (_, packet_phys) = uhci_transfer.arena.acquire::<usb::SetupPacket>(0, setup_packet).unwrap();
+	    usbdevice::TransferType::ControlRead(ref setup_packet) => {
+		let (_, packet_phys) = uhci_transfer.arena.acquire::<usbdevice::SetupPacket>(0, setup_packet).unwrap();
 		let buffer_phys = uhci_transfer.create_transfer_buffer(setup_packet.length as usize);
 
 		uhci_transfer.create_transfer_descriptor(
@@ -555,8 +555,8 @@ impl<'a> UhciBus<'a> {
 		    is_low_speed, 0 /* len */, transfer.endpoint, address,
 		    0xe1 /* packet_id = OUT */, PhysAddr::new(0), TransferDescriptorType::Status);
 	    },
-	    usb::TransferType::ControlWrite(ref write_setup_packet) => {
-		let (_, packet_phys) = uhci_transfer.arena.acquire::<usb::SetupPacket>(0, &write_setup_packet.setup_packet).unwrap();
+	    usbdevice::TransferType::ControlWrite(ref write_setup_packet) => {
+		let (_, packet_phys) = uhci_transfer.arena.acquire::<usbdevice::SetupPacket>(0, &write_setup_packet.setup_packet).unwrap();
 		let (_, data_phys) = uhci_transfer.arena.acquire_slice_buffer(
 		    0, write_setup_packet.buf.as_slice(), write_setup_packet.setup_packet.length as usize).unwrap();
 
@@ -579,15 +579,15 @@ impl<'a> UhciBus<'a> {
 		    is_low_speed, 0 /* len */, transfer.endpoint, address,
 		    0x69 /* packet_id = IN */, PhysAddr::new(0), TransferDescriptorType::Status);
 	    },
-	    usb::TransferType::ControlNoData(ref setup_packet) => {
-		let (_, packet_phys) = uhci_transfer.arena.acquire::<usb::SetupPacket>(0, setup_packet).unwrap();
+	    usbdevice::TransferType::ControlNoData(ref setup_packet) => {
+		let (_, packet_phys) = uhci_transfer.arena.acquire::<usbdevice::SetupPacket>(0, setup_packet).unwrap();
 		log::info!("{:x}", packet_phys.as_u64());
 		uhci_transfer.create_transfer_descriptor(
 		    is_low_speed, 8 /* len */, transfer.endpoint, address, 0x2d /* packet_id = SETUP */, packet_phys, TransferDescriptorType::Setup);
 		uhci_transfer.create_transfer_descriptor(
 		    is_low_speed, 0 /* len */, transfer.endpoint, address, 0x69 /* packet_id = IN */, PhysAddr::new(0), TransferDescriptorType::Status);
 	    },
-	    usb::TransferType::InterruptIn(ref interrupt_transfer_descriptor) => {
+	    usbdevice::TransferType::InterruptIn(ref interrupt_transfer_descriptor) => {
 		let buffer_phys = uhci_transfer.create_transfer_buffer(interrupt_transfer_descriptor.length as usize);
 		uhci_transfer.create_transfer_descriptor(
 		    is_low_speed, interrupt_transfer_descriptor.length, transfer.endpoint,
@@ -599,7 +599,7 @@ impl<'a> UhciBus<'a> {
 	uhci_transfer
     }
 
-    fn handle_oneshot(&mut self, mut uhci_transfer: UhciTransfer, transfer: usb::UsbTransfer) -> Option<Box<[u8]>> {
+    fn handle_oneshot(&mut self, mut uhci_transfer: UhciTransfer, transfer: usbdevice::UsbTransfer) -> Option<Box<[u8]>> {
 	// One shots should always be polling (for now, anyway)
 	if !transfer.poll {
 	    return None;
@@ -659,17 +659,17 @@ impl<'a> UhciBus<'a> {
     }
 }
     
-impl usb::UsbHCI for UhciBus<'_> {
-    fn get_ports(&self) -> Vec<usb::Port> {
-	let mut ports: Vec<usb::Port> = Vec::new();
+impl usbdevice::UsbHCI for UhciBus<'_> {
+    fn get_ports(&self) -> Vec<usbdevice::Port> {
+	let mut ports: Vec<usbdevice::Port> = Vec::new();
 	if self.port1 {
 	    if let Err(e) = self.reset_port(1) {
 		log::info!("{}", e);
 	    } else {
-		ports.push(usb::Port {
+		ports.push(usbdevice::Port {
 		    num: 1,
-		    status: usb::PortStatus::Connected,
-		    speed: usb::PortSpeed::LowSpeed,  // TODO (here and below): actually check the speed of the port
+		    status: usbdevice::PortStatus::Connected,
+		    speed: usbdevice::PortSpeed::LowSpeed,  // TODO (here and below): actually check the speed of the port
 		});
 	    }
 	}
@@ -677,10 +677,10 @@ impl usb::UsbHCI for UhciBus<'_> {
 	    if let Err(e) = self.reset_port(2) {
 		log::info!("{}", e);
 	    } else {
-		ports.push(usb::Port {
+		ports.push(usbdevice::Port {
 		    num: 2,
-		    status: usb::PortStatus::Disconnected,
-		    speed: usb::PortSpeed::LowSpeed,
+		    status: usbdevice::PortStatus::Disconnected,
+		    speed: usbdevice::PortSpeed::LowSpeed,
 		});
 	    }
 	}
@@ -688,9 +688,9 @@ impl usb::UsbHCI for UhciBus<'_> {
 	ports
     }
 
-    fn transfer(&mut self, address: u8, transfer: usb::UsbTransfer) -> Option<Box<[u8]>> {
+    fn transfer(&mut self, address: u8, transfer: usbdevice::UsbTransfer) -> Option<Box<[u8]>> {
 	match transfer.transfer_type {
-	    usb::TransferType::InterruptIn(ref interrupt_transfer_descriptor) => {
+	    usbdevice::TransferType::InterruptIn(ref interrupt_transfer_descriptor) => {
 		// Clear li'ngering interrupts ready for transfer
 		unsafe {
 		    let mut port_sts = Port::<u16>::new(self.base_io + USBSTS);
@@ -759,11 +759,8 @@ impl usb::UsbHCI for UhciBus<'_> {
 		    transfer.output_tds();
 		}
 	    }
-
-	    loop {}
 	} else if usberr && !usbint {
 	    log::info!("USB Error - not set on transaction");
-	    loop {}
 	}
 
 	unsafe {
@@ -782,7 +779,7 @@ pub fn init() {
 
 pub struct UhciDriver {}
 impl driver::Driver for UhciDriver {
-    fn init(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) {
+    fn init(&self, info: &dyn driver::DeviceTypeIdentifier) {
 	log::info!("Initialising UHCI controller");
 
 	let pci_info = if let Some(pci_info) = info.as_any().downcast_ref::<pcie::PciDeviceType>() {
@@ -795,7 +792,7 @@ impl driver::Driver for UhciDriver {
 
 	// UHCI is guaranteed to be I/O space
 	let uhci_base = bar.unwrap_io();
-	let uhci: Arc<Mutex<Box<dyn usb::UsbHCI>>> = Arc::new(Mutex::new(Box::new(UhciBus::new(pci_info.address, uhci_base as u16))));
+	let uhci: Arc<Mutex<Box<dyn usbdevice::UsbHCI>>> = Arc::new(Mutex::new(Box::new(UhciBus::new(pci_info.address, uhci_base as u16))));
 
 	if let Some(interrupt_route) = &pci_info.interrupt_mapping {
 	    pcie::enable_interrupts(pci_info.clone());
@@ -806,10 +803,10 @@ impl driver::Driver for UhciDriver {
 	    }));
 	}
 
-	usb::register_hci(uhci);
+	usbdevice::register_hci(uhci);
     }
 
-    fn check_device(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
+    fn check_device(&self, info: &dyn driver::DeviceTypeIdentifier) -> bool {
 	if let Some(pci_info) = info.as_any().downcast_ref::<pcie::PciDeviceType>() {
 	    pci_info.base_class == 0x0C &&
 		pci_info.sub_class == 0x03 &&
@@ -819,12 +816,12 @@ impl driver::Driver for UhciDriver {
 	}
     }
 
-    fn check_new_device(&self, _info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
+    fn check_new_device(&self, _info: &dyn driver::DeviceTypeIdentifier) -> bool {
 	true // Not yet implemented
     }
 }
 
-fn handle_uhci_interrupts(hci: &Arc<Mutex<Box<dyn usb::UsbHCI>>>) {
+fn handle_uhci_interrupts(hci: &Arc<Mutex<Box<dyn usbdevice::UsbHCI>>>) {
     let (callback, buffer) = hci.lock().interrupt();
 
     // This has to be done outside of the lock, in case it results in more USB traffic

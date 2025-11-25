@@ -14,9 +14,9 @@ use crate::sys::vfs;
 use crate::sys::ioctl;
 
 pub trait Driver {
-    fn init(&self, info: &Box<dyn DeviceTypeIdentifier>);
-    fn check_device(&self, info: &Box<dyn DeviceTypeIdentifier>) -> bool;
-    fn check_new_device(&self, info: &Box<dyn DeviceTypeIdentifier>) -> bool;
+    fn init(&self, info: &dyn DeviceTypeIdentifier);
+    fn check_device(&self, info: &dyn DeviceTypeIdentifier) -> bool;
+    fn check_new_device(&self, info: &dyn DeviceTypeIdentifier) -> bool;
 }
 
 pub trait DeviceTypeIdentifier: fmt::Display {
@@ -183,8 +183,8 @@ pub fn register_bus_and_enumerate(bus: Arc<Mutex<dyn Bus + Send + Sync>>) {
 	let driver_tbl = DRIVER_TABLE.get().expect("Attempted to access driver table before it is initialised").read();
 
 	let driver = match driver_tbl.iter()
-	    .find(|d| d.check_device(found_device) &&
-		  d.check_new_device(found_device)) {
+	    .find(|d| d.check_device(found_device.as_ref()) &&
+		  d.check_new_device(found_device.as_ref())) {
 		Some(d) => d,
 		None => {
 //		    log::info!("No driver installed or attempted to init twice for {}", found_device);
@@ -193,7 +193,7 @@ pub fn register_bus_and_enumerate(bus: Arc<Mutex<dyn Bus + Send + Sync>>) {
 	    };
 
 	log::info!("Found new device {}", found_device);
-	driver.init(found_device);
+	driver.init(found_device.as_ref());
     }
 
     let mut bus_tbl = BUS_TABLE.get().expect("Attempted to access bus table before it is initialised").write();
@@ -204,8 +204,8 @@ pub fn enumerate_device(device_identifier: Box<dyn DeviceTypeIdentifier>) {
     let driver_tbl = DRIVER_TABLE.get().expect("Attempted to access driver table before it is initialised").read();
 
     let driver = match driver_tbl.iter()
-	.find(|d| d.check_device(&device_identifier) &&
-	      d.check_new_device(&device_identifier)) {
+	.find(|d| d.check_device(device_identifier.as_ref()) &&
+	      d.check_new_device(device_identifier.as_ref())) {
 	    Some(d) => d,
 	    None => {
 //		log::info!("No driver installed or attempted to init twice for {}", device_identifier);
@@ -214,5 +214,5 @@ pub fn enumerate_device(device_identifier: Box<dyn DeviceTypeIdentifier>) {
 	};
 
     log::info!("Found new device {}", device_identifier);
-    driver.init(&device_identifier);    
+    driver.init(device_identifier.as_ref());
 }

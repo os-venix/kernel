@@ -12,7 +12,7 @@ pub fn init() {
 
 pub struct IdeDriver {}
 impl driver::Driver for IdeDriver {
-    fn init(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) {
+    fn init(&self, info: &dyn driver::DeviceTypeIdentifier) {
 	let pci_info = if let Some(pci_info) = info.as_any().downcast_ref::<pcie::PciDeviceType>() {
 	    pci_info
 	} else {
@@ -49,7 +49,7 @@ impl driver::Driver for IdeDriver {
 	ide::detect_drives(control_secondary_base, io_secondary_base, busmaster_secondary_base);
     }
 
-    fn check_device(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
+    fn check_device(&self, info: &dyn driver::DeviceTypeIdentifier) -> bool {
 	if let Some(pci_info) = info.as_any().downcast_ref::<pcie::PciDeviceType>() {
 	    pci_info.base_class == 1 &&
 		pci_info.sub_class == 1
@@ -58,7 +58,7 @@ impl driver::Driver for IdeDriver {
 	}
     }
 
-    fn check_new_device(&self, _info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
+    fn check_new_device(&self, _info: &dyn driver::DeviceTypeIdentifier) -> bool {
 	true // Not yet implemented
     }
 }

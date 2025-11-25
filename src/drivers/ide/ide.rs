@@ -80,17 +80,17 @@ impl Default for MediaSerialNumber {
 
 #[derive(Debug)]
 enum Mode {
-    MWDMA2,
-    MWDMA1,
-    MWDMA0,
-    UDMA6,
-    UDMA5,
-    UDMA4,
-    UDMA3,
-    UDMA2,
-    UDMA1,
-    UDMA0,
-    PIO,
+    MwDma2,
+    MwDma1,
+    MwDma0,
+    Udma6,
+    Udma5,
+    Udma4,
+    Udma3,
+    Udma2,
+    Udma1,
+    Udma0,
+    Pio,
 }
 
 #[repr(C, packed(1))]
@@ -215,37 +215,37 @@ impl IdentifyStruct {
 	let udma_modes = self.udma_modes;
 
 	if dma_modes.get_bit(10) {
-	    Mode::MWDMA2
+	    Mode::MwDma2
 	} else if dma_modes.get_bit(9) {
-	    Mode::MWDMA1
+	    Mode::MwDma1
 	} else if dma_modes.get_bit(8) {
-	    Mode::MWDMA0
+	    Mode::MwDma0
 	} else if udma_modes.get_bit(14) {
-	    Mode::UDMA6
+	    Mode::Udma6
 	} else if udma_modes.get_bit(13) {
-	    Mode::UDMA5
+	    Mode::Udma5
 	} else if udma_modes.get_bit(12) {
-	    Mode::UDMA4
+	    Mode::Udma4
 	} else if udma_modes.get_bit(11) {
-	    Mode::UDMA3
+	    Mode::Udma3
 	} else if udma_modes.get_bit(10) {
-	    Mode::UDMA2
+	    Mode::Udma2
 	} else if udma_modes.get_bit(9) {
-	    Mode::UDMA1
+	    Mode::Udma1
 	} else if udma_modes.get_bit(8) {
-	    Mode::UDMA0
+	    Mode::Udma0
 	} else {
-	    Mode::PIO
+	    Mode::Pio
 	}
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum DriveType {
-    ATA,
-    ATAPI,
-    SATA,
-    SATAPI,
+    Ata,
+    Atapi,
+    Sata,
+    Satapi,
 }
 
 struct IdeController {
@@ -258,7 +258,7 @@ struct IdeController {
 }
 
 impl IdeController {
-    pub fn new(control_base: u16, io_base: u16, busmaster_base: Option<u32>) {
+    pub fn instantiate(control_base: u16, io_base: u16, busmaster_base: Option<u32>) {
 	let arena = arena::Arena::new();
 	let (prdt, prdt_phys_addr) = arena.acquire_slice_by_tag(0, 4096).unwrap();
 
@@ -321,13 +321,13 @@ unsafe impl Sync for IdeDrive { }
 
 impl driver::Device for IdeDrive {
     fn read(self: Arc<Self>, offset: u64, size: u64) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
-	if self.drive_type != DriveType::ATA {
+	if self.drive_type != DriveType::Ata {
 	    return Box::pin(async move { Err(syscall::CanonicalError::EIO) });
 	}
 	let mode = self.ident.get_mode();
 
 	match mode {
-	    Mode::PIO => Box::pin(async move { self.clone().pio_read(offset, size).await }),
+	    Mode::Pio => Box::pin(async move { self.clone().pio_read(offset, size).await }),
 	    _ => Box::pin(async move { self.clone().dma_read(offset, size).await }),
 	}
     }
@@ -349,7 +349,7 @@ impl IdeDrive {
 	    ident: IdentifyStruct {
 		..Default::default()
 	    },
-	    drive_type: DriveType::ATA,
+	    drive_type: DriveType::Ata,
 	};
 
 	if !ide_drive.check_exists_and_set_type() {
@@ -401,10 +401,10 @@ impl IdeDrive {
 		    let ch = reg_cyl_hi.read();
 
 		    self.drive_type = match (cl, ch) {
-			(0x14, 0xEB) => DriveType::ATAPI,
-			(0x69, 0x96) => DriveType::SATAPI,
-			(0x00, 0x00) => DriveType::ATA,
-			(0x3C, 0xC3) => DriveType::SATA,
+			(0x14, 0xEB) => DriveType::Atapi,
+			(0x69, 0x96) => DriveType::Satapi,
+			(0x00, 0x00) => DriveType::Ata,
+			(0x3C, 0xC3) => DriveType::Sata,
 			_ => {
 			    log::info!("Unrecognised drive type {}:{} for drive {}", cl, ch, self.drive_num);
 			    return false;
@@ -419,7 +419,7 @@ impl IdeDrive {
 		// This is an ATA drive
 		if (status & IDE_STATUS_BSY == 0) &&
 		    (status & IDE_STATUS_RDY != 0) {
-			self.drive_type = DriveType::ATA;
+			self.drive_type = DriveType::Ata;
 			return true;
 		    }
 	    }
@@ -431,10 +431,10 @@ impl IdeDrive {
 	self.select(&ctl);
 
 	let cmd = match self.drive_type {
-	    DriveType::ATAPI => IDE_CMD_PACKET_IDENTIFY,
-	    DriveType::SATAPI => IDE_CMD_PACKET_IDENTIFY,
-	    DriveType::ATA => IDE_CMD_IDENTIFY,
-	    DriveType::SATA => IDE_CMD_IDENTIFY,
+	    DriveType::Atapi => IDE_CMD_PACKET_IDENTIFY,
+	    DriveType::Satapi => IDE_CMD_PACKET_IDENTIFY,
+	    DriveType::Ata => IDE_CMD_IDENTIFY,
+	    DriveType::Sata => IDE_CMD_IDENTIFY,
 	};
 	unsafe {
 	    let mut cmd_reg = Port::<u8>::new(ctl.io_base + IDE_CMD_REG);
@@ -450,10 +450,10 @@ impl IdeDrive {
 	}
 
 	let mut buf: [u32; 128] = [0; 128];
-	for i in 0 .. 128 {
+	for i in &mut buf {
 	    unsafe {
 		let mut data_reg = Port::<u32>::new(ctl.io_base + IDE_DATA_REG);
-		buf[i] = data_reg.read();
+		*i = data_reg.read();
 	    }
 	}
 
@@ -535,9 +535,7 @@ impl IdeDrive {
 	    let mut compacted_phys_addr: vec::Vec<memory::MemoryRegion> = vec::Vec::new();
 	    let mut current_start: u64 = 0;
 	    for (idx, phys_addr) in buf_phys.iter().enumerate() {
-		if idx == 0 {
-		    current_start = phys_addr.as_u64();
-		} else if phys_addr.as_u64() - 4096 != buf_phys[idx - 1].as_u64() {
+		if idx == 0 || phys_addr.as_u64() - 4096 != buf_phys[idx - 1].as_u64() {
 		    current_start = phys_addr.as_u64();
 		}
 
@@ -713,5 +711,5 @@ impl IdeDrive {
 }
 
 pub fn detect_drives(control_base: u16, io_base: u16, busmaster_base: Option<u32>) {
-    IdeController::new(control_base, io_base, busmaster_base);
+    IdeController::instantiate(control_base, io_base, busmaster_base);
 }

@@ -233,10 +233,8 @@ pub fn get_pci_routing_table(namespace: Namespace) -> Result<VecMap<PciInterrupt
 	    let link_resources = resources::get_resources(route.source)?;
 	    
 	    let irqs = link_resources.iter()
-		.filter(|r| match r {
-		    resources::Resource::Irq { .. } => true,
-		    _ => false,
-		}).map(|r| match r {
+		.filter(|r| matches!(r, resources::Resource::Irq { .. }))
+		.map(|r| match r {
 		    resources::Resource::Irq {
 			irqs,
 			..

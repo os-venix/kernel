@@ -19,6 +19,7 @@ use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
 use anyhow::{anyhow, Result};
 use alloc::slice;
+use core::cmp::Ordering;
 
 use crate::memory;
 
@@ -179,21 +180,26 @@ impl AddressSpace {
 	    if self.free_regions[idx].start == 0 {
 		self.free_regions[idx].start = 4096;
 	    }
-	    if self.free_regions[idx].end - self.free_regions[idx].start == size_in_pages*4096 {
-		let region = self.free_regions.remove(idx);
 
-		self.map_a_region(region.clone());
-		return VirtAddr::new(region.start);
-	    } else if self.free_regions[idx].end - self.free_regions[idx].start > size_in_pages * 4096 {
-		let start = self.free_regions[idx].start;
-		self.free_regions[idx].start += size_in_pages * 4096;
+	    match (self.free_regions[idx].end - self.free_regions[idx].start).cmp(&(size_in_pages*4096)) {
+		Ordering::Equal => {
+		    let region = self.free_regions.remove(idx);
 
-		self.map_a_region(MemoryRegion {
-		    start,
-		    end: start + size_in_pages * 4096,
-		});
+		    self.map_a_region(region.clone());
+		    return VirtAddr::new(region.start);
+		},
+		Ordering::Greater => {
+		    let start = self.free_regions[idx].start;
+		    self.free_regions[idx].start += size_in_pages * 4096;
+
+		    self.map_a_region(MemoryRegion {
+			start,
+			end: start + size_in_pages * 4096,
+		    });
 		    
-		return VirtAddr::new(start);
+		    return VirtAddr::new(start);
+		},
+		Ordering::Less => (),
 	    }
 	}
 	panic!("OOM");

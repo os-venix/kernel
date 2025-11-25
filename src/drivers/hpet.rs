@@ -1,5 +1,4 @@
 use crate::driver;
-use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::sync::Arc;
 use alloc::boxed::Box;
@@ -267,7 +266,7 @@ impl driver::Device for HpetDevice {
 
 pub struct HpetDriver {}
 impl driver::Driver for HpetDriver {
-    fn init(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) {
+    fn init(&self, info: &dyn driver::DeviceTypeIdentifier) {
 	let system_bus_identifier = if let Some(sb_info) = info.as_any().downcast_ref::<namespace::SystemBusDeviceIdentifier>() {
 	    sb_info
 	} else {
@@ -276,10 +275,8 @@ impl driver::Driver for HpetDriver {
 
 	let resources = resources::get_resources(system_bus_identifier.namespace).unwrap();
 	let (base_address, range_length) = resources.iter()
-	    .filter(|r| match r {
-		resources::Resource::FixedMemory32 { .. } => true,
-		_ => false,
-	    }).map(|r| match r {
+	    .filter(|r| matches!(r, resources::Resource::FixedMemory32 { .. }))
+	    .map(|r| match r {
 		resources::Resource::FixedMemory32 {
 		    write_status: _,
 		    address,
@@ -302,10 +299,10 @@ impl driver::Driver for HpetDriver {
 	}
     }
 
-    fn check_device(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
+    fn check_device(&self, info: &dyn driver::DeviceTypeIdentifier) -> bool {
 	if let Some(sb_info) = info.as_any().downcast_ref::<namespace::SystemBusDeviceIdentifier>() {
 	    if let Some(hid) = &sb_info.hid {
-		*hid == String::from("PNP0103")
+		*hid == "PNP0103"
 	    } else {
 		false
 	    }
@@ -314,7 +311,7 @@ impl driver::Driver for HpetDriver {
 	}
     }
 
-    fn check_new_device(&self, _info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
+    fn check_new_device(&self, _info: &dyn driver::DeviceTypeIdentifier) -> bool {
 	!HPET.is_completed()
     }
 }

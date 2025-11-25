@@ -8,7 +8,7 @@ use futures_util::future::BoxFuture;
 use crate::console;
 use crate::driver;
 use crate::drivers::usb::protocol as usb_protocol;
-use crate::drivers::usb::usb;
+use crate::drivers::usb::usbdevice;
 use crate::sys::syscall;
 use crate::sys::ioctl;
 
@@ -22,7 +22,7 @@ enum HidProtocol {
 
 #[allow(dead_code)]
 struct Keyboard {
-    device_info: usb::UsbDevice,
+    device_info: usbdevice::UsbDevice,
     protocol: HidProtocol,
     hid_descriptor: protocol::HidDescriptor,
     poll_interval: u8,
@@ -33,7 +33,7 @@ struct Keyboard {
 }
 
 impl Keyboard {
-    pub fn new(device_info: usb::UsbDevice, protocol: HidProtocol, hid_descriptor: protocol::HidDescriptor) -> Self {
+    pub fn new(device_info: usbdevice::UsbDevice, protocol: HidProtocol, hid_descriptor: protocol::HidDescriptor) -> Self {
 	if protocol == HidProtocol::Report {
 	    unimplemented!()
 	}
@@ -45,13 +45,13 @@ impl Keyboard {
 	    .nth(0)
 	    .unwrap();
 
-	let set_protocol = usb::UsbTransfer {
-	    transfer_type: usb::TransferType::ControlNoData(usb::SetupPacket {
+	let set_protocol = usbdevice::UsbTransfer {
+	    transfer_type: usbdevice::TransferType::ControlNoData(usbdevice::SetupPacket {
 		request_type: {
-		    let mut t = usb::SetupPacketRequestType::default();
-		    t.set_direction_from_enum(usb::SetupPacketRequestTypeDirection::HostToDevice);
-		    t.set_request_type_from_enum(usb::SetupPacketRequestTypeRequestType::Class);
-		    t.set_recipient_from_enum(usb::SetupPacketRequestTypeRecipient::Interface);
+		    let mut t = usbdevice::SetupPacketRequestType::default();
+		    t.set_direction_from_enum(usbdevice::SetupPacketRequestTypeDirection::HostToDevice);
+		    t.set_request_type_from_enum(usbdevice::SetupPacketRequestTypeRequestType::Class);
+		    t.set_recipient_from_enum(usbdevice::SetupPacketRequestTypeRecipient::Interface);
 		    t
 		},
 		request: 0x0b,  // SET_PROTOCOL
@@ -68,14 +68,14 @@ impl Keyboard {
 	    device_info.hci.lock().transfer(device_info.address, set_protocol);
 	}
 
-	let set_report = usb::UsbTransfer {
-	    transfer_type: usb::TransferType::ControlWrite(usb::WriteSetupPacket {
-		setup_packet: usb::SetupPacket {
+	let set_report = usbdevice::UsbTransfer {
+	    transfer_type: usbdevice::TransferType::ControlWrite(usbdevice::WriteSetupPacket {
+		setup_packet: usbdevice::SetupPacket {
 		    request_type: {
-			let mut t = usb::SetupPacketRequestType::default();
-			t.set_direction_from_enum(usb::SetupPacketRequestTypeDirection::HostToDevice);
-			t.set_request_type_from_enum(usb::SetupPacketRequestTypeRequestType::Class);
-			t.set_recipient_from_enum(usb::SetupPacketRequestTypeRecipient::Interface);
+			let mut t = usbdevice::SetupPacketRequestType::default();
+			t.set_direction_from_enum(usbdevice::SetupPacketRequestTypeDirection::HostToDevice);
+			t.set_request_type_from_enum(usbdevice::SetupPacketRequestTypeRequestType::Class);
+			t.set_recipient_from_enum(usbdevice::SetupPacketRequestTypeRecipient::Interface);
 			t
 		    },
 		    request: 0x09,  // SET_REPORT
@@ -105,8 +105,8 @@ impl Keyboard {
     }
 
     pub fn start_with_callback(&self, callback: Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>) {
-	let xfer_config_descriptor = usb::UsbTransfer {
-	    transfer_type: usb::TransferType::InterruptIn(usb::InterruptTransferDescriptor {
+	let xfer_config_descriptor = usbdevice::UsbTransfer {
+	    transfer_type: usbdevice::TransferType::InterruptIn(usbdevice::InterruptTransferDescriptor {
 		frequency_in_ms: self.poll_interval,
 		length: 8,
 	    }),
@@ -157,10 +157,10 @@ pub fn init() {
 
 pub struct HidDriver {}
 impl driver::Driver for HidDriver {
-    fn init(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) {
+    fn init(&self, info: &dyn driver::DeviceTypeIdentifier) {
 	log::info!("Initialising HID device");
 
-	if let Some(usb_info) = info.as_any().downcast_ref::<usb::UsbDevice>() {
+	if let Some(usb_info) = info.as_any().downcast_ref::<usbdevice::UsbDevice>() {
 	    let protocol = if usb_info.interface_descriptor.subclass == 1 { HidProtocol::Boot } else { HidProtocol::Report };
 
 	    let mut hid_descriptor: protocol::HidDescriptor = Default::default();
@@ -189,15 +189,15 @@ impl driver::Driver for HidDriver {
 	}
     }
 
-    fn check_device(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
-	if let Some(usb_info) = info.as_any().downcast_ref::<usb::UsbDevice>() {
+    fn check_device(&self, info: &dyn driver::DeviceTypeIdentifier) -> bool {
+	if let Some(usb_info) = info.as_any().downcast_ref::<usbdevice::UsbDevice>() {
 	    usb_info.interface_descriptor.class == 3
 	} else {
 	    false
 	}
     }
 
-    fn check_new_device(&self, _info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
+    fn check_new_device(&self, _info: &dyn driver::DeviceTypeIdentifier) -> bool {
 	true // Not yet implemented
     }
 }

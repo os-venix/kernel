@@ -189,7 +189,7 @@ impl driver::Bus for PciBus {
 
 pub struct PciDriver {}
 impl driver::Driver for PciDriver {
-    fn init(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) {
+    fn init(&self, info: &dyn driver::DeviceTypeIdentifier) {
 	let system_bus_identifier = if let Some(sb_info) = info.as_any().downcast_ref::<namespace::SystemBusDeviceIdentifier>() {
 	    sb_info
 	} else {
@@ -225,10 +225,10 @@ impl driver::Driver for PciDriver {
 	}
     }
 
-    fn check_device(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
+    fn check_device(&self, info: &dyn driver::DeviceTypeIdentifier) -> bool {
 	if let Some(sb_info) = info.as_any().downcast_ref::<namespace::SystemBusDeviceIdentifier>() {
 	    if let Some(hid) = &sb_info.hid {
-		*hid == String::from("PNP0A03")
+		*hid == "PNP0A03"
 	    } else {
 		false
 	    }
@@ -237,7 +237,7 @@ impl driver::Driver for PciDriver {
 	}
     }
 
-    fn check_new_device(&self, _info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
+    fn check_new_device(&self, _info: &dyn driver::DeviceTypeIdentifier) -> bool {
 	true // Not yet implemented
     }
 }

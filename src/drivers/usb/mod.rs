@@ -1,5 +1,5 @@
 mod uhci;
-pub mod usb;
+pub mod usbdevice;
 pub mod protocol;
 
 pub fn init() {

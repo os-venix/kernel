@@ -166,7 +166,7 @@ pub fn add_handler_to_irq(irq: u8, handler: Box<(dyn Fn() + Send + Sync)>) {
     if let Some(v) = handler_funcs.get_mut(&irq) {
 	v.push(handler);
     } else {
-	let mut v = vec![handler];
+	let v = vec![handler];
 	handler_funcs.insert(irq, v);
     }
 }
