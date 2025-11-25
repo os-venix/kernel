@@ -131,8 +131,7 @@ impl GptDevice {
 
 		let partition_name_utf16 = partition_entries[p as usize].partition_name;
 		let partition_name = String::from_utf16(
-		    partition_name_utf16.iter()
-			.map(|i| *i)
+		    partition_name_utf16.iter().copied()
 			.filter(|i| *i != 0)
 			.collect::<Vec<u16>>()
 			.as_slice())
@@ -149,8 +148,8 @@ impl GptDevice {
 	};
 
 	let device_arc = Arc::new(GptDevice {
-	    mbr: mbr,
-	    pth: pth,
+	    mbr,
+	    pth,
 	    pt: partition_entries.clone(),
 	    dev: device,
 	});

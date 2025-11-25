@@ -121,7 +121,7 @@ pub struct PciInterruptFunction {
 
 impl PartialEq for PciInterruptFunction {
     fn eq(&self, other: &Self) -> bool {
-	let functions_equal = self.function == other.function || self.function == None || other.function == None;
+	let functions_equal = self.function == other.function || self.function.is_none() || other.function.is_none();
 	self.device == other.device && self.pin == other.pin && functions_equal
     }
 }
@@ -165,10 +165,10 @@ unsafe extern "C" fn acpi_probe_device(_user: *mut c_void, namespace: Namespace,
     let uid = if namespace_info.flags.uid() { Some(namespace_info.uid.to_string()) } else { None };
 
     let ident = SystemBusDeviceIdentifier {
-	namespace: namespace,
+	namespace,
 	hid: hid.clone(),
 	uid: uid.clone(),
-	path: path,
+	path,
     };
 
     if hid.is_some() || uid.is_some() {
@@ -226,7 +226,7 @@ pub fn get_pci_routing_table(namespace: Namespace) -> Result<VecMap<PciInterrupt
 	    routing_map.insert(PciInterruptFunction {
 		device: device_address,
 		function: function_address,
-		pin: pin,
+		pin,
 	    }, interrupts::InterruptRoute::Gsi(route.index));
 	} else {
 	    // IRQ
@@ -242,13 +242,13 @@ pub fn get_pci_routing_table(namespace: Namespace) -> Result<VecMap<PciInterrupt
 			..
 		    } => irqs,
 		    _ => panic!("This shouldn't happen"),
-		}).nth(0).expect("Expected a list of IRQs");
+		}).next().expect("Expected a list of IRQs");
 	    let irq = irqs[0];
 
 	    routing_map.insert(PciInterruptFunction {
 		device: device_address,
 		function: function_address,
-		pin: pin,
+		pin,
 	    }, interrupts::InterruptRoute::Irq(irq));
 	}
     }

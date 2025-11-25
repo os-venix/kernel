@@ -31,7 +31,7 @@ impl VenixPageAllocator {
 	    .expect("Could not find an appropriate p4 entry to initialise") as u64;
 
 	VenixPageAllocator {
-	    hhdm_offset: hhdm_offset,
+	    hhdm_offset,
 	    p4_first_completely_free: VirtAddr::new_truncate(first_free_p4_entry),
 	    free_regions: None,
 	}
@@ -51,7 +51,7 @@ impl VenixPageAllocator {
 	    let entries: Vec<MemoryRegion> = (*page_table).iter()
 		.enumerate()
 		.filter(|(_, entry)| !(entry.flags().contains(PageTableFlags::PRESENT)))
-		.filter(|(index, _)| level != 4 || *index >= 256 as usize)  // Make sure all kernel allocs are in the HH
+		.filter(|(index, _)| level != 4 || *index >= 256_usize)  // Make sure all kernel allocs are in the HH
 		.map(|(index, _)| match level {
 		    4 => index as u64 * p4_size,
 		    3 => offset_above + (index as u64 * p3_size),
@@ -60,7 +60,7 @@ impl VenixPageAllocator {
 		    _ => panic!("Invalid page level while calculating free virtual space")
 		})
 		.map(|start| MemoryRegion {
-		    start: start,
+		    start,
 		    end: match level {
 			4 => start + p4_size,
 			3 => start + p3_size,
@@ -167,11 +167,11 @@ impl VenixPageAllocator {
 	    for idx in 0 .. free_regions.len() {
 		if free_regions[idx].end - free_regions[idx].start == size_in_pages * 4096 {
 		    let region = free_regions.remove(idx);
-		    return VirtAddr::new_truncate(region.start as u64);
+		    return VirtAddr::new_truncate(region.start);
 		} else if free_regions[idx].end - free_regions[idx].start > size_in_pages * 4096 {
 		    let start = free_regions[idx].start;
 		    free_regions[idx].start += size_in_pages * 4096;
-		    return VirtAddr::new_truncate(start as u64);
+		    return VirtAddr::new_truncate(start);
 		}
 	    }
 	    panic!("Kernel OOM");
@@ -180,7 +180,7 @@ impl VenixPageAllocator {
 		panic!("Attempted to allocate more than a p4 entry in runt mode.");
 	    }
 
-	    return self.p4_first_completely_free;
+	    self.p4_first_completely_free
 	}
     }
 }

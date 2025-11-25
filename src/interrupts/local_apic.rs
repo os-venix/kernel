@@ -77,11 +77,11 @@ pub fn init_bsp_local_apic() -> u64 {
     }
 
     let ia32_x2apic_idr = Msr::new(IA32_X2APIC_IDR);
-    let bsp_apic_id = unsafe {
-	ia32_x2apic_idr.read()
-    };
+    
 
-    bsp_apic_id
+    unsafe {
+	ia32_x2apic_idr.read()
+    }
 }
 
 pub fn ack_apic(interrupt: u8) {

@@ -180,7 +180,7 @@ pub async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
     }
 
     let fd = process::FileDescriptor {
-	flags: flags,
+	flags,
 	file_description: Arc::new(RwLock::new(vfs::FileDescriptor::new(path))),
     };
 
@@ -332,10 +332,10 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
 	    // };
 
 	    let new_fd = process.emplace_fd_at(actual_fd, param, true);
-	    return SyscallResult {
+	    SyscallResult {
 		return_value: new_fd,
 		err_num: CanonicalError::EOK as u64,
-	    };
+	    }
 	},
 	FcntlOperation::GetFD => {
 	    let process = scheduler::get_current_process();
@@ -350,10 +350,10 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
 	    // 	},
 	    // };
 
-	    return SyscallResult {
+	    SyscallResult {
 		return_value: actual_fd.flags,
 		err_num: CanonicalError::EOK as u64,
-	    };
+	    }
 	},
 	FcntlOperation::SetFD => {
 	    let process = scheduler::get_current_process();
@@ -367,10 +367,10 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
 	    }
 
 	    process.set_fd_flags(fd_num, param);
-	    return SyscallResult {
+	    SyscallResult {
 		return_value: 0,
 		err_num: CanonicalError::EOK as u64,
-	    };
+	    }
 	},
     }
 }
@@ -480,11 +480,11 @@ async fn sys_pipe(fds: u64, flags: u64) -> SyscallResult {
     let file_description = Arc::new(RwLock::new(vfs::FileDescriptor::new_pipe()));
 
     let fd1 = process::FileDescriptor {
-	flags: flags,
+	flags,
 	file_description: file_description.clone(),
     };
     let fd2 = process::FileDescriptor {
-	flags: flags,
+	flags,
 	file_description: file_description.clone(),
     };
 
@@ -667,7 +667,7 @@ async fn sys_sigprocmask(how: u64, set: u64, oldset: u64) -> SyscallResult {
 
     if oldset != 0 {
 	let old_val = process.get_current_sigprocmask();
-	if let Err(_) = memory::copy_value_to_user::<u64>(VirtAddr::new(oldset), &old_val) {
+	if memory::copy_value_to_user::<u64>(VirtAddr::new(oldset), &old_val).is_err() {
 	    return SyscallResult {
 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
 		err_num: CanonicalError::EINVAL as u64

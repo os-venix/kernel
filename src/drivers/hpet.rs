@@ -296,9 +296,9 @@ impl driver::Driver for HpetDriver {
 	// Disable PIT, we don't use it
 	log::info!("Disabling PIT");
 	unsafe {
-	    x86_64::instructions::port::PortWrite::write_to_port(0x43, 0x3A as u8);
-	    x86_64::instructions::port::PortWrite::write_to_port(0x43, 0x7A as u8);
-	    x86_64::instructions::port::PortWrite::write_to_port(0x43, 0xBA as u8);
+	    x86_64::instructions::port::PortWrite::write_to_port(0x43, 0x3A_u8);
+	    x86_64::instructions::port::PortWrite::write_to_port(0x43, 0x7A_u8);
+	    x86_64::instructions::port::PortWrite::write_to_port(0x43, 0xBA_u8);
 	}
     }
 

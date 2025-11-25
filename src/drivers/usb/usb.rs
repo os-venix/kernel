@@ -210,7 +210,7 @@ pub fn register_hci(locked_hci: Arc<Mutex<Box<dyn UsbHCI>>>) {
 
 	    let xfer_config_descriptor = UsbTransfer {
 		transfer_type: TransferType::ControlRead(SetupPacket {
-		    request_type: read_request_type.clone(),
+		    request_type: read_request_type,
 		    request: RequestCode::GetDescriptor as u8,
 		    value: 0x0200,
 		    index: 0,

@@ -116,9 +116,9 @@ impl PciBus {
     pub fn new(acpi_namespace: Namespace, segment: u16, bus: u8) -> PciBus {
 	let routing_table = namespace::get_pci_routing_table(acpi_namespace).unwrap();
 	PciBus {
-	    routing_table: routing_table,
-	    segment: segment,
-	    bus: bus,
+	    routing_table,
+	    segment,
+	    bus,
 	}
     }
 }

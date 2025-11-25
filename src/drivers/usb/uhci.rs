@@ -3,7 +3,6 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use anyhow::{anyhow, Result};
 use bitfield::bitfield;
-use bytes;
 use core::arch::asm;
 use core::ptr;
 use core::ops::BitOr;
@@ -240,9 +239,9 @@ impl UhciTransfer {
 	}
 
 	if any_active {
-	    (TransferStatus::Active, 0 as usize)
+	    (TransferStatus::Active, 0_usize)
 	} else {
-	    (TransferStatus::Done, 0 as usize)
+	    (TransferStatus::Done, 0_usize)
 	}
     }
 
@@ -279,7 +278,7 @@ impl UhciTransfer {
     pub fn create_transfer_descriptor(&mut self, is_low_speed: bool, len: u8, endpoint: u8, address: u8, packet_id: u8, buf: PhysAddr, td_type: TransferDescriptorType) {
 	let (td_tag, td_phys) = self.arena.acquire_default_by_tag::<TransferDescriptor>(0x10).unwrap();
 
-	if self.transfer_descriptors.len() == 0 {
+	if self.transfer_descriptors.is_empty() {
 	    let mut el_pointer = Pointer::default();	    
 	    el_pointer.set_link_pointer_phys(td_phys);
 	    el_pointer.set_qh_td_select(false);
@@ -294,7 +293,7 @@ impl UhciTransfer {
 	let toggle = match td_type {
 	    TransferDescriptorType::Setup => false,
 	    TransferDescriptorType::Status => true,
-	    TransferDescriptorType::Data => if self.transfer_descriptors.len() == 0 {
+	    TransferDescriptorType::Data => if self.transfer_descriptors.is_empty() {
 		false
 	    } else {
 		!self.arena.tag_to_ptr_mut::<TransferDescriptor>(
@@ -467,9 +466,9 @@ impl<'a> UhciBus<'a> {
 	UhciBus {
 	    base_io: uhci_base,
 
-	    frame_list: frame_list,
-	    port1: port1,
-	    port2: port2,
+	    frame_list,
+	    port1,
+	    port2,
 
 	    next_address: 1,
 
@@ -534,7 +533,7 @@ impl<'a> UhciBus<'a> {
 
 	match transfer.transfer_type {
 	    usb::TransferType::ControlRead(ref setup_packet) => {
-		let (_, packet_phys) = uhci_transfer.arena.acquire::<usb::SetupPacket>(0, &setup_packet).unwrap();
+		let (_, packet_phys) = uhci_transfer.arena.acquire::<usb::SetupPacket>(0, setup_packet).unwrap();
 		let buffer_phys = uhci_transfer.create_transfer_buffer(setup_packet.length as usize);
 
 		uhci_transfer.create_transfer_descriptor(
@@ -559,7 +558,7 @@ impl<'a> UhciBus<'a> {
 	    usb::TransferType::ControlWrite(ref write_setup_packet) => {
 		let (_, packet_phys) = uhci_transfer.arena.acquire::<usb::SetupPacket>(0, &write_setup_packet.setup_packet).unwrap();
 		let (_, data_phys) = uhci_transfer.arena.acquire_slice_buffer(
-		    0, &write_setup_packet.buf.as_slice(), write_setup_packet.setup_packet.length as usize).unwrap();
+		    0, write_setup_packet.buf.as_slice(), write_setup_packet.setup_packet.length as usize).unwrap();
 
 		uhci_transfer.create_transfer_descriptor(
 		    is_low_speed, 8 /* len */, transfer.endpoint, address, 0x2d /* packet_id = SETUP */, packet_phys, TransferDescriptorType::Setup);
@@ -581,17 +580,17 @@ impl<'a> UhciBus<'a> {
 		    0x69 /* packet_id = IN */, PhysAddr::new(0), TransferDescriptorType::Status);
 	    },
 	    usb::TransferType::ControlNoData(ref setup_packet) => {
-		let (_, packet_phys) = uhci_transfer.arena.acquire::<usb::SetupPacket>(0, &setup_packet).unwrap();
+		let (_, packet_phys) = uhci_transfer.arena.acquire::<usb::SetupPacket>(0, setup_packet).unwrap();
 		log::info!("{:x}", packet_phys.as_u64());
 		uhci_transfer.create_transfer_descriptor(
-		    is_low_speed, 8 /* len */, transfer.endpoint.into(), address, 0x2d /* packet_id = SETUP */, packet_phys, TransferDescriptorType::Setup);
+		    is_low_speed, 8 /* len */, transfer.endpoint, address, 0x2d /* packet_id = SETUP */, packet_phys, TransferDescriptorType::Setup);
 		uhci_transfer.create_transfer_descriptor(
-		    is_low_speed, 0 /* len */, transfer.endpoint.into(), address, 0x69 /* packet_id = IN */, PhysAddr::new(0), TransferDescriptorType::Status);
+		    is_low_speed, 0 /* len */, transfer.endpoint, address, 0x69 /* packet_id = IN */, PhysAddr::new(0), TransferDescriptorType::Status);
 	    },
 	    usb::TransferType::InterruptIn(ref interrupt_transfer_descriptor) => {
 		let buffer_phys = uhci_transfer.create_transfer_buffer(interrupt_transfer_descriptor.length as usize);
 		uhci_transfer.create_transfer_descriptor(
-		    is_low_speed, interrupt_transfer_descriptor.length.into(), transfer.endpoint.into(),
+		    is_low_speed, interrupt_transfer_descriptor.length, transfer.endpoint,
 		    address, 0x69 /* packet_id = IN */, buffer_phys, TransferDescriptorType::Data);
 	    },
 	    _ => unimplemented!(),
@@ -656,11 +655,11 @@ impl<'a> UhciBus<'a> {
 	}
 
 	self.frame_list.fill_with(Default::default);
-	return uhci_transfer.get_owned_buf();
+	uhci_transfer.get_owned_buf()
     }
 }
     
-impl<'a> usb::UsbHCI for UhciBus<'a> {
+impl usb::UsbHCI for UhciBus<'_> {
     fn get_ports(&self) -> Vec<usb::Port> {
 	let mut ports: Vec<usb::Port> = Vec::new();
 	if self.port1 {

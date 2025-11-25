@@ -117,7 +117,7 @@ impl Process {
 	    context: RwLock::new(ProcessContext {
 		gprs: GeneralPurposeRegisters::default(),
 		rflags: 0x202,
-		rip: rip,
+		rip,
 		rsp: rsp.as_u64() + (8 * 1024 * 1024),
 		cs: kernel_code.0 as u64,
 		ss: kernel_data.0 as u64,
@@ -223,10 +223,10 @@ impl Process {
 	    context: RwLock::new(ProcessContext {
 		gprs: GeneralPurposeRegisters::default(),
 		rflags: 0x202,
-		rip: rip,
+		rip,
 		rsp: 0,
-		cs: cs,
-		ss: ss,
+		cs,
+		ss,
 	    }),
 	    state: RwLock::new(TaskState::Setup),
 	    task_type: Arc::new(RwLock::new(task_type)),

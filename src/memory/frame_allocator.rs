@@ -171,7 +171,7 @@ impl VenixFrameAllocator {
 	    }
 
 	    if let Some(start_addr) = start {
-		let region = free_regions.get(&start_addr).unwrap().clone();
+		let region = *free_regions.get(&start_addr).unwrap();
 		free_regions.remove(&start_addr);
 
 		// If we don't consmue the whole region, put back what's left
@@ -227,7 +227,7 @@ unsafe impl FrameAllocator<Size4KiB> for VenixFrameAllocator {
             }
 
 	    // We're out of memory
-	    return None;
+	    None
 	} else {
 	    let frame = self.usable_frames().nth(self.next);
 	    self.next += 1;

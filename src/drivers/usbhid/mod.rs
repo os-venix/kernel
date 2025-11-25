@@ -99,7 +99,7 @@ impl Keyboard {
 	    protocol,
 	    hid_descriptor,
 	    poll_interval: endpoint.interval,
-	    endpoint_num: endpoint_num.clone(),
+	    endpoint_num: endpoint_num,
 	    current_active_key: RwLock::new(None),
 	}
     }
@@ -129,10 +129,7 @@ impl Keyboard {
 
 	let mut current_active_key = self.current_active_key.write();
 	if most_recent_key != *current_active_key {
-	    match most_recent_key {
-		Some(protocol::Key::AsciiKey(mrk)) => console::register_keypress(mrk),
-		_ => (),
-	    }
+	    if let Some(protocol::Key::AsciiKey(mrk)) = most_recent_key { console::register_keypress(mrk) }
 	    *current_active_key = most_recent_key;
 	}
     }

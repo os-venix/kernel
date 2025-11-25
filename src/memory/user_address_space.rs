@@ -47,7 +47,7 @@ impl AddressSpace {
 	    4096, memory::MemoryAllocationType::RAM).expect("Allocation failed");
 	
 	let data_to_z = unsafe {
-	    slice::from_raw_parts_mut(virt.as_mut_ptr::<u8>(), 4096 as usize)
+	    slice::from_raw_parts_mut(virt.as_mut_ptr::<u8>(), 4096_usize)
 	};
 
 	data_to_z.fill_with(Default::default);
@@ -76,7 +76,7 @@ impl AddressSpace {
 	    pt4: frame,
 	    free_regions: Vec::from([MemoryRegion {
 		start: 0x100000,
-		end: (p4_size as u64) * 255,  // Anywhere in the lower half
+		end: p4_size * 255,  // Anywhere in the lower half
             }]),
 	    mapped_regions: BTreeMap::new(),
 	}
@@ -107,7 +107,7 @@ impl AddressSpace {
 		(*page_table).iter()
 		    .enumerate()
 		    .filter(|(_, entry)| entry.flags().contains(PageTableFlags::PRESENT))
-		    .filter(|(index, _)| level != 4 || *index < 256 as usize)  // Make sure all user allocs are in the LH
+		    .filter(|(index, _)| level != 4 || *index < 256_usize)  // Make sure all user allocs are in the LH
 		    .flat_map(|(idx, entry)| inner(
 			next_level, offset_above + (idx as u64 * idx_size),
 			(entry.addr().as_u64() + memory::DIRECT_MAP_OFFSET.get().unwrap()) as *const PageTable))
@@ -138,7 +138,7 @@ impl AddressSpace {
 		self).expect("Unable to allocate to copy userspace");
 	    
 	    let data_to = unsafe {
-		slice::from_raw_parts_mut(entry.virt_start.as_mut_ptr::<u8>(), 4096 as usize)
+		slice::from_raw_parts_mut(entry.virt_start.as_mut_ptr::<u8>(), 4096_usize)
 	    };
 	    let data_from = unsafe {
 		slice::from_raw_parts_mut(VirtAddr::new(entry.phys_start.as_u64() + memory::DIRECT_MAP_OFFSET.get().unwrap()).as_mut_ptr::<u8>(), 4096)
@@ -189,7 +189,7 @@ impl AddressSpace {
 		self.free_regions[idx].start += size_in_pages * 4096;
 
 		self.map_a_region(MemoryRegion {
-		    start: start,
+		    start,
 		    end: start + size_in_pages * 4096,
 		});
 		    
@@ -210,45 +210,45 @@ impl AddressSpace {
 
 	for idx in 0 .. self.free_regions.len() {
 	    if self.free_regions[idx].start == addr && (
-		self.free_regions[idx].end - self.free_regions[idx].start == (size_in_pages as u64) * 4096) {
+		self.free_regions[idx].end - self.free_regions[idx].start == size_in_pages * 4096) {
 		// Remove the whole region
 		let region = self.free_regions.remove(idx);
 		self.map_a_region(region);
 		return Ok(());
 	    } else if self.free_regions[idx].start < addr && (
-		self.free_regions[idx].start < addr + (size_in_pages as u64) * 4096) && (
-		self.free_regions[idx].end == addr + (size_in_pages as u64) * 4096) {
+		self.free_regions[idx].start < addr + size_in_pages * 4096) && (
+		self.free_regions[idx].end == addr + size_in_pages * 4096) {
 		// Resize region so that it ends where the alloc starts 
 		self.free_regions[idx].end = addr;
 		self.map_a_region(MemoryRegion {
 		    start: addr,
-		    end: addr + size_in_pages as u64 * 4096,
+		    end: addr + size_in_pages * 4096,
 		});
 
 		return Ok(());		    
 	    } else if self.free_regions[idx].start < addr && (
-		self.free_regions[idx].start < addr + (size_in_pages as u64) * 4096) && (
-		self.free_regions[idx].end > addr + (size_in_pages as u64) * 4096) {
+		self.free_regions[idx].start < addr + size_in_pages * 4096) && (
+		self.free_regions[idx].end > addr + size_in_pages * 4096) {
 		// Resize the region so that it ends where the alloc starts, and add a new region from the alloc end to old region end
 		let old_end = self.free_regions[idx].end;
 		self.free_regions[idx].end = addr;
 		self.free_regions.push(MemoryRegion {
-		    start: addr + (size_in_pages as u64) * 4096,
+		    start: addr + size_in_pages * 4096,
 		    end: old_end,
 		});
 		self.map_a_region(MemoryRegion {
 		    start: addr,
-		    end: addr + size_in_pages as u64 * 4096,
+		    end: addr + size_in_pages * 4096,
 		});
 
 		return Ok(());
 	    } else if self.free_regions[idx].start == addr && (
-		self.free_regions[idx].end > addr + (size_in_pages as u64) * 4096) {
+		self.free_regions[idx].end > addr + size_in_pages * 4096) {
 		// Resize region so that it starts where the alloc ends
-		self.free_regions[idx].start = addr + (size_in_pages as u64) * 4096;
+		self.free_regions[idx].start = addr + size_in_pages * 4096;
 		self.map_a_region(MemoryRegion {
 		    start: addr,
-		    end: addr + size_in_pages as u64 * 4096,
+		    end: addr + size_in_pages * 4096,
 		});
 		return Ok(());
 	    }
@@ -290,7 +290,7 @@ impl AddressSpace {
 
 	self.free_regions = Vec::from([MemoryRegion {
 	    start: 0x100000,
-	    end: (p4_size as u64) * 255,  // Anywhere in the lower half
+	    end: p4_size * 255,  // Anywhere in the lower half
         }]);
 	self.mapped_regions = BTreeMap::new();
     }

@@ -74,7 +74,7 @@ pub fn init(direct_map_offset: u64, memory_map: &'static [&'static Entry]) {
     {
 	let mut w = VENIX_FRAME_ALLOCATOR.write();
 	*w = Some(unsafe {
-	    frame_allocator::VenixFrameAllocator::new(&memory_map)
+	    frame_allocator::VenixFrameAllocator::new(memory_map)
 	})
     }
 
@@ -414,7 +414,7 @@ fn copy_from_user_internal(
             0usize
         };
 
-        let available_in_page = (4096 as usize) - page_offset;
+        let available_in_page = 4096_usize - page_offset;
         let to_copy = if remaining <= available_in_page { remaining } else { available_in_page };
 
         // Build a slice from mapped kernel VA and append

@@ -138,16 +138,14 @@ impl Fat16Fs {
 	    .map(|c| c.to_char())
 	    .collect::<String>();
 
-	let root_directory_size_sectors = ((boot_record.root_directory_entries * 32) +
-					   (boot_record.bytes_per_sector - 1)) / boot_record.bytes_per_sector;
+	let root_directory_size_sectors = (boot_record.root_directory_entries * 32).div_ceil(boot_record.bytes_per_sector);
 	let total_sectors = if boot_record.sectors_in_volume != 0 { boot_record.sectors_in_volume as u32 } else { boot_record.large_sector_count };
 	let data_sectors = total_sectors - (boot_record.reserved_sectors as u32 + (boot_record.number_of_fats as u32 * boot_record.sectors_per_fat as u32) + root_directory_size_sectors as u32);
 	
 	let total_clusters = data_sectors / boot_record.sectors_per_cluster as u32;
 
 	if boot_record.sectors_per_fat != 0 &&
-	    total_clusters >= 4085 &&
-	    total_clusters <= 65525 {
+	    (4085..=65525).contains(&total_clusters) {
 		log::info!("Found FAT16 volume {}", vol);
 	    } else {
 		log::info!("Not FAT16");
@@ -157,7 +155,7 @@ impl Fat16Fs {
 	Some(Fat16Fs {
 	    boot_record: RwLock::new(boot_record),
 	    extended_boot_record: RwLock::new(extended_boot_record),
-	    dev: dev,
+	    dev,
 	    partition: RwLock::new(partition),
 	})
     }
@@ -173,8 +171,7 @@ impl Fat16Fs {
 		(boot_record.number_of_fats as u16 * boot_record.sectors_per_fat);
 	    let root_directory_lba = root_directory_sect * sectors_per_lba;
 
-	    let root_directory_size_sectors = ((boot_record.root_directory_entries * 32) +
-					       (boot_record.bytes_per_sector - 1)) / boot_record.bytes_per_sector;
+	    let root_directory_size_sectors = (boot_record.root_directory_entries * 32).div_ceil(boot_record.bytes_per_sector);
 	    let root_directory_size_lba = root_directory_size_sectors / sectors_per_lba;
 
 	    self.dev.read(
@@ -191,7 +188,7 @@ impl Fat16Fs {
 
 	    let sectors_per_lba = boot_record.bytes_per_sector / 512;
 
-	    let fat_lba = 1 * sectors_per_lba;
+	    let fat_lba = sectors_per_lba;
 
 	    let fat_size_sectors = boot_record.sectors_per_fat;
 	    let fat_size_lba = fat_size_sectors / sectors_per_lba;
@@ -224,7 +221,7 @@ impl Fat16Fs {
 
 	for entry in index .. boot_record.root_directory_entries as usize {
 	    let directory_entry = unsafe {
-		ptr::read(dir.wrapping_add(entry as usize * 32) as *const DirectoryEntry)
+		ptr::read(dir.wrapping_add(entry * 32) as *const DirectoryEntry)
 	    };
 
 	    if directory_entry.file_name[0].to_u8() == 0x00 {
@@ -235,23 +232,20 @@ impl Fat16Fs {
 
 	    if directory_entry.attributes == 0x0F {
 		let long_filename_entry = unsafe {
-		    ptr::read(dir.wrapping_add(entry as usize * 32) as *const LongFileName)
+		    ptr::read(dir.wrapping_add(entry * 32) as *const LongFileName)
 		};
 
 		let name1 = long_filename_entry.name1;
 		let name2 = long_filename_entry.name2;
 		let name3 = long_filename_entry.name3;
 
-		let name1_vec = name1.iter()
-		    .map(|i| *i)
+		let name1_vec = name1.iter().copied()
 		    .filter(|i| *i != 0x0000 && *i != 0xFFFF)
 		    .collect::<Vec<u16>>();
-		let name2_vec = name2.iter()
-		    .map(|i| *i)
+		let name2_vec = name2.iter().copied()
 		    .filter(|i| *i != 0x0000 && *i != 0xFFFF)
 		    .collect::<Vec<u16>>();
-		let name3_vec = name3.iter()
-		    .map(|i| *i)
+		let name3_vec = name3.iter().copied()
 		    .filter(|i| *i != 0x0000 && *i != 0xFFFF)
 		    .collect::<Vec<u16>>();
 
@@ -351,15 +345,15 @@ impl vfs::FileSystem for Fat16Fs {
     fn read(self: Arc<Self>, path: String, offset: u64, len: u64) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>> {
 	Box::pin(async move {
 	    let parts = path.split("/")
-		.filter(|s| s.len() != 0)
+		.filter(|s| !s.is_empty())
 		.collect::<Vec<&str>>();
 
 	    let mut current_buf_ptr = self.get_root_directory().await.as_ptr();
-	    let mut file_size: usize = 0 as usize;
+	    let mut file_size: usize = 0_usize;
 
 	    for path_part in parts {
 		let inode = match self.find_dir_entry(path_part.to_string(), current_buf_ptr)
-		    .expect(&format!("Could not find file {}", path)) {
+		    .unwrap_or_else(|| panic!("Could not find file {}", path)) {
 			Entry::DIRECTORY(i) => i,
 			Entry::FILE(i) => i,
 		    };
@@ -402,20 +396,18 @@ impl vfs::FileSystem for Fat16Fs {
 			let boot_record = self.boot_record.read();
 			let sectors_per_lba = boot_record.bytes_per_sector as u64 / 512;
 
-			let root_directory_size_sectors: u64 = ((boot_record.root_directory_entries as u64 * 32) +
-								(boot_record.bytes_per_sector as u64 - 1))
-			    / boot_record.bytes_per_sector as u64;
+			let root_directory_size_sectors: u64 = (boot_record.root_directory_entries as u64 * 32).div_ceil(boot_record.bytes_per_sector as u64);
 
 			let first_data_sector: u64 = boot_record.reserved_sectors as u64 +
 			    (boot_record.number_of_fats as u64 * boot_record.sectors_per_fat as u64) +
-			    root_directory_size_sectors as u64;
+			    root_directory_size_sectors;
 
 			let cluster_sector: u64 = ((cluster_strings_to_read[0].0 as u64 - 2) * boot_record.sectors_per_cluster as u64)
 			    + first_data_sector;
 
 			let cluster_lba = cluster_sector * sectors_per_lba;
 
-			let size_sectors = 1 * boot_record.sectors_per_cluster as u64;
+			let size_sectors = boot_record.sectors_per_cluster as u64;
 			(cluster_lba, size_sectors / sectors_per_lba)
 		    };
 
@@ -425,8 +417,8 @@ impl vfs::FileSystem for Fat16Fs {
 		    };
 
 		    current_buf_ptr = self.dev.read(
-			partition, cluster_lba as u64,
-			(size_lba as u64) * cluster_strings_to_read[0].1).await.expect("Couldn't read file")
+			partition, cluster_lba,
+			size_lba * cluster_strings_to_read[0].1).await.expect("Couldn't read file")
 			.as_ptr();
 
 		    file_size = inode.file_size as usize;
@@ -452,11 +444,11 @@ impl vfs::FileSystem for Fat16Fs {
     fn stat(self: Arc<Self>, path: String) -> BoxFuture<'static, Result<vfs::Stat, ()>> {
 	Box::pin(async move {
 	    let parts = path.split("/")
-		.filter(|s| s.len() != 0)
+		.filter(|s| !s.is_empty())
 		.collect::<Vec<&str>>();
 
 	    let mut current_buf_ptr = self.get_root_directory().await.as_ptr();
-	    let mut file_size: usize = 0 as usize;
+	    let mut file_size: usize = 0_usize;
 
 	    for path_part in parts {
 		let inode = match self.find_dir_entry(path_part.to_string(), current_buf_ptr).ok_or(())? {

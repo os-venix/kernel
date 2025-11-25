@@ -6,7 +6,6 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use bytes;
 use futures_util::future::BoxFuture;
 
 use crate::sys::acpi;
@@ -54,7 +53,7 @@ impl vfs::FileSystem for DevFS {
     fn read(self: Arc<Self>, path: String, offset: u64, len: u64) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>> {
 	// TODO: Set the values here after seeking is supported
 	let parts = path.split("/")
-	    .filter(|s| s.len() != 0)
+	    .filter(|s| !s.is_empty())
 	    .collect::<Vec<&str>>();
 	if parts.len() != 1 {
 	    return Box::pin(async move {
@@ -64,7 +63,7 @@ impl vfs::FileSystem for DevFS {
 
 	let device_id = {
 	    match self.file_table.read().get(parts[0]) {
-		Some(id) => id.clone(),
+		Some(id) => *id,
 		None => return Box::pin(async move {
 		    Err(syscall::CanonicalError::EACCESS)
 		}),
@@ -83,7 +82,7 @@ impl vfs::FileSystem for DevFS {
     }
     fn write(&self, path: String, buf: *const u8, len: usize) -> Result<u64, ()> {
 	let parts = path.split("/")
-	    .filter(|s| s.len() != 0)
+	    .filter(|s| !s.is_empty())
 	    .collect::<Vec<&str>>();
 	if parts.len() != 1 {
 	    return Err(());
@@ -91,7 +90,7 @@ impl vfs::FileSystem for DevFS {
 
 	let device_id = {
 	    match self.file_table.read().get(parts[0]) {
-		Some(id) => id.clone(),
+		Some(id) => *id,
 		None => return Err(()),
 	    }
 	};
@@ -103,7 +102,7 @@ impl vfs::FileSystem for DevFS {
     }
     fn stat(self: Arc<Self>, path: String) -> BoxFuture<'static, Result<vfs::Stat, ()>> {
 	let parts = path.split("/")
-	    .filter(|s| s.len() != 0)
+	    .filter(|s| !s.is_empty())
 	    .collect::<Vec<&str>>();
 	if parts.len() != 1 {
 	    return Box::pin(async move {
@@ -120,7 +119,7 @@ impl vfs::FileSystem for DevFS {
     }
     fn ioctl(&self, path: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()> {
 	let parts = path.split("/")
-	    .filter(|s| s.len() != 0)
+	    .filter(|s| !s.is_empty())
 	    .collect::<Vec<&str>>();
 	if parts.len() != 1 {
 	    return Err(());
@@ -128,7 +127,7 @@ impl vfs::FileSystem for DevFS {
 
 	let device_id = {
 	    match self.file_table.read().get(parts[0]) {
-		Some(id) => id.clone(),
+		Some(id) => *id,
 		None => return Err(()),
 	    }
 	};

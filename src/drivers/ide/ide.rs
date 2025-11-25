@@ -263,11 +263,11 @@ impl IdeController {
 	let (prdt, prdt_phys_addr) = arena.acquire_slice_by_tag(0, 4096).unwrap();
 
 	let ide_controller = IdeController {
-	    arena: arena,
-	    prdt: prdt,
-	    control_base: control_base,
-	    io_base: io_base,
-	    busmaster_base: busmaster_base,
+	    arena,
+	    prdt,
+	    control_base,
+	    io_base,
+	    busmaster_base,
 	    prdt_phys: prdt_phys_addr.as_u64() as u32,
 	};
 
@@ -344,8 +344,8 @@ impl driver::Device for IdeDrive {
 impl IdeDrive {
     pub fn new(controller: Arc<Mutex<IdeController>>, drive_num: u8) -> Option<IdeDrive> {
 	let mut ide_drive = IdeDrive {
-	    controller: controller,
-	    drive_num: drive_num,
+	    controller,
+	    drive_num,
 	    ident: IdentifyStruct {
 		..Default::default()
 	    },
@@ -560,7 +560,7 @@ impl IdeDrive {
 	    compacted_phys_addr.last_mut().unwrap().end -= total_size - (size * 512);
 	}
 
-	let prdt_tag = ctl.prdt.clone();
+	let prdt_tag = ctl.prdt;
 	ctl.arena.tag_to_slice_mut(prdt_tag, 4096).fill(0);
 
 	{
@@ -682,7 +682,7 @@ impl IdeDrive {
     }
 
     fn select_drive_and_set_xfer_params(&self, ctl: &MutexGuard<'_, IdeController>, offset: u64, size: u64) {
-	self.select(&ctl);
+	self.select(ctl);
 
 	if self.ident.is_lba48() {
 	    unsafe {
