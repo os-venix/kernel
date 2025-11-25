@@ -95,6 +95,7 @@ impl<'a> Arena {
 
     /// acquire a reference to a value of type T that is initialized with it's default value.
     /// This is useful for types that do not require initialization.
+    #[allow(dead_code)]
     pub fn acquire_default<T: Default>(&'a self, alignment: usize) -> Option<(&'a mut T, PhysAddr)> {
         let (ptr, _, phys_addr) = self.get_ptr_place::<T>(alignment)?;
 
@@ -124,6 +125,7 @@ impl<'a> Arena {
     }
 
     /// acquire a reference to a slice of length l, initialized to 0.
+    #[allow(dead_code)]
     pub fn acquire_slice(&'a self, alignment: usize, length: usize) -> Option<(&'a [u8], PhysAddr)> {
         let (slice, _, phys_addr) = self.get_slice_place(alignment, length)?;
 	slice.fill_with(Default::default);

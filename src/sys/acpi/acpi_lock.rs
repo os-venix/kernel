@@ -38,7 +38,7 @@ impl Semaphore {
 	self.state.fetch_add(1, Release);
     }
 
-    pub fn wait_for_event(&mut self, timeout: Option<u16>) -> bool {
+    pub fn wait_for_event(&mut self, _timeout: Option<u16>) -> bool {
 	while self.state.fetch_update(SeqCst, SeqCst, |x| if x == 0 { None } else { Some(x - 1) }).is_err() {
 
 	}

@@ -105,7 +105,6 @@ impl fmt::Display for PciDeviceType {
 }
 
 pub struct PciBus {
-    acpi_namespace: Namespace,
     routing_table: VecMap<namespace::PciInterruptFunction, interrupts::InterruptRoute>,
     segment: u16,
     bus: u8,
@@ -117,7 +116,6 @@ impl PciBus {
     pub fn new(acpi_namespace: Namespace, segment: u16, bus: u8) -> PciBus {
 	let routing_table = namespace::get_pci_routing_table(acpi_namespace).unwrap();
 	PciBus {
-	    acpi_namespace: acpi_namespace,
 	    routing_table: routing_table,
 	    segment: segment,
 	    bus: bus,
@@ -239,7 +237,7 @@ impl driver::Driver for PciDriver {
 	}
     }
 
-    fn check_new_device(&self, info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
+    fn check_new_device(&self, _info: &Box<dyn driver::DeviceTypeIdentifier>) -> bool {
 	true // Not yet implemented
     }
 }

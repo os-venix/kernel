@@ -24,7 +24,6 @@ enum FatFsType {
 }
 
 struct INode {
-    file_name: String,
     file_size: u32,
     start_cluster: u32,
 }
@@ -95,6 +94,7 @@ struct ExtendedBootRecord1216 {
 }
 
 #[repr(C, packed(1))]
+#[allow(dead_code)]
 struct ExtendedBootRecord32 {
     sectors_per_fat: u32,
     flags: u16,
@@ -113,11 +113,13 @@ struct ExtendedBootRecord32 {
     boot_signature: u16,
 }
 
+#[allow(dead_code)]
 struct Fat12Fs {
     boot_record: BootRecord,
     extended_boot_record: ExtendedBootRecord1216,
 }
 
+#[allow(dead_code)]
 struct Fat16Fs {
     boot_record: RwLock<BootRecord>,
     extended_boot_record: RwLock<ExtendedBootRecord1216>,
@@ -310,13 +312,11 @@ impl Fat16Fs {
 
 		if directory_entry.attributes & 0x10 != 0 {
 		    return Some(Entry::DIRECTORY(INode {
-			file_name: file_name,
 			file_size: directory_entry.file_size,
 			start_cluster: directory_entry.cluster_low as u32,
 		    }));
 		} else {
 		    return Some(Entry::FILE(INode {
-			file_name: file_name,
 			file_size: directory_entry.file_size,
 			start_cluster: directory_entry.cluster_low as u32,
 		    }));
@@ -445,7 +445,7 @@ impl vfs::FileSystem for Fat16Fs {
 	})
     }
 	
-    fn write(&self, path: String, buf: *const u8, len: usize) -> Result<u64, ()> {
+    fn write(&self, _path: String, _buf: *const u8, _len: usize) -> Result<u64, ()> {
 	panic!("FAT write not yet implemented");
     }
 
@@ -546,6 +546,7 @@ impl vfs::FileSystem for Fat16Fs {
     }
 }
 
+#[allow(dead_code)]
 struct Fat32Fs {
     boot_record: BootRecord,
     extended_boot_record: ExtendedBootRecord32,

@@ -14,7 +14,6 @@ use crate::interrupts;
 use crate::sys::syscall;
 use crate::sys::ioctl;
 
-const LEG_RT_CNF: u64 = 0x02;
 const ENABLE_CNF: u64 = 0x01;
 
 const HPET_COUNTER_SET_ACCUMULATOR: u64 = 1 << 6;
@@ -23,6 +22,7 @@ const HPET_COUNTER_NON_PERIODIC: u64 = !HPET_COUNTER_PERIODIC;
 const HPET_COUNTER_ENABLED: u64 = 1 << 2;
 const HPET_COUNTER_LEVEL_TRIGGERED: u64 = 1 << 1;
 
+#[allow(dead_code)]
 struct HpetCounter {
     pub configuration_capability_register: *mut u64,
     pub comparator_value_register: *mut u64,
@@ -149,6 +149,7 @@ impl Hpet {
 	}
     }
 
+    #[allow(dead_code)]
     pub fn num_timers(&self) -> u8 {
 	unsafe {
 	    ((read_volatile::<u64>(self.general_capabilities_register) & 0xF00) >> 8) as u8
@@ -191,6 +192,7 @@ impl Hpet {
 	}
     }
 
+    #[allow(dead_code)]
     pub fn add_oneshot_ms(&mut self, time_ms: u64, callback: Box<dyn Fn() + Send + Sync>) {
 	if let Some(counter) = self.free_counters.pop() {
 	    self.callbacks.push(TimerCallback(counter, callback));
@@ -230,6 +232,7 @@ fn hpet_handler() {
     hpet.handle_triggered_callbacks();
 }
 
+#[allow(dead_code)]
 pub fn add_oneshot(time_ms: u64, callback: Box<dyn Fn() + Send + Sync>) {
     let mut hpet = HPET.get().expect("Attempted to initialise HPET device before initialising driver").write();
     hpet.add_oneshot_ms(time_ms, callback);

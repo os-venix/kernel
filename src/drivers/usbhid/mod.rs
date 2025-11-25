@@ -148,7 +148,7 @@ impl driver::Device for Keyboard {
     fn write(&self, _buf: *const u8, _size: u64) -> Result<u64, ()> {
 	unimplemented!();
     }
-    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()> {
+    fn ioctl(self: Arc<Self>, _ioctl: ioctl::IoCtl, _buf: u64) -> Result<u64, ()> {
 	unimplemented!();
     }
 }

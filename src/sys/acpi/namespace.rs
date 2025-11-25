@@ -141,7 +141,7 @@ extern "C" {
     fn uacpi_free_pci_routing_table(route: *mut UacpiPciRoutingTable);
 }
 
-unsafe extern "C" fn acpi_probe_device(user: *mut c_void, namespace: Namespace, depth: u32) -> UacpiIterationDecision {
+unsafe extern "C" fn acpi_probe_device(_user: *mut c_void, namespace: Namespace, _depth: u32) -> UacpiIterationDecision {
     let path = {
 	let path_cchar: *const c_char = uacpi_namespace_node_generate_absolute_path(namespace);
 	

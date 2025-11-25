@@ -272,7 +272,7 @@ impl Process {
 	});
     }
 
-    pub fn init_stack_and_start(self: Arc<Self>) {
+    pub fn init_stack_and_start(self: Arc<Self>) -> Result<(), memory::CopyError> {
 	let mut context = self.context.write();
 	let mut state = self.state.write();
 	let auxvs = self.auxvs.read();
@@ -315,7 +315,7 @@ impl Process {
 	    let envvar_len = envvar.len() + 1;
 	    let envvar_cstring = CString::new(envvar.as_str()).unwrap();
 	    memory::copy_to_user(
-		stack_ptr + (current_offs - envvar_len) as u64, envvar_cstring.as_bytes_with_nul());
+		stack_ptr + (current_offs - envvar_len) as u64, envvar_cstring.as_bytes_with_nul())?;
 	    current_offs -= envvar_len;
 
 	    envvar_p.push(context.rsp + current_offs as u64);
@@ -326,7 +326,7 @@ impl Process {
 	    let arg_len = arg.len() + 1;
 	    let arg_cstring = CString::new(arg.as_str()).unwrap();
 	    memory::copy_to_user(
-		stack_ptr + (current_offs - arg_len) as u64, arg_cstring.as_bytes_with_nul());
+		stack_ptr + (current_offs - arg_len) as u64, arg_cstring.as_bytes_with_nul())?;
 
 	    current_offs -= arg_len;
 	    args_p.push(context.rsp + current_offs as u64);
@@ -364,9 +364,10 @@ impl Process {
 
 	// padding
 	buf.resize(buf.len() + alignment as usize, 0);
-	memory::copy_to_user(VirtAddr::new(context.rsp), buf.as_slice());
+	memory::copy_to_user(VirtAddr::new(context.rsp), buf.as_slice())?;
 
 	*state = TaskState::Running;
+	Ok(())
     }
 
     pub fn set_registers(self: Arc<Self>, rsp: u64, rip: u64, rflags: u64, registers: &GeneralPurposeRegisters) {
@@ -501,6 +502,7 @@ impl Process {
 	}
     }
 
+    #[allow(dead_code)]
     pub fn set_cwd(self: Arc<Self>, new_cwd: String) {
 	let mut cwd = self.cwd.write();
 	*cwd = new_cwd;

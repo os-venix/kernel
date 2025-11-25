@@ -29,6 +29,7 @@ use crate::process;
 
 #[repr(u64)]
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum CanonicalError {
     EOK = 0,
     ENOENT = 2,
@@ -43,9 +44,9 @@ pub enum CanonicalError {
 #[repr(u64)]
 #[derive(Debug, TryFromPrimitive)]
 enum FcntlOperation {
-    F_DUPFD = 1,
-    F_GETFD = 3,
-    F_SETFD = 4,
+    DupFD = 1,
+    GetFD = 3,
+    SetFD = 4,
 }
 
 impl fmt::Display for CanonicalError {
@@ -236,7 +237,7 @@ async fn sys_ioctl(fd_num: u64, ioctl: u64, buf: u64) -> SyscallResult {
     }
 }
 
-async fn sys_stat(filename: u64, buf: u64) -> SyscallResult {
+async fn sys_stat(filename: u64, _buf: u64) -> SyscallResult {
     let path = match memory::copy_string_from_user(VirtAddr::new(filename)) {
 	Ok(path) => path,
 	Err(_) => {
@@ -248,7 +249,7 @@ async fn sys_stat(filename: u64, buf: u64) -> SyscallResult {
     };
 
     match vfs::stat(path).await {
-	Ok(ret) => SyscallResult {
+	Ok(_ret) => SyscallResult {
 	    return_value: 0,
 	    err_num: CanonicalError::EOK as u64
 	},
@@ -259,7 +260,7 @@ async fn sys_stat(filename: u64, buf: u64) -> SyscallResult {
     }
 }
 
-async fn sys_fstat(fd: u64, buf: u64) -> SyscallResult {
+async fn sys_fstat(fd: u64, _buf: u64) -> SyscallResult {
     let process = scheduler::get_current_process();
     let actual_fd = process.get_file_descriptor(fd);
     let file_description = actual_fd.file_description.read();
@@ -273,7 +274,7 @@ async fn sys_fstat(fd: u64, buf: u64) -> SyscallResult {
     };
 
     match vfs::stat(path).await {
-	Ok(ret) => SyscallResult {
+	Ok(_ret) => SyscallResult {
 	    return_value: 0,
 	    err_num: CanonicalError::EOK as u64
 	},
@@ -318,7 +319,7 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
     };
 
     match op {
-	FcntlOperation::F_DUPFD => {
+	FcntlOperation::DupFD => {
 	    let process = scheduler::get_current_process();
 	    let actual_fd = process.get_file_descriptor(fd_num);
 	    // let actual_fd = match process.get_file_descriptor(fd) {
@@ -337,7 +338,7 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
 		err_num: CanonicalError::EOK as u64,
 	    };
 	},
-	FcntlOperation::F_GETFD => {
+	FcntlOperation::GetFD => {
 	    let process = scheduler::get_current_process();
 	    let actual_fd = process.get_file_descriptor(fd_num);
 	    // let actual_fd = match process.get_file_descriptor(fd) {
@@ -355,7 +356,7 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
 		err_num: CanonicalError::EOK as u64,
 	    };
 	},
-	FcntlOperation::F_SETFD => {
+	FcntlOperation::SetFD => {
 	    let process = scheduler::get_current_process();
 	    // Bottom 3 bits are mode. We don't currently enforce mode, but in order to progress, let's strip it out.
 	    // Similarly, there isn't yet a concept of a controlling TTY, so let's not worry about that either for now
@@ -505,7 +506,7 @@ async fn sys_pipe(fds: u64, flags: u64) -> SyscallResult {
     }
 }
     
-async fn sys_getcwd(buf: u64, count: u64) -> SyscallResult {
+async fn sys_getcwd(buf: u64, _count: u64) -> SyscallResult {
     let process = scheduler::get_current_process();
     let cwd = process.get_cwd();
 
@@ -567,7 +568,12 @@ pub async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> Sysca
     let ld = elf_loader::Elf::new(String::from("/usr/lib/ld.so")).await.expect("Failed to load ld.so");
     process.clone().attach_loaded_elf(elf, ld);
 
-    process.clone().init_stack_and_start();
+    if let Err(_e) = process.clone().init_stack_and_start() {
+	return SyscallResult {
+	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+	    err_num: CanonicalError::EIO as u64,
+	};
+    }
 
     SyscallResult {
 	return_value: 0,
@@ -615,7 +621,7 @@ async fn sys_sigaction(signum: u64, new_sigaction: u64, old_sigaction: u64) -> S
 
 	    match memory::copy_value_to_user::<signal::SigAction>(
 		VirtAddr::new(new_sigaction), &sigaction) {
-		Ok(s) => (),
+		Ok(()) => (),
 		Err(_) => {
 		    return SyscallResult {
 			return_value: 0xFFFF_FFFF_FFFF_FFFF,

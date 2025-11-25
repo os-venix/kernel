@@ -75,6 +75,9 @@ struct PartitionEntry {
     partition_name: [u16; 36],
 }
 
+// Allow dead code for now, as it's angry at mbr and pth, which we do actually need for partition code
+// that hasn't yet been written.
+#[allow(dead_code)]
 pub struct GptDevice {
     mbr: Mbr,
     pth: PartitionTableHeader,

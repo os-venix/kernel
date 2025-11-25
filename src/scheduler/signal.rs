@@ -15,6 +15,7 @@ pub enum HandlerType {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct SignalHandler {
     handler: usize,  // The address to start
     mask: u64,  // The list of signals to mask off when in the handler

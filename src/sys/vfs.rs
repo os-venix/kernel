@@ -16,6 +16,7 @@ const SEEK_SET: u64 = 3;
 const SEEK_CUR: u64 = 1;
 const SEEK_END: u64 = 2;
 
+#[allow(dead_code)]
 pub struct Stat {
     pub file_name: String,
     pub size: Option<u64>,
@@ -60,7 +61,7 @@ impl FileDescriptor {
 
     pub async fn read(&mut self, len: u64) -> Result<bytes::Bytes, syscall::CanonicalError> {
 	match self {
-	    FileDescriptor::File { file_name, current_offset, file_system, local_name } => {
+	    FileDescriptor::File { file_name: _, current_offset, file_system, local_name } => {
 		let read_buffer = file_system.clone().read(local_name.clone(), *current_offset, len).await?;
 		*current_offset += len;
 		Ok(read_buffer)
@@ -74,7 +75,7 @@ impl FileDescriptor {
 
     pub fn write(&mut self, buf: Vec<u8>, len: u64) -> Result<u64> {
 	match self {
-	    FileDescriptor::File { file_name, current_offset, file_system, local_name } => {
+	    FileDescriptor::File { file_name, current_offset: _, file_system, local_name } => {
 		match file_system.write(local_name.clone(), buf.as_ptr(), len as usize) {
 		    Ok(l) => Ok(l),
 		    Err(_) => Err(anyhow!("Unable to write {}", file_name)),
@@ -92,7 +93,7 @@ impl FileDescriptor {
 
     pub fn ioctl(&self, operation: ioctl::IoCtl, buf: u64) -> Result<u64> {
 	match self {
-	    FileDescriptor::File { file_name, current_offset, file_system, local_name } => {
+	    FileDescriptor::File { file_name, current_offset: _, file_system, local_name } => {
 		match file_system.ioctl(local_name.clone(), operation, buf) {
 		    Ok(l) => Ok(l),
 		    Err(_) => Err(anyhow!("Unable to ioctl {}", file_name)),
@@ -104,7 +105,7 @@ impl FileDescriptor {
 
     pub async fn seek(&mut self, offset: u64, whence: u64) -> Result<u64> {
 	match self {
-	    FileDescriptor::File { file_name, current_offset, file_system, local_name } => {
+	    FileDescriptor::File { file_name, current_offset, file_system: _, local_name: _ } => {
 		let offset_signed = offset as i64;
 
 		let stat = stat(file_name.clone()).await?;

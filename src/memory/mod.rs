@@ -16,6 +16,8 @@ use alloc::vec::Vec;
 use limine::memory_map::Entry;
 use alloc::slice;
 use alloc::string::String;
+use alloc::fmt;
+use core::error::Error;
 
 mod frame_allocator;
 mod page_allocator;
@@ -41,7 +43,7 @@ pub enum MemoryAllocationType {
     RAM,
     MMIO(u64),
     DMA,
-    USER_BUFFER(Vec<PhysAddr>),
+    UserBuffer(Vec<PhysAddr>),
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -245,7 +247,7 @@ pub fn kernel_allocate(
 		.map(|addr| PhysFrame::containing_address(start + addr))
 		.collect()
 	},
-	MemoryAllocationType::USER_BUFFER(buf) => buf.iter()
+	MemoryAllocationType::UserBuffer(buf) => buf.iter()
 	    .map(|p| PhysFrame::from_start_address(*p).unwrap())
 	    .collect(),
     };
@@ -293,17 +295,24 @@ pub fn get_ptr_in_hhdm(phys_addr: PhysAddr) -> VirtAddr {
 #[derive(Debug)]
 pub enum CopyError {
     Fault,               // page not present / translation failed
-    Permission,          // page present but not writable by user
     TempAllocFailed,     // couldn't allocate temporary kernel mapping
-    Partial(usize),      // copied an amount but failed afterwards (optional)
 }
+
+impl fmt::Display for CopyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+	match self {
+	    CopyError::Fault => write!(f, "Attempted to copy from a user page not in the user page map."),
+	    CopyError::TempAllocFailed => write!(f, "Couldn't temp map user pages into kernel for copy."),
+	}
+    }
+}
+
+impl Error for CopyError {}
 
 #[derive(Debug)]
 pub enum UserStringCopyError {
     Fault,               // page not present / translation failed
-    Permission,          // page present but not writable by user
     TempAllocFailed,     // couldn't allocate temporary kernel mapping
-    Partial(usize),      // copied an amount but failed afterwards (optional)
     TooLong,             // attempted to copy a string >1MiB
     InvalidUtf8,         // couldn't translate the string
 }
@@ -338,7 +347,7 @@ fn copy_to_user_internal(
         cur_vaddr = page_base_vaddr.as_u64() + 4096; // next page start (even if dest started in middle)
     }
 
-    let kernel_buf = match kernel_allocate(n_pages as u64 * 4096, MemoryAllocationType::USER_BUFFER(phys_pages)) {
+    let kernel_buf = match kernel_allocate(n_pages as u64 * 4096, MemoryAllocationType::UserBuffer(phys_pages)) {
 	Ok((buf, _)) => buf,
 	Err(_) => return Err(CopyError::TempAllocFailed),
     };
@@ -388,7 +397,7 @@ fn copy_from_user_internal(
         cur_vaddr = page_base_vaddr.as_u64() + 4096; // next page start (even if dest started in middle)
     }
 
-    let kernel_buf = match kernel_allocate(n_pages as u64 * 4096, MemoryAllocationType::USER_BUFFER(phys_pages)) {
+    let kernel_buf = match kernel_allocate(n_pages as u64 * 4096, MemoryAllocationType::UserBuffer(phys_pages)) {
 	Ok((buf, _)) => buf,
 	Err(_) => return Err(CopyError::TempAllocFailed),
     };
@@ -469,7 +478,10 @@ pub fn copy_string_from_user(user_buf: VirtAddr) -> Result<String, UserStringCop
     loop {
         // Copy one page
         let bytes = copy_from_user(cursor, PAGE_SIZE)
-            .map_err(|_| UserStringCopyError::Fault)?;
+            .map_err(|e| match e {
+		CopyError::Fault => UserStringCopyError::Fault,
+		CopyError::TempAllocFailed => UserStringCopyError::TempAllocFailed,
+	    })?;
 
         // Look for NUL terminator
         if let Some(pos) = bytes.iter().position(|&b| b == 0) {

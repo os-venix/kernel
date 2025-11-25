@@ -24,6 +24,7 @@ pub trait DeviceTypeIdentifier: fmt::Display {
     fn as_any(&self) -> &dyn Any;
 }
 
+#[allow(dead_code)]
 pub trait Bus {
     fn name(&self) -> String;
     fn enumerate(&mut self) -> Vec<Box<dyn DeviceTypeIdentifier>>;

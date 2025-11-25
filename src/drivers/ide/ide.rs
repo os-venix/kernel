@@ -23,7 +23,6 @@ use crate::sys::ioctl;
 const IDE_CTL_REG: u16 = 0;
 const IDE_CTL_NIEN: u8 = 1 << 1;
 const IDE_CTL_SRST: u8 = 1 << 2;
-const IDE_CTL_HOB: u8 = 1 << 7;
 
 const IDE_DRIVE_HEAD_REG: u16 = 6;
 const IDE_DRIVE_HEAD_BASE: u8 = 0x40;  // LBA, + always set bits
@@ -53,8 +52,6 @@ const IDE_REG_SECCOUNT: u16 = 2;
 
 const IDE_DATA_REG: u16 = 0;
 const IDE_ERR_REG: u16 = 1;
-
-const IDE_IDENT_MODEL: usize = 54;
 
 const IDE_BUSMASTER_PRDT_REG: u16 = 0x04;
 const IDE_BUSMASTER_COMMAND_REG: u16 = 0x00;
@@ -339,7 +336,7 @@ impl driver::Device for IdeDrive {
 	panic!("Attempted to write to IDE drive. Not yet implemented");
     }
 
-    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()> {
+    fn ioctl(self: Arc<Self>, _ioctl: ioctl::IoCtl, _buf: u64) -> Result<u64, ()> {
 	panic!("Shouldn't have attempted to ioctl to the IDE drive. That makes no sense.");
     }
 }
@@ -594,7 +591,7 @@ impl IdeDrive {
 	let busmaster_base = ctl.busmaster_base.expect("Attempted to do DMA xfer to non-DMA controller") as u16;
 
 	unsafe {
-	    let mut prdt_addr_reg = Port::<u32>::new(busmaster_base + 0x04);
+	    let mut prdt_addr_reg = Port::<u32>::new(busmaster_base + IDE_BUSMASTER_PRDT_REG);
 	    prdt_addr_reg.write(ctl.prdt_phys);
 	}
 

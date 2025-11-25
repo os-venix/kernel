@@ -249,17 +249,17 @@ extern "C" fn uacpi_kernel_pci_read32(address: *mut PciAddress, offset: usize, o
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_pci_write8(handle: *const c_void, offset: usize, out: u8) -> UacpiStatus {
+extern "C" fn uacpi_kernel_pci_write8(_handle: *const c_void, _offset: usize, _out: u8) -> UacpiStatus {
     unimplemented!()
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_pci_write16(handle: *const c_void, offset: usize, out: u16) -> UacpiStatus {
+extern "C" fn uacpi_kernel_pci_write16(_handle: *const c_void, _offset: usize, _out: u16) -> UacpiStatus {
     unimplemented!()
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_pci_write32(handle: *const c_void, offset: usize, out: u32) -> UacpiStatus {
+extern "C" fn uacpi_kernel_pci_write32(_handle: *const c_void, _offset: usize, _out: u32) -> UacpiStatus {
     unimplemented!()
 }
 
@@ -435,12 +435,12 @@ extern "C" fn uacpi_kernel_get_nanoseconds_since_boot() -> u64 {
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_stall(usec: u8) {
+extern "C" fn uacpi_kernel_stall(_usec: u8) {
     unimplemented!()
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_sleep(msec: u64) {
+extern "C" fn uacpi_kernel_sleep(_msec: u64) {
     unimplemented!()
 }
 
@@ -457,7 +457,7 @@ extern "C" fn uacpi_kernel_free_mutex(handle: *mut Mutex) {
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_acquire_mutex(mutex: *mut Mutex, msec: u16) -> UacpiStatus {
+extern "C" fn uacpi_kernel_acquire_mutex(mutex: *mut Mutex, _msec: u16) -> UacpiStatus {
     unsafe { mutex.as_mut().unwrap().lock(); }
     UacpiStatus::Ok
 }
@@ -504,20 +504,20 @@ extern "C" fn uacpi_kernel_get_thread_id() -> u64 {
 #[no_mangle]
 #[allow(dead_code)]
 // TODO: struct UacpiFirmwareRequest
-extern "C" fn uacpi_kernel_handle_firmware_request(request: *const c_void) -> UacpiStatus {
+extern "C" fn uacpi_kernel_handle_firmware_request(_request: *const c_void) -> UacpiStatus {
     unimplemented!()
 }
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_install_interrupt_handler(irq: u32, handler: unsafe extern "C" fn(u64), ctx: u64, out_handle: *const c_void) -> UacpiStatus {
+extern "C" fn uacpi_kernel_install_interrupt_handler(irq: u32, handler: unsafe extern "C" fn(u64), ctx: u64, _out_handle: *const c_void) -> UacpiStatus {
     let route = interrupts::InterruptRoute::Irq(irq as u8);
     route.register_handler(Box::new(move || unsafe { handler(ctx) }));
     UacpiStatus::Ok
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_uninstall_interrupt_handler(handler: *const c_void, out_handle: *const c_void) -> UacpiStatus {
+extern "C" fn uacpi_kernel_uninstall_interrupt_handler(_handler: *const c_void, _out_handle: *const c_void) -> UacpiStatus {
     unimplemented!()
 }
 

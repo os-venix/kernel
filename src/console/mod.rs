@@ -175,10 +175,6 @@ impl driver::Device for ConsoleDevice {
 
 		Ok(0)
 	    },
-	    _ => {
-		log::info!("ioctl {:?} not implemented for console", ioctl);
-		Err(())
-	    },
 	}
     }
 }

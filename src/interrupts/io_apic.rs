@@ -24,14 +24,12 @@ const IOAPIC_POLARITY_HIGH: u32 = 0 << 13;
 const IOAPIC_POLARITY_LOW: u32 = 1 << 13;
 
 const IOAPIC_DESTINATION_PHYSICAL: u32 = 0 << 11;
-const IOAPIC_DESTINATION_LOGICAL: u32 = 1 << 11;
 
 const IOAPIC_DELIVERY_FIXED: u32 = 0 << 8;
 
 struct IoApic {
     ioregsel: *mut u32,
     iowin: *mut u32,
-    id: u8,
     global_system_interrupt_base: u32,
 
     gsi_to_irq: BTreeMap<u32, u8>,
@@ -41,7 +39,7 @@ unsafe impl Send for IoApic {}
 unsafe impl Sync for IoApic {}
 
 impl IoApic {
-    pub fn new(id: u8, base_addr: u32, global_system_interrupt_base: u32) -> IoApic {
+    pub fn new(base_addr: u32, global_system_interrupt_base: u32) -> IoApic {
 	let size = 0x20;
 
 	let virt_addr = match memory::allocate_mmio(base_addr as usize, size as usize) {
@@ -52,7 +50,6 @@ impl IoApic {
 	IoApic {
 	    ioregsel: virt_addr.as_mut_ptr(),
 	    iowin: (virt_addr + 0x10).as_mut_ptr(),
-	    id: id,
 	    global_system_interrupt_base: global_system_interrupt_base,
 	    gsi_to_irq: BTreeMap::new(),
 	}
@@ -142,7 +139,7 @@ pub fn init_io_apics(bsp_apic_id: u64) {
     let mut ioapics = IOAPICS.call_once(|| RwLock::new(Vec::<IoApic>::new())).write();
     for io_apic in interrupt_model.io_apics.iter() {
 	log::info!("Found I/O APIC, ID=0x{:x}, GSI base=0x{:x}", io_apic.id, io_apic.global_system_interrupt_base);
-	ioapics.push(IoApic::new(io_apic.id, io_apic.address, io_apic.global_system_interrupt_base));
+	ioapics.push(IoApic::new(io_apic.address, io_apic.global_system_interrupt_base));
     }
 
     let mut irq_to_gsi = IRQ_TO_GSI.call_once(|| RwLock::new(BTreeMap::<u8, u32>::new())).write();
