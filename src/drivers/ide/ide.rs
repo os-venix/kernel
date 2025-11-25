@@ -260,7 +260,7 @@ struct IdeController {
 impl IdeController {
     pub fn new(control_base: u16, io_base: u16, busmaster_base: Option<u32>) {
 	let arena = arena::Arena::new();
-	let (_, prdt, prdt_phys_addr) = arena.acquire_slice_by_tag(0, 4096).unwrap();
+	let (prdt, prdt_phys_addr) = arena.acquire_slice_by_tag(0, 4096).unwrap();
 
 	let ide_controller = IdeController {
 	    arena: arena,
@@ -520,7 +520,7 @@ impl IdeDrive {
     }
 
     async fn dma_read(&self, offset: u64, size: u64) -> Result<Bytes, syscall::CanonicalError> {
-	let ctl = self.controller.lock();
+	let mut ctl = self.controller.lock();
 
 	// We don't (yet) support multiple PRDs per transfer
 	if size > 65536 {
@@ -560,12 +560,13 @@ impl IdeDrive {
 	    compacted_phys_addr.last_mut().unwrap().end -= total_size - (size * 512);
 	}
 
-	ctl.arena.tag_to_slice(ctl.prdt, 4096).fill(0);
+	let prdt_tag = ctl.prdt.clone();
+	ctl.arena.tag_to_slice_mut(prdt_tag, 4096).fill(0);
 
 	{
 	    let mut prdt_entries = 0;
 	    let (_, prdts, _) = unsafe {
-		ctl.arena.tag_to_slice(ctl.prdt, 4096).align_to_mut::<u32>()
+		ctl.arena.tag_to_slice_mut(prdt_tag, 4096).align_to_mut::<u32>()
 	    };
 	    for current_region in compacted_phys_addr.iter() {
 		if current_region.end >= 1 << 32 {

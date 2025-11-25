@@ -1,5 +1,4 @@
 use std::env;
-use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
@@ -16,7 +15,7 @@ fn main() {
 	    .status()
 	    .unwrap()
 	    .success());
-    let linker_script = PathBuf::from(std::env::current_dir().unwrap()).join("linker.ld");
+    let linker_script = std::env::current_dir().unwrap().join("linker.ld");
 
     println!("cargo:rustc-link-lib=static=uacpi");
     println!("cargo:rustc-link-search=native={}", env::var("OUT_DIR").unwrap());

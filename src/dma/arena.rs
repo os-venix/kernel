@@ -143,29 +143,24 @@ impl<'a> Arena {
 
     /// acquire a reference to a value of type T that is initialized with it's default value.
     /// This is useful for types that do not require initialization.
-    pub fn acquire_default_by_tag<T: Default>(&'a self, alignment: usize) -> Option<(&'a mut T, ArenaTag, PhysAddr)> {
+    pub fn acquire_default_by_tag<T: Default>(&'a self, alignment: usize) -> Option<(ArenaTag, PhysAddr)> {
         let (ptr, tag, phys_addr) = self.get_ptr_place::<T>(alignment)?;
 
         ptr.write(T::default());
 
-        Some((unsafe {
-            ptr::from_mut(ptr)
-                .cast::<T>()
-                .as_mut()
-                .unwrap_unchecked()
-        }, tag, phys_addr))
+        Some((tag, phys_addr))
     }
 
     /// acquire a reference to a slice of length l, initialized to 0.
-    pub fn acquire_slice_by_tag(&'a self, alignment: usize, length: usize) -> Option<(&'a [u8], ArenaTag, PhysAddr)> {
+    pub fn acquire_slice_by_tag(&'a self, alignment: usize, length: usize) -> Option<(ArenaTag, PhysAddr)> {
         let (slice, tag, phys_addr) = self.get_slice_place(alignment, length)?;
 	slice.fill_with(Default::default);
 
-	Some((slice, tag, phys_addr))
+	Some((tag, phys_addr))
     }
 
     /// get a pointer to memory pointed to by tag
-    pub fn tag_to_ptr<T: Default>(&'a self, tag: ArenaTag) -> &'a mut T {
+    pub fn tag_to_ptr<T: Default>(&'a self, tag: ArenaTag) -> &'a T {
         let (virt_page, _) = self.backing_store[tag.0 / 4096];
 	let virt_addr = virt_page + (tag.0 as u64 % 4096);
 
@@ -175,7 +170,27 @@ impl<'a> Arena {
     }
 
     /// get a slice to memory pointed to by tag
-    pub fn tag_to_slice(&'a self, tag: ArenaTag, length: usize) -> &'a mut [u8] {
+    pub fn tag_to_slice(&'a self, tag: ArenaTag, length: usize) -> &'a [u8] {
+        let (virt_page, _) = self.backing_store[tag.0 / 4096];
+	let virt_addr = virt_page + (tag.0 as u64 % 4096);
+
+	unsafe {
+	    slice::from_raw_parts_mut(virt_addr.as_mut_ptr::<u8>(), length)
+	}
+    }    
+
+    /// get a pointer to memory pointed to by tag
+    pub fn tag_to_ptr_mut<T: Default>(&'a mut self, tag: ArenaTag) -> &'a mut T {
+        let (virt_page, _) = self.backing_store[tag.0 / 4096];
+	let virt_addr = virt_page + (tag.0 as u64 % 4096);
+
+	unsafe {
+	    virt_addr.as_mut_ptr::<T>().cast::<T>().as_mut().unwrap()
+	}
+    }
+
+    /// get a slice to memory pointed to by tag
+    pub fn tag_to_slice_mut(&'a mut self, tag: ArenaTag, length: usize) -> &'a mut [u8] {
         let (virt_page, _) = self.backing_store[tag.0 / 4096];
 	let virt_addr = virt_page + (tag.0 as u64 % 4096);
 

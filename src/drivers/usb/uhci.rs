@@ -180,7 +180,7 @@ unsafe impl Sync for UhciTransfer { }
 impl UhciTransfer {
     pub fn new() -> Self {
 	let arena = arena::Arena::new();
-	let (_, queue_head_tag, queue_head_phys) = arena.acquire_default_by_tag::<QueueHead>(0x10).unwrap();
+	let (queue_head_tag, queue_head_phys) = arena.acquire_default_by_tag::<QueueHead>(0x10).unwrap();
 	UhciTransfer {
 	    arena,
 	    queue_head: queue_head_tag,
@@ -248,12 +248,12 @@ impl UhciTransfer {
 
     pub fn reset_tds(&mut self) {
 	for td in self.transfer_descriptors.iter_mut() {
-	    self.arena.tag_to_ptr::<TransferDescriptor>(*td).set_status_stalled(false);
-	    self.arena.tag_to_ptr::<TransferDescriptor>(*td).set_status_buffer_error(false);
-	    self.arena.tag_to_ptr::<TransferDescriptor>(*td).set_status_babble(false);
-	    self.arena.tag_to_ptr::<TransferDescriptor>(*td).set_status_nak(false);
-	    self.arena.tag_to_ptr::<TransferDescriptor>(*td).set_status_crc_timeout(false);
-	    self.arena.tag_to_ptr::<TransferDescriptor>(*td).set_status_bitstuff_error(false);
+	    self.arena.tag_to_ptr_mut::<TransferDescriptor>(*td).set_status_stalled(false);
+	    self.arena.tag_to_ptr_mut::<TransferDescriptor>(*td).set_status_buffer_error(false);
+	    self.arena.tag_to_ptr_mut::<TransferDescriptor>(*td).set_status_babble(false);
+	    self.arena.tag_to_ptr_mut::<TransferDescriptor>(*td).set_status_nak(false);
+	    self.arena.tag_to_ptr_mut::<TransferDescriptor>(*td).set_status_crc_timeout(false);
+	    self.arena.tag_to_ptr_mut::<TransferDescriptor>(*td).set_status_bitstuff_error(false);
 	}
 
 	fence(Ordering::SeqCst);
@@ -263,12 +263,12 @@ impl UhciTransfer {
 	// until the last step, when the first TD is marked as active, at which point absolutely everything
 	// else has already been reset.
 	for td in self.transfer_descriptors.iter_mut().rev() {
-	    self.arena.tag_to_ptr::<TransferDescriptor>(*td).set_status_active(true);
+	    self.arena.tag_to_ptr_mut::<TransferDescriptor>(*td).set_status_active(true);
 	}
     }
 
     pub fn create_transfer_buffer(&mut self, size: usize) -> PhysAddr {
-	let (_, buffer_tag, buffer_phys) = self.arena.acquire_slice_by_tag(0, size).unwrap();
+	let (buffer_tag, buffer_phys) = self.arena.acquire_slice_by_tag(0, size).unwrap();
 
 	self.buffer = Some(buffer_tag);
 	self.buf_length = size;
@@ -277,7 +277,7 @@ impl UhciTransfer {
     }
 
     pub fn create_transfer_descriptor(&mut self, is_low_speed: bool, len: u8, endpoint: u8, address: u8, packet_id: u8, buf: PhysAddr, td_type: TransferDescriptorType) {
-	let (td, td_tag, td_phys) = self.arena.acquire_default_by_tag::<TransferDescriptor>(0x10).unwrap();
+	let (td_tag, td_phys) = self.arena.acquire_default_by_tag::<TransferDescriptor>(0x10).unwrap();
 
 	if self.transfer_descriptors.len() == 0 {
 	    let mut el_pointer = Pointer::default();	    
@@ -285,9 +285,9 @@ impl UhciTransfer {
 	    el_pointer.set_qh_td_select(false);
 	    el_pointer.set_terminate(false);
 
-	    self.arena.tag_to_ptr::<QueueHead>(self.queue_head).set_el_pointer(el_pointer);
+	    self.arena.tag_to_ptr_mut::<QueueHead>(self.queue_head).set_el_pointer(el_pointer);
 	} else {
-	    self.arena.tag_to_ptr::<TransferDescriptor>(*self.transfer_descriptors.iter_mut().rev().nth(0).unwrap())
+	    self.arena.tag_to_ptr_mut::<TransferDescriptor>(*self.transfer_descriptors.iter_mut().rev().nth(0).unwrap())
 		.set_link_pointer_phys_addr(td_phys);
 	};
 
@@ -297,13 +297,14 @@ impl UhciTransfer {
 	    TransferDescriptorType::Data => if self.transfer_descriptors.len() == 0 {
 		false
 	    } else {
-		!self.arena.tag_to_ptr::<TransferDescriptor>(
+		!self.arena.tag_to_ptr_mut::<TransferDescriptor>(
 		    *self.transfer_descriptors.iter_mut().rev().nth(0).unwrap())
 		    .toggle()
 	    },
 	};
 	let length: u16 = if len != 0 { (len - 1).into() } else { 0x7FF };
 
+	let td = self.arena.tag_to_ptr_mut::<TransferDescriptor>(td_tag);
 	td.set_depth_breadth_select(true);  // Depth first
 	td.set_qh_td_select(false);  // Next one is a transfer descriptor
 	td.set_terminate(false);
@@ -321,9 +322,9 @@ impl UhciTransfer {
     }
 
     pub fn finalise_and_get_qh(&mut self, poll: bool) -> PhysAddr {
-	self.arena.tag_to_ptr::<TransferDescriptor>(*self.transfer_descriptors.iter_mut().rev().nth(0).unwrap())
+	self.arena.tag_to_ptr_mut::<TransferDescriptor>(*self.transfer_descriptors.iter_mut().rev().nth(0).unwrap())
 	    .set_terminate(true);
-	self.arena.tag_to_ptr::<TransferDescriptor>(*self.transfer_descriptors.iter_mut().rev().nth(0).unwrap())
+	self.arena.tag_to_ptr_mut::<TransferDescriptor>(*self.transfer_descriptors.iter_mut().rev().nth(0).unwrap())
 	    .set_interrupt_on_complete(!poll);
 
 	self.queue_head_phys

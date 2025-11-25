@@ -20,9 +20,14 @@ struct StackFrame {
 macro_rules! irq_handler_def {
     ($irq:literal) => {
 	paste::item! {
+	    unsafe fn [<install_irq_ $irq>](idt: &mut x86_64::structures::idt::InterruptDescriptorTable) {
+		let f: extern "x86-interrupt" fn(InterruptStackFrame) = core::mem::transmute([<irq_ $irq>] as usize);
+		idt[$irq].set_handler_fn(f);
+	    }
+
 	    #[naked]
 	    #[allow(named_asm_labels)]
-	    extern "x86-interrupt" fn [<irq_ $irq >] (stack_frame: InterruptStackFrame) {
+	    extern "C" fn [<irq_ $irq >] () {
 		extern "C" fn inner(stack_frame: &StackFrame) -> ! {
 		    let process = scheduler::get_current_process();
 		    process.set_registers(
@@ -121,22 +126,22 @@ lazy_static! {
 		.set_stack_index(gdt::KERNEL_IST_INDEX);
 
 	    // IDT interrutps
-	    idt[0x20].set_handler_fn(irq_32).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x21].set_handler_fn(irq_33).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x22].set_handler_fn(irq_34).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x23].set_handler_fn(irq_35).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x24].set_handler_fn(irq_36).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x25].set_handler_fn(irq_37).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x26].set_handler_fn(irq_38).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x27].set_handler_fn(irq_39).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x28].set_handler_fn(irq_40).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x29].set_handler_fn(irq_41).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x2A].set_handler_fn(irq_42).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x2B].set_handler_fn(irq_43).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x2C].set_handler_fn(irq_44).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x2D].set_handler_fn(irq_45).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x2E].set_handler_fn(irq_46).set_stack_index(gdt::KERNEL_IST_INDEX);
-	    idt[0x2F].set_handler_fn(irq_47).set_stack_index(gdt::KERNEL_IST_INDEX);
+	    install_irq_32(&mut idt);
+	    install_irq_33(&mut idt);
+	    install_irq_34(&mut idt);
+	    install_irq_35(&mut idt);
+	    install_irq_36(&mut idt);
+	    install_irq_37(&mut idt);
+	    install_irq_38(&mut idt);
+	    install_irq_39(&mut idt);
+	    install_irq_40(&mut idt);
+	    install_irq_41(&mut idt);
+	    install_irq_42(&mut idt);
+	    install_irq_43(&mut idt);
+	    install_irq_44(&mut idt);
+	    install_irq_45(&mut idt);
+	    install_irq_46(&mut idt);
+	    install_irq_47(&mut idt);
 	}
 
 	// APIC Spurious Interrupts

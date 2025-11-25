@@ -260,51 +260,65 @@ fn next_task() -> process::ProcessContext {
     idle_ctx
 }
 
-#[naked]
-#[allow(named_asm_labels)]
-extern "C" fn context_switch(context: &process::ProcessContext) -> ! {
+fn context_switch(context: &process::ProcessContext) -> ! {    
+    #[naked]
+    #[allow(named_asm_labels)]
+    unsafe extern "C" fn inner() -> ! {
+	unsafe {
+	    core::arch::asm!(
+		// First, build up the stack frame for the iret
+		"mov rcx, [rdi + 0x98]",  // SS
+		"mov rbx, [rdi + 0x90]",  // CS
+		"mov rax, [rdi + 0x88]",  // RSP
+		"mov rdx, [rdi + 0x80]",  // RIP
+		"mov rsi, [rdi + 0x78]",  // RFLAGS
+
+		"push rcx",
+		"push rax",
+		"push rsi",
+		"push rbx",
+		"push rdx",
+
+		// Next, restore the registers themselves
+		"mov r15, [rdi + 0x00]",
+		"mov r14, [rdi + 0x08]",
+		"mov r13, [rdi + 0x10]",
+		"mov r12, [rdi + 0x18]",
+		"mov r11, [rdi + 0x20]",
+		"mov r10, [rdi + 0x28]",
+		"mov r9, [rdi + 0x30]",
+		"mov r8, [rdi + 0x38]",
+		"mov rbp, [rdi + 0x40]",
+		// RDI would go here, but has to be done at the end
+		"mov rsi, [rdi + 0x50]",
+		"mov rdx, [rdi + 0x58]",
+		"mov rcx, [rdi + 0x60]",
+		"mov rbx, [rdi + 0x68]",
+		"mov rax, [rdi + 0x70]",
+		"mov rdi, [rdi + 0x48]",
+
+		// Next, swap GS if needed
+		"test qword ptr [rsp + 0x08], 0x03",
+		"je 3f",
+		"swapgs",
+		"3:",
+
+		// Lastly, iret to the process
+		"iretq",
+
+		options(noreturn),
+	    );
+	}
+    }
+
+    let ptr = context as *const process::ProcessContext;
     unsafe {
 	core::arch::asm!(
-	    // First, build up the stack frame for the iret
-	    "mov rcx, [rdi + 0x98]",  // SS
-	    "mov rbx, [rdi + 0x90]",  // CS
-	    "mov rax, [rdi + 0x88]",  // RSP
-	    "mov rdx, [rdi + 0x80]",  // RIP
-	    "mov rsi, [rdi + 0x78]",  // RFLAGS
+	    "mov rdi, {0}",
+	    "jmp {stub}",
 
-	    "push rcx",
-	    "push rax",
-	    "push rsi",
-	    "push rbx",
-	    "push rdx",
-
-	    // Next, restore the registers themselves
-	    "mov r15, [rdi + 0x00]",
-	    "mov r14, [rdi + 0x08]",
-	    "mov r13, [rdi + 0x10]",
-	    "mov r12, [rdi + 0x18]",
-	    "mov r11, [rdi + 0x20]",
-	    "mov r10, [rdi + 0x28]",
-	    "mov r9, [rdi + 0x30]",
-	    "mov r8, [rdi + 0x38]",
-	    "mov rbp, [rdi + 0x40]",
-	    // RDI would go here, but has to be done at the end
-	    "mov rsi, [rdi + 0x50]",
-	    "mov rdx, [rdi + 0x58]",
-	    "mov rcx, [rdi + 0x60]",
-	    "mov rbx, [rdi + 0x68]",
-	    "mov rax, [rdi + 0x70]",
-	    "mov rdi, [rdi + 0x48]",
-
-	    // Next, swap GS if needed
-	    "test qword ptr [rsp + 0x08], 0x03",
-	    "je 3f",
-	    "swapgs",
-	    "3:",
-
-	    // Lastly, iret to the process
-	    "iretq",
-
+	    in(reg) ptr,
+	    stub = sym inner,
 	    options(noreturn),
 	);
     }

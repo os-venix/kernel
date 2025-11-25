@@ -446,12 +446,11 @@ impl Process {
 
 	if file_descriptors.contains_key(&fd_num) {
 	    let get_next_fd = || {
-		use core::u64;
 		// Fast path: try just above the largest key
 		if let Some((&max_key, _)) = file_descriptors.iter().next_back() {
 		    // If max_key is below min_key, jump to fd_num itself
 		    let candidate = max_key.saturating_add(1).max(fd_num);
-		    if candidate <= u64::MAX && !file_descriptors.contains_key(&candidate) {
+		    if !file_descriptors.contains_key(&candidate) {
 			return candidate;
 		    }
 		}
