@@ -16,10 +16,10 @@ use crate::sys::ioctl;
 
 #[derive(Debug)]
 enum FatFsType {
-    FAT12,
-    FAT16,
-    FAT32,
-    EXFAT,
+    Fat12,
+    Fat16,
+    Fat32,
+    ExFat,
 }
 
 struct INode {
@@ -530,11 +530,11 @@ struct Fat32Fs {
 
 fn detect_fat_fs(boot_record: BootRecord) -> FatFsType {
     if boot_record.bytes_per_sector == 0 {
-	return FatFsType::EXFAT;
+	return FatFsType::ExFat;
     }
 
     if boot_record.sectors_per_fat == 0 {
-	return FatFsType::FAT32;
+	return FatFsType::Fat32;
     }
 
     let total_sectors = if boot_record.sectors_in_volume == 0 {
@@ -548,11 +548,11 @@ fn detect_fat_fs(boot_record: BootRecord) -> FatFsType {
     let total_clusters = data_sectors / boot_record.sectors_per_cluster as u32;
 
     if total_clusters < 4085 {
-	FatFsType::FAT12
+	FatFsType::Fat12
     } else if total_clusters < 65525 {
-	FatFsType::FAT16
+	FatFsType::Fat16
     } else {
-	FatFsType::FAT32
+	FatFsType::Fat32
     }
 }
 
@@ -563,7 +563,7 @@ pub async fn register_fat_fs(dev: Arc<block::GptDevice>, partition: u32) {
     };
 
     match detect_fat_fs(boot_record) {
-	FatFsType::FAT16 => {
+	FatFsType::Fat16 => {
 	    let extended_boot_record = unsafe {
 		ptr::read(boot_record_buf_ptr.wrapping_add(0x24) as *const ExtendedBootRecord1216)
 	    };

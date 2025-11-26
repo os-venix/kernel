@@ -46,6 +46,7 @@ enum FcntlOperation {
     DupFD = 1,
     GetFD = 3,
     SetFD = 4,
+    GetFlags = 5,
 }
 
 impl fmt::Display for CanonicalError {
@@ -338,17 +339,9 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
 	    }
 	},
 	FcntlOperation::GetFD => {
+	    // TODO: these are the wrong flags. This should be reading cloexec only.
 	    let process = scheduler::get_current_process();
 	    let actual_fd = process.get_file_descriptor(fd_num);
-	    // let actual_fd = match process.get_file_descriptor(fd) {
-	    // 	Ok(fd) => fd.file_description,
-	    // 	Err(_) => {
-	    // 	    return SyscallResult {
-	    // 		return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    // 		err_num: CanonicalError::EBADF as u64
-	    // 	    };
-	    // 	},
-	    // };
 
 	    SyscallResult {
 		return_value: actual_fd.flags,
@@ -356,6 +349,8 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
 	    }
 	},
 	FcntlOperation::SetFD => {
+	    // TODO: these are the wrong flags. This should be reading cloexec only.
+
 	    let process = scheduler::get_current_process();
 	    // Bottom 3 bits are mode. We don't currently enforce mode, but in order to progress, let's strip it out.
 	    // Similarly, there isn't yet a concept of a controlling TTY, so let's not worry about that either for now
@@ -369,6 +364,15 @@ async fn sys_fcntl(fd_num: u64, operation: u64, param: u64) -> SyscallResult {
 	    process.set_fd_flags(fd_num, param);
 	    SyscallResult {
 		return_value: 0,
+		err_num: CanonicalError::Ok as u64,
+	    }
+	},
+	FcntlOperation::GetFlags => {
+	    let process = scheduler::get_current_process();
+	    let actual_fd = process.get_file_descriptor(fd_num);
+
+	    SyscallResult {
+		return_value: actual_fd.flags,
 		err_num: CanonicalError::Ok as u64,
 	    }
 	},
