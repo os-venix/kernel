@@ -187,7 +187,7 @@ impl Fat16Fs {
 
 	    let sectors_per_lba = boot_record.bytes_per_sector / 512;
 
-	    let fat_lba = sectors_per_lba;
+	    let fat_lba = sectors_per_lba * boot_record.reserved_sectors;
 
 	    let fat_size_sectors = boot_record.sectors_per_fat;
 	    let fat_size_lba = fat_size_sectors / sectors_per_lba;
@@ -269,14 +269,20 @@ impl Fat16Fs {
 			.map(|c| c.to_char())
 			.filter(|i| *i != '\0')
 			.collect::<String>()
-			.as_str());
-		file_name.push('.');
-		file_name.push_str(
-		    directory_entry.file_name[8 .. 11].iter()
-			.map(|c| c.to_char())
-			.filter(|i| *i != '\0')
-			.collect::<String>()
-			.as_str());
+			.as_str()
+			.trim());
+
+		let extn = directory_entry.file_name[8 .. 11].iter()
+		    .map(|c| c.to_char())
+		    .filter(|i| *i != '\0')
+		    .collect::<String>()
+		    .trim()
+		    .to_string();
+
+		if extn.len() != 0 {
+		    file_name.push('.');
+		    file_name.push_str(extn.as_str());
+		}
 	    }
 
 	    return (Some(file_name), cnt)
@@ -292,7 +298,8 @@ impl Fat16Fs {
 	    ptr += offset as u16;
 
 	    if let Some(file_name) = maybe_fn {
-		if file_name != path {
+		// This is a kludge; long file names in FAT are case sensitive, whereas normal ones aren't
+		if file_name != path && file_name != path.to_uppercase() {
 		    ptr += 1;
 		    continue;
 		}

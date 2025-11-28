@@ -203,20 +203,22 @@ pub fn register_block_device(dev: Arc<dyn driver::Device + Send + Sync>) {
 
 fn kthread_init_block_devices() -> ! {
     let fut = async {
-        let mut uninit_device_tbl = UNINITIALISED_BLOCK_DEVICE_TABLE
-            .get()
-            .expect("Attempted to access device table before it is initialised")
-            .write();
+	{
+            let mut uninit_device_tbl = UNINITIALISED_BLOCK_DEVICE_TABLE
+		.get()
+		.expect("Attempted to access device table before it is initialised")
+		.write();
 
-        for dev in uninit_device_tbl.drain(..) {
-            if let Some(gpt_device) = GptDevice::new(dev).await {
-                let mut device_tbl = BLOCK_DEVICE_TABLE
-                    .get()
-                    .expect("Attempted to access device table before it is initialised")
-                    .write();
-                device_tbl.push(gpt_device);
+            for dev in uninit_device_tbl.drain(..) {
+		if let Some(gpt_device) = GptDevice::new(dev).await {
+                    let mut device_tbl = BLOCK_DEVICE_TABLE
+			.get()
+			.expect("Attempted to access device table before it is initialised")
+			.write();
+                    device_tbl.push(gpt_device);
+		}
             }
-        }
+	}
 
         // Once done, mark thread for exit
 	scheduler::exit(0);

@@ -461,7 +461,7 @@ impl Process {
 
 	match file_descriptors.remove(&fd) {
 	    Some(_) => (),
-	    None => panic!("No open FD found"),
+	    None => panic!("No open FD found: {}", fd),
 	}
     }
 
