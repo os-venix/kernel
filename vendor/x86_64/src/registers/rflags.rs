@@ -1,6 +1,6 @@
 //! Processor state stored in the RFLAGS register.
 
-#[cfg(feature = "instructions")]
+#[cfg(all(feature = "instructions", target_arch = "x86_64"))]
 pub use self::x86_64::*;
 
 use bitflags::bitflags;
@@ -64,7 +64,7 @@ bitflags! {
     }
 }
 
-#[cfg(feature = "instructions")]
+#[cfg(all(feature = "instructions", target_arch = "x86_64"))]
 mod x86_64 {
     use super::*;
     use core::arch::asm;
@@ -123,6 +123,25 @@ mod x86_64 {
         // saved flags after the "popf" below. See above note on safety.
         unsafe {
             asm!("push {}; popfq", in(reg) val, options(nomem, preserves_flags));
+        }
+    }
+
+    /// Updates the RFLAGS register, preserves reserved bits.
+    ///
+    /// ## Safety
+    ///
+    /// Unsafe because undefined becavior can occur if certain flags are modified. For example,
+    /// the `DF` flag must be unset in all Rust code. Also, modifying `CF`, `PF`, or any other
+    /// flags also used by Rust/LLVM can result in undefined behavior too.
+    #[inline]
+    pub unsafe fn update<F>(f: F)
+    where
+        F: FnOnce(&mut RFlags),
+    {
+        let mut flags = self::read();
+        f(&mut flags);
+        unsafe {
+            self::write(flags);
         }
     }
 

@@ -1,6 +1,6 @@
 //! Functions to read and write debug registers.
 
-#[cfg(feature = "instructions")]
+#[cfg(all(feature = "instructions", target_arch = "x86_64"))]
 use core::arch::asm;
 use core::ops::Range;
 
@@ -15,11 +15,11 @@ pub trait DebugAddressRegister {
     const NUM: DebugAddressRegisterNumber;
 
     /// Reads the current breakpoint address.
-    #[cfg(feature = "instructions")]
+    #[cfg(all(feature = "instructions", target_arch = "x86_64"))]
     fn read() -> u64;
 
     /// Writes the provided breakpoint address.
-    #[cfg(feature = "instructions")]
+    #[cfg(all(feature = "instructions", target_arch = "x86_64"))]
     fn write(addr: u64);
 }
 
@@ -34,7 +34,7 @@ macro_rules! debug_address_register {
         impl DebugAddressRegister for $Dr {
             const NUM: DebugAddressRegisterNumber = DebugAddressRegisterNumber::$Dr;
 
-            #[cfg(feature = "instructions")]
+            #[cfg(all(feature = "instructions", target_arch = "x86_64"))]
             #[inline]
             fn read() -> u64 {
                 let addr;
@@ -44,7 +44,7 @@ macro_rules! debug_address_register {
                 addr
             }
 
-            #[cfg(feature = "instructions")]
+            #[cfg(all(feature = "instructions", target_arch = "x86_64"))]
             #[inline]
             fn write(addr: u64) {
                 unsafe {
@@ -437,7 +437,7 @@ impl Dr7Value {
 #[derive(Debug)]
 pub struct Dr7;
 
-#[cfg(feature = "instructions")]
+#[cfg(all(feature = "instructions", target_arch = "x86_64"))]
 mod x86_64 {
     use super::*;
 
@@ -498,6 +498,19 @@ mod x86_64 {
             unsafe {
                 asm!("mov dr7, {}", in(reg) value, options(nomem, nostack, preserves_flags));
             }
+        }
+
+        /// Update the DR7 value.
+        ///
+        /// Preserves the value of reserved fields.
+        #[inline]
+        pub fn update<F>(f: F)
+        where
+            F: FnOnce(&mut Dr7Value),
+        {
+            let mut value = Self::read();
+            f(&mut value);
+            Self::write(value);
         }
     }
 }

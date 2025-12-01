@@ -4,11 +4,14 @@ use core::fmt;
 #[cfg(feature = "step_trait")]
 use core::iter::Step;
 use core::ops::{Index, IndexMut};
+#[cfg(feature = "memory_encryption")]
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::{PageSize, PhysFrame, Size4KiB};
 use crate::addr::PhysAddr;
 
 use bitflags::bitflags;
+use dep_const_fn::const_fn;
 
 /// The error returned by the `PageTableEntry::frame` method.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -19,6 +22,10 @@ pub enum FrameError {
     /// as return type, so a huge frame can't be returned.
     HugeFrame,
 }
+
+/// The mask used to remove flags from a page table entry to obtain the physical address
+#[cfg(feature = "memory_encryption")]
+pub(crate) static PHYSICAL_ADDRESS_MASK: AtomicU64 = AtomicU64::new(0x000f_ffff_ffff_f000u64);
 
 /// A 64-bit page table entry.
 #[derive(Clone)]
@@ -48,14 +55,15 @@ impl PageTableEntry {
 
     /// Returns the flags of this entry.
     #[inline]
+    #[const_fn(cfg(not(feature = "memory_encryption")))]
     pub const fn flags(&self) -> PageTableFlags {
-        PageTableFlags::from_bits_truncate(self.entry)
+        PageTableFlags::from_bits_retain(self.entry & !Self::physical_address_mask())
     }
 
     /// Returns the physical address mapped by this entry, might be zero.
     #[inline]
     pub fn addr(&self) -> PhysAddr {
-        PhysAddr::new(self.entry & 0x000f_ffff_ffff_f000)
+        PhysAddr::new(self.entry & Self::physical_address_mask())
     }
 
     /// Returns the physical frame mapped by this entry.
@@ -64,7 +72,7 @@ impl PageTableEntry {
     ///
     /// - `FrameError::FrameNotPresent` if the entry doesn't have the `PRESENT` flag set.
     /// - `FrameError::HugeFrame` if the entry has the `HUGE_PAGE` flag set (for huge pages the
-    ///    `addr` function must be used)
+    ///   `addr` function must be used)
     #[inline]
     pub fn frame(&self) -> Result<PhysFrame, FrameError> {
         if !self.flags().contains(PageTableFlags::PRESENT) {
@@ -94,6 +102,25 @@ impl PageTableEntry {
     #[inline]
     pub fn set_flags(&mut self, flags: PageTableFlags) {
         self.entry = self.addr().as_u64() | flags.bits();
+    }
+
+    #[inline(always)]
+    #[cfg(not(feature = "memory_encryption"))]
+    const fn physical_address_mask() -> u64 {
+        0x000f_ffff_ffff_f000u64
+    }
+
+    #[inline(always)]
+    #[cfg(feature = "memory_encryption")]
+    fn physical_address_mask() -> u64 {
+        PHYSICAL_ADDRESS_MASK.load(Ordering::Relaxed)
+    }
+}
+
+impl Default for PageTableEntry {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -346,8 +373,8 @@ impl From<PageTableIndex> for usize {
 #[cfg(feature = "step_trait")]
 impl Step for PageTableIndex {
     #[inline]
-    fn steps_between(start: &Self, end: &Self) -> Option<usize> {
-        end.0.checked_sub(start.0).map(usize::from)
+    fn steps_between(start: &Self, end: &Self) -> (usize, Option<usize>) {
+        Step::steps_between(&start.0, &end.0)
     }
 
     #[inline]

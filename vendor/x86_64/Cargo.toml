@@ -13,7 +13,7 @@
 edition = "2018"
 rust-version = "1.59"
 name = "x86_64"
-version = "0.15.1"
+version = "0.15.4"
 authors = [
     "Gerd Zellweger <mail@gerdzellweger.com>",
     "Eric Kidd <git@randomhacks.net>",
@@ -22,6 +22,12 @@ authors = [
     "John Ericson <John_Ericson@Yahoo.com>",
     "Rex Lunae <rexlunae@gmail.com>",
 ]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "Support for x86_64 specific instructions, registers, and structures."
 documentation = "https://docs.rs/x86_64"
 readme = "README.md"
@@ -41,30 +47,18 @@ all-features = true
 [package.metadata.release]
 dev-version = false
 pre-release-commit-message = "Bump version to {{version}}"
-publish = false
 push = false
+publish = false
 tag = false
 
 [[package.metadata.release.pre-release-replacements]]
-exactly = 1
 file = "Changelog.md"
+search = "# Unreleased"
 replace = """
 # Unreleased
 
 # {{version}} – {{date}}"""
-search = "# Unreleased"
-
-[dependencies.bit_field]
-version = "0.10.1"
-
-[dependencies.bitflags]
-version = "2.3.2"
-
-[dependencies.rustversion]
-version = "1.0.5"
-
-[dependencies.volatile]
-version = "0.4.4"
+exactly = 1
 
 [features]
 abi_x86_interrupt = []
@@ -75,7 +69,9 @@ default = [
     "instructions",
 ]
 doc_auto_cfg = []
+doc_cfg = []
 instructions = []
+memory_encryption = []
 nightly = [
     "const_fn",
     "step_trait",
@@ -83,3 +79,28 @@ nightly = [
     "asm_const",
 ]
 step_trait = []
+
+[lib]
+name = "x86_64"
+path = "src/lib.rs"
+
+[dependencies.bit_field]
+version = "0.10.1"
+
+[dependencies.bitflags]
+version = "2.3.2"
+
+[dependencies.dep_const_fn]
+version = "0.4.11"
+package = "const_fn"
+
+[dependencies.rustversion]
+version = "1.0.5"
+
+[dependencies.volatile]
+version = "0.4.4"
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+priority = 0
+check-cfg = ["cfg(kani)"]

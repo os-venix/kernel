@@ -1,5 +1,88 @@
 # Unreleased
 
+# 0.15.4 – 2025-11-24
+
+## New Features
+
+- [add SMAP helpers](https://github.com/rust-osdev/x86_64/pull/566)
+- [add ability to add iomap to TSS](https://github.com/rust-osdev/x86_64/pull/194)
+
+## Fixes
+
+- [fix docs.rs build](https://github.com/rust-osdev/x86_64/pull/569)
+
+## Other Improvements
+
+- [Bump actions/checkout from 5 to 6](https://github.com/rust-osdev/x86_64/pull/571)
+
+# 0.15.3 – 2025-11-19
+
+## New Features
+
+- [Add `MapperFlush` method to get page](https://github.com/rust-osdev/x86_64/pull/525)
+- [add `update()` to `Cr3`, `Dr7`, `SFMask`, `UCet`, `SCet`, `mxcsr`, `rflags`, and `XCr0`](https://github.com/rust-osdev/x86_64/pull/527)
+- [add IA32_APIC_BASE support](https://github.com/rust-osdev/x86_64/pull/532)
+- [add memory encryption support](https://github.com/rust-osdev/x86_64/pull/542)
+- [implement functions for accessing CR8](https://github.com/rust-osdev/x86_64/pull/547)
+- [add forwarding `impl PageTableFrameMapping for &P`](https://github.com/rust-osdev/x86_64/pull/556)
+- [add PageFaultErrorCode::HLAT](https://github.com/rust-osdev/x86_64/pull/564)
+
+## Fixes
+
+- [fix panic in `impl fmt::Debug for EntryOptions`](https://github.com/rust-osdev/x86_64/pull/522)
+- [Ensure that addition and subtraction of addresses panics on overflow/underflow](https://github.com/rust-osdev/x86_64/pull/535)
+- [fix typo](https://github.com/rust-osdev/x86_64/pull/555)
+
+## Other Improvements
+
+- [fix warnings & remove broken CI job](https://github.com/rust-osdev/x86_64/pull/530)
+- [use default python again](https://github.com/rust-osdev/x86_64/pull/533)
+- [don't pass -Crelocation-model=static to host targets](https://github.com/rust-osdev/x86_64/pull/536)
+- [fix kani build job](https://github.com/rust-osdev/x86_64/pull/544)
+- [improve `VirtAddr` `Add` & `Sub` impls](https://github.com/rust-osdev/x86_64/pull/543)
+- [Add "FMask" alias for SFMask](https://github.com/rust-osdev/x86_64/pull/552)
+- [Bump actions/checkout from 4 to 5](https://github.com/rust-osdev/x86_64/pull/563)
+
+# 0.15.2 – 2024-11-30
+
+This release is compatible with Rust nightlies starting with `nightly-2024-11-23` (this only applies when the `nightly` feature is used).
+
+## New Features
+
+- [add `GlobalDescriptorTable::limit`](https://github.com/rust-osdev/x86_64/pull/413)
+- [constify PhysFrame functions](https://github.com/rust-osdev/x86_64/pull/489)
+- [add `size` and `len` for `PageRange`, `PhysFrameRange`, `PageRangeInclusive` and `PhysFrameRangeInclusive`](https://github.com/rust-osdev/x86_64/pull/491)
+- [TryFrom implementation for ExceptionVector](https://github.com/rust-osdev/x86_64/pull/506)
+
+## Fixes
+
+- [Only enable instructions on `x86_64`](https://github.com/rust-osdev/x86_64/pull/483)
+- [Ensure that Page actually implements Hash](https://github.com/rust-osdev/x86_64/pull/490)
+- [fix field order for INVPCID descriptor](https://github.com/rust-osdev/x86_64/pull/508)
+- [fix typo in "InvPicdCommand"](https://github.com/rust-osdev/x86_64/pull/509)
+- [fix signature of Step::steps_between implementations](https://github.com/rust-osdev/x86_64/pull/513)
+
+## Other Improvements
+
+- [docs: add aliases for `in{,b,w,l}` and `out{,b,w,l}`](https://github.com/rust-osdev/x86_64/pull/474)
+- [ci: migrate away from unmaintained actions](https://github.com/rust-osdev/x86_64/pull/478)
+- [chore: migrate from legacy `rust-toolchain` to `rust-toolchain.toml`](https://github.com/rust-osdev/x86_64/pull/479)
+- [test: replace `x86_64-bare-metal.json` with `x86_64-unknown-none`](https://github.com/rust-osdev/x86_64/pull/477)
+- [docs: fix and detect warnings](https://github.com/rust-osdev/x86_64/pull/475)
+- [CI: Set `-Crelocation-model=static` in `RUSTFLAGS` for bootloader test job](https://github.com/rust-osdev/x86_64/pull/480)
+- [silence warning about cast](https://github.com/rust-osdev/x86_64/pull/482)
+- [fix cfg related warnings](https://github.com/rust-osdev/x86_64/pull/485)
+- [fix warnings](https://github.com/rust-osdev/x86_64/pull/488)
+- [don't use label starting with 1](https://github.com/rust-osdev/x86_64/pull/492)
+- [fix testing](https://github.com/rust-osdev/x86_64/pull/495)
+- [remove `#![feature(asm_const)]`](https://github.com/rust-osdev/x86_64/pull/496)
+- [Remove stabilized const_mut_refs feature](https://github.com/rust-osdev/x86_64/pull/501)
+- [Fix clippy warnings](https://github.com/rust-osdev/x86_64/pull/502)
+- [fix CI job for building on MSRV](https://github.com/rust-osdev/x86_64/pull/510)
+- [gate HandlerFunc behind target_arch = "x86{\_64}"](https://github.com/rust-osdev/x86_64/pull/507)
+- [Typo fix in TaskStateSegment comment](https://github.com/rust-osdev/x86_64/pull/504)
+- [Minor clarification DescriptorTablePointer::limit comment](https://github.com/rust-osdev/x86_64/pull/503)
+
 # 0.15.1 – 2024-03-19
 
 ## New Features

@@ -1,0 +1,48 @@
+{
+  "llvm-target": "x86_64-unknown-none",
+  "target-endian": "little",
+  "target-pointer-width": "64",
+  "target-c-int-width": "32",
+  "arch": "x86_64",
+  "os": "none",
+  "env": "",
+  "vendor": "unknown",
+  "linker-flavor": "ld.lld",
+  "linker": "rust-lld",
+  "cpu": "x86-64",
+  "features": "+sse2,+cx8,+fxsr,+sse,+sse3",
+  "disable-redzone": true,
+  "exe-suffix": "",
+  "dynamic-linking": false,
+  "no-compiler-rt": true,
+  "relocation-model": "static",
+  "eliminate-frame-pointer": false,
+  "max-atomic-width": 64,
+  "panic-strategy": "abort",
+  "executables": true,
+  "link-self-contained": true,
+  "default-hidden-visibility": true,
+  "emit-debug-gdb-scripts": false,
+  "has-rpath": false,
+  "linker-is-gnu": false,
+  "pre-link-args": {
+    "ld.lld": [
+      "-z",
+      "max-page-size=4096"
+    ]
+  },
+  "post-link-args": {
+    "ld.lld": [
+      "-nostdlib"
+    ]
+  },
+  "target-family": [
+    "unix"
+  ],
+  "crt-static": true,
+  "disable-redzone": true,
+  "panic-strategy": "abort",
+  "code-model": "kernel",
+  "emit-debug-gdb-scripts": false,
+  "position-independent-executables": false
+}

@@ -5,10 +5,16 @@ use core::fmt;
 #[cfg(feature = "step_trait")]
 use core::iter::Step;
 use core::ops::{Add, AddAssign, Sub, SubAssign};
+#[cfg(feature = "memory_encryption")]
+use core::sync::atomic::Ordering;
 
+#[cfg(feature = "memory_encryption")]
+use crate::structures::mem_encrypt::ENC_BIT_MASK;
 use crate::structures::paging::page_table::PageTableLevel;
 use crate::structures::paging::{PageOffset, PageTableIndex};
+
 use bit_field::BitField;
+use dep_const_fn::const_fn;
 
 const ADDRESS_SPACE_SIZE: u64 = 0x1_0000_0000_0000;
 
@@ -240,24 +246,43 @@ impl VirtAddr {
     }
 
     // FIXME: Move this into the `Step` impl, once `Step` is stabilized.
-    pub(crate) fn steps_between_impl(start: &Self, end: &Self) -> Option<usize> {
+    #[cfg(feature = "step_trait")]
+    pub(crate) fn steps_between_impl(start: &Self, end: &Self) -> (usize, Option<usize>) {
+        if let Some(steps) = Self::steps_between_u64(start, end) {
+            let steps = usize::try_from(steps).ok();
+            (steps.unwrap_or(usize::MAX), steps)
+        } else {
+            (0, None)
+        }
+    }
+
+    /// An implementation of steps_between that returns u64. Note that this
+    /// function always returns the exact bound, so it doesn't need to return a
+    /// lower and upper bound like steps_between does.
+    #[cfg(any(feature = "instructions", feature = "step_trait"))]
+    pub(crate) fn steps_between_u64(start: &Self, end: &Self) -> Option<u64> {
         let mut steps = end.0.checked_sub(start.0)?;
 
         // Mask away extra bits that appear while jumping the gap.
         steps &= 0xffff_ffff_ffff;
 
-        usize::try_from(steps).ok()
+        Some(steps)
     }
 
     // FIXME: Move this into the `Step` impl, once `Step` is stabilized.
     #[inline]
     pub(crate) fn forward_checked_impl(start: Self, count: usize) -> Option<Self> {
-        let offset = u64::try_from(count).ok()?;
-        if offset > ADDRESS_SPACE_SIZE {
+        Self::forward_checked_u64(start, u64::try_from(count).ok()?)
+    }
+
+    /// An implementation of forward_checked that takes u64 instead of usize.
+    #[inline]
+    pub(crate) fn forward_checked_u64(start: Self, count: u64) -> Option<Self> {
+        if count > ADDRESS_SPACE_SIZE {
             return None;
         }
 
-        let mut addr = start.0.checked_add(offset)?;
+        let mut addr = start.0.checked_add(count)?;
 
         match addr.get_bits(47..) {
             0x1 => {
@@ -266,6 +291,31 @@ impl VirtAddr {
             }
             0x2 => {
                 // Address overflow
+                return None;
+            }
+            _ => {}
+        }
+
+        Some(unsafe { Self::new_unsafe(addr) })
+    }
+
+    /// An implementation of backward_checked that takes u64 instead of usize.
+    #[cfg(feature = "step_trait")]
+    #[inline]
+    pub(crate) fn backward_checked_u64(start: Self, count: u64) -> Option<Self> {
+        if count > ADDRESS_SPACE_SIZE {
+            return None;
+        }
+
+        let mut addr = start.0.checked_sub(count)?;
+
+        match addr.get_bits(47..) {
+            0x1fffe => {
+                // Jump the gap by sign extending the 47th bit.
+                addr.set_bits(47.., 0);
+            }
+            0x1fffd => {
+                // Address underflow
                 return None;
             }
             _ => {}
@@ -320,13 +370,41 @@ impl fmt::Pointer for VirtAddr {
 
 impl Add<u64> for VirtAddr {
     type Output = Self;
+
+    #[cfg_attr(not(feature = "step_trait"), allow(rustdoc::broken_intra_doc_links))]
+    /// Add an offset to a virtual address.
+    ///
+    /// This function performs normal arithmetic addition and doesn't jump the
+    /// address gap. If you're looking for a successor operation that jumps the
+    /// address gap, use [`Step::forward`].
+    ///
+    /// # Panics
+    ///
+    /// This function will panic on overflow or if the result is not a
+    /// canonical address.
     #[inline]
     fn add(self, rhs: u64) -> Self::Output {
-        VirtAddr::new(self.0 + rhs)
+        VirtAddr::try_new(
+            self.0
+                .checked_add(rhs)
+                .expect("attempt to add with overflow"),
+        )
+        .expect("attempt to add resulted in non-canonical virtual address")
     }
 }
 
 impl AddAssign<u64> for VirtAddr {
+    #[cfg_attr(not(feature = "step_trait"), allow(rustdoc::broken_intra_doc_links))]
+    /// Add an offset to a virtual address.
+    ///
+    /// This function performs normal arithmetic addition and doesn't jump the
+    /// address gap. If you're looking for a successor operation that jumps the
+    /// address gap, use [`Step::forward`].
+    ///
+    /// # Panics
+    ///
+    /// This function will panic on overflow or if the result is not a
+    /// canonical address.
     #[inline]
     fn add_assign(&mut self, rhs: u64) {
         *self = *self + rhs;
@@ -335,13 +413,41 @@ impl AddAssign<u64> for VirtAddr {
 
 impl Sub<u64> for VirtAddr {
     type Output = Self;
+
+    #[cfg_attr(not(feature = "step_trait"), allow(rustdoc::broken_intra_doc_links))]
+    /// Subtract an offset from a virtual address.
+    ///
+    /// This function performs normal arithmetic subtraction and doesn't jump
+    /// the address gap. If you're looking for a predecessor operation that
+    /// jumps the address gap, use [`Step::backward`].
+    ///
+    /// # Panics
+    ///
+    /// This function will panic on overflow or if the result is not a
+    /// canonical address.
     #[inline]
     fn sub(self, rhs: u64) -> Self::Output {
-        VirtAddr::new(self.0.checked_sub(rhs).unwrap())
+        VirtAddr::try_new(
+            self.0
+                .checked_sub(rhs)
+                .expect("attempt to subtract with overflow"),
+        )
+        .expect("attempt to subtract resulted in non-canonical virtual address")
     }
 }
 
 impl SubAssign<u64> for VirtAddr {
+    #[cfg_attr(not(feature = "step_trait"), allow(rustdoc::broken_intra_doc_links))]
+    /// Subtract an offset from a virtual address.
+    ///
+    /// This function performs normal arithmetic subtraction and doesn't jump
+    /// the address gap. If you're looking for a predecessor operation that
+    /// jumps the address gap, use [`Step::backward`].
+    ///
+    /// # Panics
+    ///
+    /// This function will panic on overflow or if the result is not a
+    /// canonical address.
     #[inline]
     fn sub_assign(&mut self, rhs: u64) {
         *self = *self - rhs;
@@ -350,16 +456,24 @@ impl SubAssign<u64> for VirtAddr {
 
 impl Sub<VirtAddr> for VirtAddr {
     type Output = u64;
+
+    /// Returns the difference between two addresses.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic on overflow.
     #[inline]
     fn sub(self, rhs: VirtAddr) -> Self::Output {
-        self.as_u64().checked_sub(rhs.as_u64()).unwrap()
+        self.as_u64()
+            .checked_sub(rhs.as_u64())
+            .expect("attempt to subtract with overflow")
     }
 }
 
 #[cfg(feature = "step_trait")]
 impl Step for VirtAddr {
     #[inline]
-    fn steps_between(start: &Self, end: &Self) -> Option<usize> {
+    fn steps_between(start: &Self, end: &Self) -> (usize, Option<usize>) {
         Self::steps_between_impl(start, end)
     }
 
@@ -370,26 +484,7 @@ impl Step for VirtAddr {
 
     #[inline]
     fn backward_checked(start: Self, count: usize) -> Option<Self> {
-        let offset = u64::try_from(count).ok()?;
-        if offset > ADDRESS_SPACE_SIZE {
-            return None;
-        }
-
-        let mut addr = start.0.checked_sub(offset)?;
-
-        match addr.get_bits(47..) {
-            0x1fffe => {
-                // Jump the gap by sign extending the 47th bit.
-                addr.set_bits(47.., 0);
-            }
-            0x1fffd => {
-                // Address underflow
-                return None;
-            }
-            _ => {}
-        }
-
-        Some(unsafe { Self::new_unsafe(addr) })
+        Self::backward_checked_u64(start, u64::try_from(count).ok()?)
     }
 }
 
@@ -414,7 +509,10 @@ impl PhysAddr {
     /// ## Panics
     ///
     /// This function panics if a bit in the range 52 to 64 is set.
+    // If the `memory_encryption` feature has been enabled and an encryption bit has been
+    // configured, this also panics if the encryption bit is manually set in the address.
     #[inline]
+    #[const_fn(cfg(not(feature = "memory_encryption")))]
     pub const fn new(addr: u64) -> Self {
         // TODO: Replace with .ok().expect(msg) when that works on stable.
         match Self::try_new(addr) {
@@ -424,9 +522,17 @@ impl PhysAddr {
     }
 
     /// Creates a new physical address, throwing bits 52..64 away.
+    #[cfg(not(feature = "memory_encryption"))]
     #[inline]
     pub const fn new_truncate(addr: u64) -> PhysAddr {
         PhysAddr(addr % (1 << 52))
+    }
+
+    /// Creates a new physical address, throwing bits 52..64 and the encryption bit away.
+    #[cfg(feature = "memory_encryption")]
+    #[inline]
+    pub fn new_truncate(addr: u64) -> PhysAddr {
+        PhysAddr((addr % (1 << 52)) & !ENC_BIT_MASK.load(Ordering::Relaxed))
     }
 
     /// Creates a new physical address, without any checks.
@@ -442,7 +548,10 @@ impl PhysAddr {
     /// Tries to create a new physical address.
     ///
     /// Fails if any bits in the range 52 to 64 are set.
+    /// If the `memory_encryption` feature has been enabled and an encryption bit has been
+    /// configured, this also fails if the encryption bit is manually set in the address.
     #[inline]
+    #[const_fn(cfg(not(feature = "memory_encryption")))]
     pub const fn try_new(addr: u64) -> Result<Self, PhysAddrNotValid> {
         let p = Self::new_truncate(addr);
         if p.0 == addr {
@@ -494,7 +603,15 @@ impl PhysAddr {
     where
         U: Into<u64>,
     {
-        PhysAddr(align_down(self.0, align.into()))
+        self.align_down_u64(align.into())
+    }
+
+    /// Aligns the physical address downwards to the given alignment.
+    ///
+    /// See the `align_down` function for more information.
+    #[inline]
+    pub(crate) const fn align_down_u64(self, align: u64) -> Self {
+        PhysAddr(align_down(self.0, align))
     }
 
     /// Checks whether the physical address has the demanded alignment.
@@ -503,7 +620,13 @@ impl PhysAddr {
     where
         U: Into<u64>,
     {
-        self.align_down(align) == self
+        self.is_aligned_u64(align.into())
+    }
+
+    /// Checks whether the physical address has the demanded alignment.
+    #[inline]
+    pub(crate) const fn is_aligned_u64(self, align: u64) -> bool {
+        self.align_down_u64(align).as_u64() == self.as_u64()
     }
 }
 
@@ -554,7 +677,7 @@ impl Add<u64> for PhysAddr {
     type Output = Self;
     #[inline]
     fn add(self, rhs: u64) -> Self::Output {
-        PhysAddr::new(self.0 + rhs)
+        PhysAddr::new(self.0.checked_add(rhs).unwrap())
     }
 }
 
@@ -625,6 +748,30 @@ mod tests {
     use super::*;
 
     #[test]
+    #[should_panic]
+    pub fn add_overflow_virtaddr() {
+        let _ = VirtAddr::new(0xffff_ffff_ffff_ffff) + 1;
+    }
+
+    #[test]
+    #[should_panic]
+    pub fn add_overflow_physaddr() {
+        let _ = PhysAddr::new(0x000f_ffff_ffff_ffff) + 0xffff_0000_0000_0000;
+    }
+
+    #[test]
+    #[should_panic]
+    pub fn sub_underflow_virtaddr() {
+        let _ = VirtAddr::new(0) - 1;
+    }
+
+    #[test]
+    #[should_panic]
+    pub fn sub_overflow_physaddr() {
+        let _ = PhysAddr::new(0) - 1;
+    }
+
+    #[test]
     pub fn virtaddr_new_truncate() {
         assert_eq!(VirtAddr::new_truncate(0), VirtAddr(0));
         assert_eq!(VirtAddr::new_truncate(1 << 47), VirtAddr(0xfffff << 47));
@@ -649,22 +796,27 @@ mod tests {
             Step::forward_checked(VirtAddr(0xffff_ffff_ffff_ffff), 1),
             None
         );
+        #[cfg(target_pointer_width = "64")]
         assert_eq!(
             Step::forward(VirtAddr(0x7fff_ffff_ffff), 0x1234_5678_9abd),
             VirtAddr(0xffff_9234_5678_9abc)
         );
+        #[cfg(target_pointer_width = "64")]
         assert_eq!(
             Step::forward(VirtAddr(0x7fff_ffff_ffff), 0x8000_0000_0000),
             VirtAddr(0xffff_ffff_ffff_ffff)
         );
+        #[cfg(target_pointer_width = "64")]
         assert_eq!(
             Step::forward(VirtAddr(0x7fff_ffff_ff00), 0x8000_0000_00ff),
             VirtAddr(0xffff_ffff_ffff_ffff)
         );
+        #[cfg(target_pointer_width = "64")]
         assert_eq!(
             Step::forward_checked(VirtAddr(0x7fff_ffff_ff00), 0x8000_0000_0100),
             None
         );
+        #[cfg(target_pointer_width = "64")]
         assert_eq!(
             Step::forward_checked(VirtAddr(0x7fff_ffff_ffff), 0x8000_0000_0001),
             None
@@ -685,18 +837,22 @@ mod tests {
             Step::backward(VirtAddr(0xffff_8000_0000_0001), 1),
             VirtAddr(0xffff_8000_0000_0000)
         );
+        #[cfg(target_pointer_width = "64")]
         assert_eq!(
             Step::backward(VirtAddr(0xffff_9234_5678_9abc), 0x1234_5678_9abd),
             VirtAddr(0x7fff_ffff_ffff)
         );
+        #[cfg(target_pointer_width = "64")]
         assert_eq!(
             Step::backward(VirtAddr(0xffff_8000_0000_0000), 0x8000_0000_0000),
             VirtAddr(0)
         );
+        #[cfg(target_pointer_width = "64")]
         assert_eq!(
             Step::backward(VirtAddr(0xffff_8000_0000_0000), 0x7fff_ffff_ff01),
             VirtAddr(0xff)
         );
+        #[cfg(target_pointer_width = "64")]
         assert_eq!(
             Step::backward_checked(VirtAddr(0xffff_8000_0000_0000), 0x8000_0000_0001),
             None
@@ -706,43 +862,64 @@ mod tests {
     #[test]
     #[cfg(feature = "step_trait")]
     fn virtaddr_steps_between() {
-        assert_eq!(Step::steps_between(&VirtAddr(0), &VirtAddr(0)), Some(0));
-        assert_eq!(Step::steps_between(&VirtAddr(0), &VirtAddr(1)), Some(1));
-        assert_eq!(Step::steps_between(&VirtAddr(1), &VirtAddr(0)), None);
+        assert_eq!(
+            Step::steps_between(&VirtAddr(0), &VirtAddr(0)),
+            (0, Some(0))
+        );
+        assert_eq!(
+            Step::steps_between(&VirtAddr(0), &VirtAddr(1)),
+            (1, Some(1))
+        );
+        assert_eq!(Step::steps_between(&VirtAddr(1), &VirtAddr(0)), (0, None));
         assert_eq!(
             Step::steps_between(
                 &VirtAddr(0x7fff_ffff_ffff),
                 &VirtAddr(0xffff_8000_0000_0000)
             ),
-            Some(1)
+            (1, Some(1))
         );
         assert_eq!(
             Step::steps_between(
                 &VirtAddr(0xffff_8000_0000_0000),
                 &VirtAddr(0x7fff_ffff_ffff)
             ),
-            None
+            (0, None)
         );
         assert_eq!(
             Step::steps_between(
                 &VirtAddr(0xffff_8000_0000_0000),
                 &VirtAddr(0xffff_8000_0000_0000)
             ),
-            Some(0)
+            (0, Some(0))
         );
         assert_eq!(
             Step::steps_between(
                 &VirtAddr(0xffff_8000_0000_0000),
                 &VirtAddr(0xffff_8000_0000_0001)
             ),
-            Some(1)
+            (1, Some(1))
         );
         assert_eq!(
             Step::steps_between(
                 &VirtAddr(0xffff_8000_0000_0001),
                 &VirtAddr(0xffff_8000_0000_0000)
             ),
-            None
+            (0, None)
+        );
+        // Make sure that we handle `steps > u32::MAX` correctly on 32-bit
+        // targets. On 64-bit targets, `0x1_0000_0000` fits into `usize`, so we
+        // can return exact lower and upper bounds. On 32-bit targets,
+        // `0x1_0000_0000` doesn't fit into `usize`, so we only return an lower
+        // bound of `usize::MAX` and don't return an upper bound.
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            Step::steps_between(&VirtAddr(0), &VirtAddr(0x1_0000_0000)),
+            (0x1_0000_0000, Some(0x1_0000_0000))
+        );
+        #[cfg(not(target_pointer_width = "64"))]
+        assert_eq!(
+            Step::steps_between(&VirtAddr(0), &VirtAddr(0x1_0000_0000)),
+            (usize::MAX, None)
         );
     }
 
@@ -794,10 +971,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_pointer_width = "64")]
     fn test_from_ptr_array() {
         let slice = &[1, 2, 3, 4, 5];
         // Make sure that from_ptr(slice) is the address of the first element
-        assert_eq!(VirtAddr::from_ptr(slice), VirtAddr::from_ptr(&slice[0]));
+        assert_eq!(
+            VirtAddr::from_ptr(slice.as_slice()),
+            VirtAddr::from_ptr(&slice[0])
+        );
     }
 }
 
@@ -936,7 +1117,7 @@ mod proofs {
         };
 
         // ...then `steps_between` succeeds as well.
-        assert!(Step::steps_between(&start, &end) == Some(count));
+        assert!(Step::steps_between(&start, &end) == (count, Some(count)));
     }
 
     // This harness proves that for all inputs for which `steps_between`
@@ -953,7 +1134,7 @@ mod proofs {
         };
 
         // If `steps_between` succeeds...
-        let Some(count) = Step::steps_between(&start, &end) else {
+        let Some(count) = Step::steps_between(&start, &end).1 else {
             return;
         };
 
