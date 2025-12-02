@@ -9,6 +9,8 @@
 #include <uacpi/internal/mutex.h>
 #include <uacpi/kernel_api.h>
 
+#ifndef UACPI_BAREBONES_MODE
+
 #define UACPI_REV_VALUE 2
 #define UACPI_OS_VALUE "Microsoft Windows NT"
 
@@ -448,10 +450,12 @@ uacpi_namespace_node *uacpi_namespace_node_find_sub_node(
     uacpi_object_name name
 )
 {
+    uacpi_namespace_node *node;
+
     if (parent == UACPI_NULL)
         parent = uacpi_namespace_root();
 
-    uacpi_namespace_node *node = parent->child;
+    node = parent->child;
 
     while (node) {
         if (node->name.id == name.id)
@@ -1073,3 +1077,5 @@ void uacpi_free_absolute_path(const uacpi_char *path)
 {
     uacpi_free_dynamic_string(path);
 }
+
+#endif // !UACPI_BAREBONES_MODE

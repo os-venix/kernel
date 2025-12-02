@@ -6,6 +6,8 @@
 #include <uacpi/platform/atomic.h>
 #include <uacpi/acpi.h>
 
+#ifndef UACPI_BAREBONES_MODE
+
 static uacpi_handle g_reg_lock;
 
 enum register_kind {
@@ -119,23 +121,23 @@ static uacpi_status map_one(
     if (spec->kind == REGISTER_KIND_GAS) {
         struct acpi_gas *gas = spec->accessors[idx];
 
-        if (gas->address == 0) {
+        if (gas == UACPI_NULL || gas->address == 0) {
             mapping->states[idx] = REGISTER_MAPPING_STATE_NOT_NEEDED;
             return ret;
         }
 
         ret = uacpi_map_gas_noalloc(gas, &mapping->mappings[idx]);
     } else {
+        struct acpi_gas temp_gas = { 0 };
+
         if (idx != 0) {
             mapping->states[idx] = REGISTER_MAPPING_STATE_NOT_NEEDED;
             return ret;
         }
 
-        struct acpi_gas temp_gas = {
-            .address_space_id = UACPI_ADDRESS_SPACE_SYSTEM_IO,
-            .address = *(uacpi_u32*)spec->accessors[0],
-            .register_bit_width = spec->access_width * 8,
-        };
+        temp_gas.address_space_id = UACPI_ADDRESS_SPACE_SYSTEM_IO;
+        temp_gas.address = *(uacpi_u32*)spec->accessors[0];
+        temp_gas.register_bit_width = spec->access_width * 8;
 
         ret = uacpi_map_gas_noalloc(&temp_gas, &mapping->mappings[idx]);
     }
@@ -451,7 +453,7 @@ static const struct register_field g_fields[UACPI_REGISTER_FIELD_MAX + 1] = {
     },
 };
 
-uacpi_status uacpi_ininitialize_registers(void)
+uacpi_status uacpi_initialize_registers(void)
 {
     g_reg_lock = uacpi_kernel_create_spinlock();
     if (uacpi_unlikely(g_reg_lock == UACPI_NULL))
@@ -566,3 +568,5 @@ out:
     uacpi_kernel_unlock_spinlock(g_reg_lock, flags);
     return ret;
 }
+
+#endif // !UACPI_BAREBONES_MODE

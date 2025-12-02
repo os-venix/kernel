@@ -6,6 +6,8 @@
 #include <uacpi/internal/event.h>
 #include <uacpi/platform/arch_helpers.h>
 
+#ifndef UACPI_BAREBONES_MODE
+
 #ifndef UACPI_REDUCED_HARDWARE
 #define CALL_SLEEP_FN(name, state)                       \
     (uacpi_is_hardware_reduced() ?                       \
@@ -561,13 +563,13 @@ uacpi_status uacpi_reboot(void)
         ret = uacpi_write_register(UACPI_REGISTER_RESET, fadt->reset_value);
         break;
     case UACPI_ADDRESS_SPACE_PCI_CONFIG: {
+        uacpi_pci_address address = { 0 };
+
         // Bus is assumed to be 0 here
-        uacpi_pci_address address = {
-            .segment = 0,
-            .bus = 0,
-            .device = (reset_reg->address >> 32) & 0xFF,
-            .function = (reset_reg->address >> 16) & 0xFF,
-        };
+        address.segment = 0;
+        address.bus = 0;
+        address.device = (reset_reg->address >> 32) & 0xFF;
+        address.function = (reset_reg->address >> 16) & 0xFF;
 
         ret = uacpi_kernel_pci_device_open(address, &pci_dev);
         if (uacpi_unlikely_error(ret))
@@ -610,3 +612,5 @@ uacpi_status uacpi_reboot(void)
 
     return ret;
 }
+
+#endif // !UACPI_BAREBONES_MODE

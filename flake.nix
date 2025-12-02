@@ -1,45 +1,54 @@
 {
   description = "Venix kernel";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    rust-overlay.url = "github:oxalica/rust-overlay";
+  };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, rust-overlay }:
     let
+      overlays = [ (import rust-overlay) ];
+      system = "x86_64-linux";
+
       pkgs = import nixpkgs {
-        system = "x86_64-linux";
+        inherit system overlays;
       };
+
+      rustToolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
+        extensions = [
+          "rust-src"
+          "rust-analyzer"
+        ];
+        targets = [ "x86_64-unknown-none" ];
+      });
+
+      rustPlatform = pkgs.makeRustPlatform {
+        cargo = rustToolchain;
+        rustc = rustToolchain;
+      };
+
+      devDeps = with pkgs; [
+        make
+        gcc
+      ];
     in {
-      packages.x86_64-linux.kernel = pkgs.stdenv.mkDerivation {
-        pname = "venix-kernel";
+      packages.x86_64-linux.kernel = rustPlatform.buildRustPackage rec {
+        passthru.networkAllowed = true;
+        pname = "kernel";
         version = "0.4";
+        src = ./.;
+        cargoVendorDir = "vendor";
 
-        src = self;
-        # or src = ./.; self is better when used via flake input
-
-        # change these for your actual build
-        buildInputs = [ pkgs.rustc pkgs.cargo pkgs.jq ];
-
-        buildPhase = ''
-          export CARGO_HOME=$PWD/.cargo-home
-          # build release and capture the exact executable path from cargo messages
-          cargo build --offline --release --message-format=json --target=x86_64-unknown-none | tee cargo-msgs.json
-          # use jq to extract the executable path for the kernel target
-          KFILE=$$(jq -r 'select(.reason=="compiler-artifact" and .target.name=="kernel" and .executable!=null).executable' cargo-msgs.json | tail -n1)
-          if [ -z "$$KFILE" ]; then
-            echo "Failed to find built kernel executable in cargo output"
-            exit 1
-          fi
-          echo $$KFILE > .artefacts/kernel_path
-        '';
+        doCheck = false;
+        cargoBuildFlags = [ "--target" "x86_64-unknown-none" ];
 
         installPhase = ''
-          KFILE=$(cat .artefacts/kernel_path)
           mkdir -p $out
-          cp "$KFILE" $out/kernel
+          cp target/x86_64-unknown-none/release/${pname} $out/kernel
         '';
       };
 
-      # Allow `nix build` in the kernel repo
       defaultPackage.x86_64-linux = self.packages.x86_64-linux.kernel;
     };
 }
