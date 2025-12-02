@@ -4,8 +4,6 @@
 #![feature(allocator_api)]
 #![feature(ascii_char)]
 #![feature(ascii_char_variants)]
-#![feature(extract_if)]
-#![feature(naked_functions)]
 #![feature(alloc_layout_extra)]
 #![feature(local_waker)]
 #![feature(context_ext)]

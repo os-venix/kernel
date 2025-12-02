@@ -259,7 +259,7 @@ fn next_task() -> process::ProcessContext {
 }
 
 fn context_switch(context: &process::ProcessContext) -> ! {    
-    #[naked]
+    #[unsafe(naked)]
     #[allow(named_asm_labels)]
     unsafe extern "C" fn inner() -> ! {
 	core::arch::naked_asm!(
@@ -302,8 +302,6 @@ fn context_switch(context: &process::ProcessContext) -> ! {
 
 	    // Lastly, iret to the process
 	    "iretq",
-
-	    options(noreturn),
 	);
     }
 

@@ -26,7 +26,7 @@ macro_rules! irq_handler_def {
 		idt[$irq].set_handler_fn(f);
 	    }
 
-	    #[naked]
+	    #[unsafe(naked)]
 	    #[allow(named_asm_labels)]
 	    extern "C" fn [<irq_ $irq >] () {
 		extern "C" fn inner(stack_frame: &StackFrame) -> ! {
@@ -63,44 +63,41 @@ macro_rules! irq_handler_def {
 		    scheduler::schedule_next();
 		}
 
-		unsafe {
-		    core::arch::asm!(
-			"cli",
+		core::arch::naked_asm!(
+		    "cli",
 
-			"test qword ptr [rsp + 0x08], 0x03",
-			"je 2f",
-			"swapgs",
-			"2:",
+		    "test qword ptr [rsp + 0x08], 0x03",
+		    "je 2f",
+		    "swapgs",
+		    "2:",
 
-			"push rax",
-			"push rbx",
-			"push rcx",
-			"push rdx",
-			"push rsi",
-			"push rdi",
-			"push rbp",
-			"push r8",
-			"push r9",
-			"push r10",
-			"push r11",
-			"push r12",
-			"push r13",
-			"push r14",
-			"push r15",
+		    "push rax",
+		    "push rbx",
+		    "push rcx",
+		    "push rdx",
+		    "push rsi",
+		    "push rdi",
+		    "push rbp",
+		    "push r8",
+		    "push r9",
+		    "push r10",
+		    "push r11",
+		    "push r12",
+		    "push r13",
+		    "push r14",
+		    "push r15",
 
-			"mov rdi, rsp",
-			"call {inner}",
+		    "mov rdi, rsp",
+		    "call {inner}",
 
-			inner = sym inner,
-			options(noreturn),
-		    );
-		}
+		    inner = sym inner,
+		);
 	    }
 	}
     };
 }
 
-static HANDLER_FUNCS: Once<RwLock<BTreeMap<u8, Vec<Box<(dyn Fn() + Send + Sync)>>>>> = Once::new();
+static HANDLER_FUNCS: Once<RwLock<BTreeMap<u8, Vec<Box<dyn Fn() + Send + Sync>>>>> = Once::new();
 
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
@@ -157,10 +154,10 @@ pub fn init() {
 }
 
 pub fn init_handlers() {
-    HANDLER_FUNCS.call_once(|| RwLock::new(BTreeMap::<u8, Vec::<Box<(dyn Fn() + Send + Sync)>>>::new()));
+    HANDLER_FUNCS.call_once(|| RwLock::new(BTreeMap::<u8, Vec::<Box<dyn Fn() + Send + Sync>>>::new()));
 }
 
-pub fn add_handler_to_irq(irq: u8, handler: Box<(dyn Fn() + Send + Sync)>) {
+pub fn add_handler_to_irq(irq: u8, handler: Box<dyn Fn() + Send + Sync>) {
     let mut handler_funcs = HANDLER_FUNCS.get().expect("Handler funcs have not been initialised").write();
 
     if let Some(v) = handler_funcs.get_mut(&irq) {

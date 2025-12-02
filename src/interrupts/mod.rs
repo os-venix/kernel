@@ -15,7 +15,7 @@ pub enum InterruptRoute {
 }
 
 impl InterruptRoute {
-    pub fn register_handler(&self, handler: Box<(dyn Fn() + Send + Sync)>) {
+    pub fn register_handler(&self, handler: Box<dyn Fn() + Send + Sync>) {
 	match self {
 	    InterruptRoute::Gsi(gsi) => {
 		let irq = io_apic::get_irq_for_gsi(*gsi);

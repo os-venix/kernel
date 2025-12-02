@@ -170,7 +170,7 @@ struct UhciTransfer {
     transfer_descriptors: Vec<arena::ArenaTag>,
     buffer: Option<arena::ArenaTag>,
     buf_length: usize,
-    callback: Option<Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>>,
+    callback: Option<Arc<dyn Fn(bytes::Bytes) + Send + Sync>>,
 }
 
 unsafe impl Send for UhciTransfer { }
@@ -198,11 +198,11 @@ impl UhciTransfer {
 	    })
     }
 
-    pub fn set_callback(&mut self, callback: Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>) {
+    pub fn set_callback(&mut self, callback: Arc<dyn Fn(bytes::Bytes) + Send + Sync>) {
 	self.callback = Some(callback);
     }
 
-    pub fn get_callback(&self) -> Option<Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>> {
+    pub fn get_callback(&self) -> Option<Arc<dyn Fn(bytes::Bytes) + Send + Sync>> {
 	self.callback.clone()
     }
 
@@ -731,8 +731,8 @@ impl usbdevice::UsbHCI for UhciBus<'_> {
 	addr
     }
     
-    fn interrupt(&mut self) -> (Option<Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>>, Option<bytes::Bytes>) {
-	let mut callback: Option<Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>> = None;
+    fn interrupt(&mut self) -> (Option<Arc<dyn Fn(bytes::Bytes) + Send + Sync>>, Option<bytes::Bytes>) {
+	let mut callback: Option<Arc<dyn Fn(bytes::Bytes) + Send + Sync>> = None;
 	let mut buffer: Option<bytes::Bytes> = None;
 
 	let (usbint, usberr) = unsafe {

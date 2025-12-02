@@ -153,14 +153,14 @@ pub struct UsbTransfer {
     pub endpoint: u8,
     pub speed: PortSpeed,
     pub poll: bool,
-    pub callback: Option<Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>>,
+    pub callback: Option<Arc<dyn Fn(bytes::Bytes) + Send + Sync>>,
 }
 
 pub trait UsbHCI: Send + Sync {
     fn get_ports(&self) -> Vec<Port>;
     fn transfer(&mut self, address: u8, transfer: UsbTransfer) -> Option<Box<[u8]>>;
     fn get_free_address(&mut self) -> u8;
-    fn interrupt(&mut self) -> (Option<Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>>, Option<bytes::Bytes>);
+    fn interrupt(&mut self) -> (Option<Arc<dyn Fn(bytes::Bytes) + Send + Sync>>, Option<bytes::Bytes>);
 }
 
 #[derive(Clone)]

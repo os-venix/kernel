@@ -216,7 +216,7 @@ impl Hpet {
 		    .for_each(|callback| callback.1());
 	    } else {
 		self.callbacks
-		    .extract_if(|callback| callback.0 == counter as u8)
+		    .extract_if(.., |callback| callback.0 == counter as u8)
 		    .map(|callback| callback.1())
 		    .for_each(drop);
 

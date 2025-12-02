@@ -104,7 +104,7 @@ impl Keyboard {
 	}
     }
 
-    pub fn start_with_callback(&self, callback: Arc<(dyn Fn(bytes::Bytes) + Send + Sync)>) {
+    pub fn start_with_callback(&self, callback: Arc<dyn Fn(bytes::Bytes) + Send + Sync>) {
 	let xfer_config_descriptor = usbdevice::UsbTransfer {
 	    transfer_type: usbdevice::TransferType::InterruptIn(usbdevice::InterruptTransferDescriptor {
 		frequency_in_ms: self.poll_interval,

@@ -29,4 +29,5 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", env::var("TMPDIR").unwrap());
     println!("cargo:rustc-link-arg=-T{}", linker_script.display());
     println!("cargo:rustc-link-arg=-static");
+    println!("cargo:rustc-link-arg=-nostdlib");
 }

@@ -758,10 +758,10 @@ unsafe extern "C" fn syscall_inner(stack_frame: process::GeneralPurposeRegisters
 }
 
 // TODO - load kernel stack; may need to use swapgs for that
-#[naked]
+#[unsafe(naked)]
 #[allow(named_asm_labels)]
 unsafe extern "C" fn syscall_enter () -> ! {
-    core::arch::asm!(
+    core::arch::naked_asm!(
 	"swapgs",
 	"mov gs:[{sp}], rsp",
 	"mov rsp, gs:[{ksp}]",
@@ -789,7 +789,6 @@ unsafe extern "C" fn syscall_enter () -> ! {
 	"mov rdi, rsp",
 	"call syscall_inner",
 
-	options(noreturn),
 	sp = const(offset_of!(gdt::ProcessorControlBlock, tmp_user_stack_ptr)),
 	ksp = const(offset_of!(gdt::ProcessorControlBlock, tss) + offset_of!(TaskStateSegment, privilege_stack_table)),
 	kcr3 = const(offset_of!(gdt::ProcessorControlBlock, kernel_cr3)),

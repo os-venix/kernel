@@ -14,6 +14,14 @@
       pkgs = import nixpkgs {
         inherit system overlays;
       };
+ 
+      # create a custom hostPlatform attribute
+      hostPlatform = pkgs.stdenv.hostPlatform // {
+        platform = "x86_64-unknown-none";
+        platformFamily = "none";
+        platformVersion = "0";
+        platformConfig = {};
+      };
 
       rustToolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
         extensions = [
@@ -40,12 +48,16 @@
         src = ./.;
         cargoVendorDir = "vendor";
 
+        auditable = false;
         doCheck = false;
-        cargoBuildFlags = [ "--target" "x86_64-unknown-none" ];
+
+        buildPhase = ''
+          cargo build -j $NIX_BUILD_CORES --target x86_64-unknown-none --offline --profile release
+        '';
 
         installPhase = ''
           mkdir -p $out
-          cp target/x86_64-unknown-none/release/${pname} $out/kernel
+          cp target/x86_64-unknown-none/release/kernel $out/kernel
         '';
       };
 
