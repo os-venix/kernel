@@ -175,6 +175,53 @@ impl driver::Device for ConsoleDevice {
 	    },
 	}
     }
+
+    fn poll(self: Arc<Self>, events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
+	struct Wait {
+	    events: syscall::PollEvents
+	}
+
+	impl Future for Wait {
+	    type Output = syscall::PollEvents;
+
+	    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+		let mut revents = syscall::PollEvents::empty();
+
+		// We can always write
+		if self.events.contains(syscall::PollEvents::Out) {
+                    revents |= syscall::PollEvents::Out;
+		}
+
+		if self.events.contains(syscall::PollEvents::In) {
+		    let console = CONSOLE.get().unwrap();
+		    let key_buffer = console.key_buffer.read();
+
+		    let canonical = console.canonical.read();
+
+		    let mut return_buf = if *canonical {
+			// Check for a complete line (canonical mode)
+			if let Some(pos) = (*key_buffer).iter().position(|&b| b == b'\r') {
+			    revents |= syscall::PollEvents::In;
+			}
+		    } else {
+			// TODO - this should handle VMIN, and doesn't yet - right now, VMIN is assumed as 1
+			let l = (*key_buffer).len();
+			if l > 0 {
+			    revents |= syscall::PollEvents::In;
+			}
+		    };
+		}
+
+		if revents.is_empty() {
+		    return Poll::Pending;
+		}
+
+		Poll::Ready(revents)
+	    }
+	}
+
+	Box::pin(Wait { events })
+    }
 }
 
 static CONSOLE: Once<Arc<ConsoleDevice>> = Once::new();

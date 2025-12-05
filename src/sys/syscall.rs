@@ -16,6 +16,7 @@ use num_enum::TryFromPrimitive;
 use spin::RwLock;
 use core::slice;
 use core::mem;
+use bitflags::bitflags;
 
 use crate::sys::ioctl;
 use crate::gdt;
@@ -36,6 +37,7 @@ pub enum CanonicalError {
     Badf = 9,
     Again = 11,
     Access = 13,
+    Fault = 14,
     Inval = 22,
     Range = 34,
 }
@@ -48,6 +50,32 @@ enum FcntlOperation {
     SetFD = 4,
     GetFlags = 5,
 }
+
+bitflags! {
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct PollEvents: u16 {
+        const In        = 0x01;
+        const Out       = 0x02;
+        const Pri       = 0x04;
+        const Hup       = 0x08;
+        const Err       = 0x10;
+        const RdHup     = 0x20;
+        const Nval      = 0x40;
+        const WrNorm    = 0x80;
+        const RdNorm    = 0x100;
+        const WrBand    = 0x200;
+        const RdBand    = 0x400;
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PollFd {
+    pub fd: i32,
+    pub events: PollEvents,
+    pub revents: PollEvents,
+}    
 
 impl fmt::Display for CanonicalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -413,6 +441,70 @@ async fn sys_seek(fd_num: u64, offset: u64, whence: u64) -> SyscallResult {
     }
 }
 
+async fn sys_poll(fds: u64, nfds: u64, _timeout: u64) -> SyscallResult {
+    // If there aren't any FDs, just don't do anything
+    if nfds == 0 {
+	return SyscallResult {
+	    return_value: 0,
+	    err_num: CanonicalError::Ok as u64,
+	};
+    }
+
+    // There's no way to combine futures yet in the kernel, so we can only handle 1 FD
+    if nfds > 1 {
+	unimplemented!();
+    }
+
+    // Parse the FDs
+    let mut fds_vec = Vec::with_capacity(nfds as usize);
+    {
+	let mut addr = VirtAddr::new(fds);
+	for _ in 0..nfds {
+	    let fd = match memory::copy_value_from_user::<PollFd>(addr) {
+		Ok(fd) => fd,
+		Err(_) => return SyscallResult {
+		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		    err_num: CanonicalError::Fault as u64,
+		},
+	    };
+	    addr += core::mem::size_of::<PollFd>().try_into().unwrap();
+
+	    fds_vec.push(fd);
+	}
+    }
+
+    // Skip if negative
+    if let Ok(fd) = TryInto::<u64>::try_into(fds_vec[0].fd) {
+	// Actually poll
+	let process = scheduler::get_current_process();
+	let actual_fd = process.get_file_descriptor(fd);
+	let r = actual_fd.file_description.read();
+
+	let revents = r.poll(fds_vec[0].events).await;
+	fds_vec[0].revents = revents;
+    }
+
+    // Copy the results back to userspace
+    {
+	let mut addr = VirtAddr::new(fds);
+	for i in 0..nfds {
+	    match memory::copy_value_to_user::<PollFd>(addr, &fds_vec[i as usize]) {
+		Ok(()) => (),
+		Err(_) => return SyscallResult {
+		    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+		    err_num: CanonicalError::Fault as u64,
+		},
+	    }
+	    addr += core::mem::size_of::<PollFd>().try_into().unwrap();
+	}
+    }
+
+    SyscallResult {
+	return_value: 1,
+	err_num: CanonicalError::Ok as u64,
+    }
+}
+
 async fn sys_mmap(start_val: u64, count: u64, r8: u64) -> SyscallResult {
     if count == 0 {
 	return SyscallResult {
@@ -710,6 +802,7 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 	0x0a => Box::pin(sys_pipe(rdi, rsi)),
 	0x0b => Box::pin(sys_fstat(rdi, rsi)),
 	0x0c => scheduler::exit(rdi),  // Doesn't return, so no need for async fn here
+	0x0d => Box::pin(sys_poll(rdi, rsi, rdx)),
 	0x10 => Box::pin(sys_sigaction(rdi, rsi, rdx)),
 	0x11 => Box::pin(sys_sigprocmask(rdi, rsi, rdx)),
 	0x20 => Box::pin(sys_getcwd(rdi, rsi)),

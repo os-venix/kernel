@@ -24,6 +24,7 @@ pub struct Stat {
 
 pub trait FileSystem {
     fn read(self: Arc<Self>, path: String, offset: u64, len: u64) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>>;
+    fn poll(self: Arc<Self>, path: String, events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents>;
     fn write(&self, path: String, buf: *const u8, len: usize) -> Result<u64, ()>;
     fn stat(self: Arc<Self>, path: String) -> BoxFuture<'static, Result<Stat, ()>>;
     fn ioctl(&self, path: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()>;
@@ -87,6 +88,30 @@ impl FileDescriptor {
 		};
 		buffer.extend_from_slice(user_buf);
 		Ok(len)
+	    },
+	}
+    }
+
+    pub async fn poll(&self, events: syscall::PollEvents) -> syscall::PollEvents {
+	match self {
+	    FileDescriptor::File { file_name: _, current_offset: _, file_system, local_name } => {
+		file_system.clone().poll(local_name.clone(), events).await
+	    },
+	    FileDescriptor::Pipe { buffer } => {
+                let mut revents = syscall::PollEvents::empty();
+
+                // POLLIN = buffer has readable data
+                if events.contains(syscall::PollEvents::In) && !buffer.is_empty() {
+                    revents |= syscall::PollEvents::In;
+                }
+
+                // POLLOUT = writable (always true for your current pipes)
+                if events.contains(syscall::PollEvents::Out) {
+                    revents |= syscall::PollEvents::Out;
+                }
+
+                // No blocking possible without wakers → return immediately.
+                revents
 	    },
 	}
     }

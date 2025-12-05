@@ -26,6 +26,7 @@ anyhow = { version = "1.0", default-features = false }
 modular-bitfield = "0.11"
 bitfield = "0.19"
 contracts = "0.4"
+bitflags = { version = "2.10", default-features = false }
 
 [dependencies.itertools]
 version = "0.13"

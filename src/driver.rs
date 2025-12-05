@@ -33,6 +33,7 @@ pub trait Device {
     fn read(self: Arc<Self>, offset: u64, size: u64) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>>;
     fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()>;
     fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()>;
+    fn poll(self: Arc<Self>, events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents>;
 }
 
 struct DevFS {
@@ -136,6 +137,26 @@ impl vfs::FileSystem for DevFS {
 	let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist");
 
 	device.clone().ioctl(ioctl, buf)
+    }
+    fn poll(self: Arc<Self>, path: String, events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
+	let parts = path.split("/")
+	    .filter(|s| !s.is_empty())
+	    .collect::<Vec<&str>>();
+	if parts.len() != 1 {
+	    panic!("Couldn't find");
+	}
+
+	let device_id = {
+	    match self.file_table.read().get(parts[0]) {
+		Some(id) => *id,
+		None => panic!("Couldn't find"),
+	    }
+	};
+
+	let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
+	let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist");
+
+	device.clone().poll(events)
     }
 }
 

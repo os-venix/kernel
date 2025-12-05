@@ -527,6 +527,25 @@ impl vfs::FileSystem for Fat16Fs {
 	    })
 	})
     }
+
+    fn poll(self: Arc<Self>, path: String, events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
+	Box::pin(async move {
+	    let mut revents = syscall::PollEvents::empty();
+
+            // POLLIN = buffer always readbale
+            if events.contains(syscall::PollEvents::In) {
+		revents |= syscall::PollEvents::In;
+            }
+
+            // POLLOUT = writable (always true for your current pipes)
+            if events.contains(syscall::PollEvents::Out) {
+		revents |= syscall::PollEvents::Out;
+            }
+
+            // No blocking possible without wakers → return immediately.
+            revents
+	})
+    }
 }
 
 #[allow(dead_code)]

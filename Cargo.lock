@@ -208,6 +208,7 @@ dependencies = [
  "anyhow",
  "bit_field",
  "bitfield",
+ "bitflags",
  "bytes",
  "cmake",
  "conquer-once",
