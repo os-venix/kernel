@@ -12,7 +12,6 @@ extern crate alloc;
 
 use core::panic::PanicInfo;
 use fixed::{types::extra::U3, FixedU64};
-use alloc::string::ToString;
 use spin::Once;
 use alloc::vec;
 use alloc::vec::Vec;

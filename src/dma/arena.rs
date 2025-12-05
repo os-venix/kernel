@@ -1,9 +1,10 @@
 use alloc::vec;
 use alloc::vec::Vec;
-use core::{mem::MaybeUninit, ptr, sync::atomic::{AtomicUsize, Ordering}, slice};
+use core::{mem::MaybeUninit, ptr, sync::atomic::{fence, AtomicUsize, Ordering}, slice};
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::memory;
+use crate::dma::buffer::DmaBuffer;
 
 // An arena allocator, backed by paged memory directly, that can be used to allocate various types, with optional alignment, for DMA purposes
 pub struct Arena {
@@ -177,7 +178,7 @@ impl<'a> Arena {
 	unsafe {
 	    slice::from_raw_parts_mut(virt_addr.as_mut_ptr::<u8>(), length)
 	}
-    }    
+    }
 
     /// get a pointer to memory pointed to by tag
     pub fn tag_to_ptr_mut<T: Default>(&'a mut self, tag: ArenaTag) -> &'a mut T {
@@ -194,8 +195,17 @@ impl<'a> Arena {
         let (virt_page, _) = self.backing_store[tag.0 / 4096];
 	let virt_addr = virt_page + (tag.0 as u64 % 4096);
 
+	fence(Ordering::SeqCst);
+
 	unsafe {
 	    slice::from_raw_parts_mut(virt_addr.as_mut_ptr::<u8>(), length)
 	}
-    }    
+    }
+
+    pub fn tag_to_dma_buffer(&self, tag: ArenaTag, length: usize) -> DmaBuffer {
+	let (virt_page, _) = self.backing_store[tag.0 / 4096];
+	let virt_addr = virt_page + (tag.0 as u64 % 4096);
+
+	unsafe { DmaBuffer::new(virt_addr.as_mut_ptr::<u8>(), length) }
+    }
 }

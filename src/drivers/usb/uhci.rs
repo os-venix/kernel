@@ -64,7 +64,7 @@ impl Default for Pointer {
     fn default() -> Self { Self(1) }  // Terminate
 }
 
-#[repr(packed)]
+#[repr(C, packed)]
 #[derive(Default)]
 #[allow(dead_code)]
 struct QueueHead {
@@ -331,7 +331,9 @@ impl UhciTransfer {
 
     pub fn get_owned_buf(&mut self) -> Option<Box<[u8]>> {
 	if let Some(buf_tag) = self.buffer {
-	    Some(self.arena.tag_to_slice(buf_tag, self.buf_length).to_vec().into_boxed_slice())
+	    let dma_buf = self.arena.tag_to_dma_buffer(buf_tag, self.buf_length);
+	    let data = dma_buf.as_slice();
+	    Some(data.to_vec().into_boxed_slice())
 	} else {
 	    None
 	}

@@ -165,7 +165,7 @@ impl VenixPageAllocator {
 		    Ordering::Less => (),
 		}
 	    }
-	    panic!("Kernel OOM");
+	    panic!("Kernel OOM {}", size);
 	} else {
 	    if size_in_pages > 1 << 39 {
 		panic!("Attempted to allocate more than a p4 entry in runt mode.");
