@@ -178,7 +178,7 @@ unsafe impl Sync for UhciTransfer { }
 
 impl UhciTransfer {
     pub fn new() -> Self {
-	let arena = arena::Arena::new();
+	let mut arena = arena::Arena::new();
 	let (queue_head_tag, queue_head_phys) = arena.acquire_default_by_tag::<QueueHead>(0x10).unwrap();
 	UhciTransfer {
 	    arena,

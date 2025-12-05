@@ -37,7 +37,7 @@ impl<'a> Arena {
     }
 
     /// Get a pointer to a place in the backing store where a value of type T can be placed.
-    fn get_ptr_place<T>(&'a self, alignment: usize) -> Option<(&'a mut MaybeUninit<T>, ArenaTag, PhysAddr)> {
+    fn get_ptr_place<T>(&'a mut self, alignment: usize) -> Option<(&'a mut MaybeUninit<T>, ArenaTag, PhysAddr)> {
 	if alignment != 0 {
 	    if let Err(e) = self.next_free_store_spot.fetch_update(
 		Ordering::Release,
@@ -67,7 +67,7 @@ impl<'a> Arena {
     }
 
     /// Get a pointer to a place in the backing store where a slice of size l can be placed.
-    fn get_slice_place(&'a self, alignment: usize, length: usize) -> Option<(&'a mut [u8], ArenaTag, PhysAddr)> {
+    fn get_slice_place(&'a mut self, alignment: usize, length: usize) -> Option<(&'a mut [u8], ArenaTag, PhysAddr)> {
 	if alignment != 0 {
 	    if let Err(e) = self.next_free_store_spot.fetch_update(
 		Ordering::Release,
@@ -96,7 +96,7 @@ impl<'a> Arena {
     /// acquire a reference to a value of type T that is initialized with it's default value.
     /// This is useful for types that do not require initialization.
     #[allow(dead_code)]
-    pub fn acquire_default<T: Default>(&'a self, alignment: usize) -> Option<(&'a mut T, PhysAddr)> {
+    pub fn acquire_default<T: Default>(&'a mut self, alignment: usize) -> Option<(&'a mut T, PhysAddr)> {
         let (ptr, _, phys_addr) = self.get_ptr_place::<T>(alignment)?;
 
         ptr.write(T::default());
@@ -111,7 +111,7 @@ impl<'a> Arena {
 
     /// acquire a reference to a value of type T that is initialized with the given value.
     /// This is useful for types that do not require initialization.
-    pub fn acquire<T: Clone>(&'a self, alignment: usize, val: &T) -> Option<(&'a mut T, PhysAddr)> {
+    pub fn acquire<T: Clone>(&'a mut self, alignment: usize, val: &T) -> Option<(&'a mut T, PhysAddr)> {
         let (ptr, _, phys_addr) = self.get_ptr_place::<T>(alignment)?;
 
         ptr.write(val.clone());
@@ -126,7 +126,7 @@ impl<'a> Arena {
 
     /// acquire a reference to a slice of length l, initialized to 0.
     #[allow(dead_code)]
-    pub fn acquire_slice(&'a self, alignment: usize, length: usize) -> Option<(&'a [u8], PhysAddr)> {
+    pub fn acquire_slice(&'a mut self, alignment: usize, length: usize) -> Option<(&'a [u8], PhysAddr)> {
         let (slice, _, phys_addr) = self.get_slice_place(alignment, length)?;
 	slice.fill_with(Default::default);
 
@@ -134,7 +134,7 @@ impl<'a> Arena {
     }
 
     /// acquire a reference to a slice of length l, initialized to 0.
-    pub fn acquire_slice_buffer(&'a self, alignment: usize, buffer: &[u8], length: usize) -> Option<(&'a [u8], PhysAddr)> {
+    pub fn acquire_slice_buffer(&'a mut self, alignment: usize, buffer: &[u8], length: usize) -> Option<(&'a [u8], PhysAddr)> {
         let (slice, _, phys_addr) = self.get_slice_place(alignment, length)?;
 	slice.clone_from_slice(buffer);
 
@@ -143,7 +143,7 @@ impl<'a> Arena {
 
     /// acquire a reference to a value of type T that is initialized with it's default value.
     /// This is useful for types that do not require initialization.
-    pub fn acquire_default_by_tag<T: Default>(&'a self, alignment: usize) -> Option<(ArenaTag, PhysAddr)> {
+    pub fn acquire_default_by_tag<T: Default>(&'a mut self, alignment: usize) -> Option<(ArenaTag, PhysAddr)> {
         let (ptr, tag, phys_addr) = self.get_ptr_place::<T>(alignment)?;
 
         ptr.write(T::default());
@@ -152,7 +152,7 @@ impl<'a> Arena {
     }
 
     /// acquire a reference to a slice of length l, initialized to 0.
-    pub fn acquire_slice_by_tag(&'a self, alignment: usize, length: usize) -> Option<(ArenaTag, PhysAddr)> {
+    pub fn acquire_slice_by_tag(&'a mut self, alignment: usize, length: usize) -> Option<(ArenaTag, PhysAddr)> {
         let (slice, tag, phys_addr) = self.get_slice_place(alignment, length)?;
 	slice.fill_with(Default::default);
 

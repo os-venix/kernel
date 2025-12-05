@@ -94,7 +94,7 @@ pub fn init() {
     let (kernel_code, kernel_data, user_code, user_data) = gdt::get_code_selectors();
 
     Star::write(user_code, user_data, kernel_code, kernel_data).expect("Unable to set STAR");
-    LStar::write(VirtAddr::new(syscall_enter as usize as u64));
+    LStar::write(VirtAddr::new(syscall_enter as *const () as usize as u64));
 
     unsafe {
 	Efer::update(|old_flags| *old_flags |= EferFlags::SYSTEM_CALL_EXTENSIONS);

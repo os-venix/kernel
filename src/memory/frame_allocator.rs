@@ -142,7 +142,7 @@ impl VenixFrameAllocator {
 
     // This function assumes size has been rounded to the nearest page
     pub fn allocate_dma_frames(&mut self, size: u64) -> Option<PhysAddr> {
-	if size % 4096 != 0 {
+	if size.is_multiple_of(4096) {
 	    panic!("Attempted to allocate DMA frames to a non-page boundary");
 	}
 

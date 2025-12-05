@@ -133,7 +133,7 @@ fn init() {
 	    EntryType::ACPI_NVS => "ACPI NVS",
 	    EntryType::BAD_MEMORY => "Bad Memory",
 	    EntryType::BOOTLOADER_RECLAIMABLE => "Bootloader reclamiable",
-	    EntryType::KERNEL_AND_MODULES => "Kernel (and modules)",
+	    EntryType::EXECUTABLE_AND_MODULES => "Kernel (and modules)",
 	    EntryType::FRAMEBUFFER => "Framebuffer",
 	    _ => "Unknown",
 	});

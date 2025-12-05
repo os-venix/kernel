@@ -22,7 +22,7 @@ macro_rules! irq_handler_def {
     ($irq:literal) => {
 	paste::item! {
 	    unsafe fn [<install_irq_ $irq>](idt: &mut x86_64::structures::idt::InterruptDescriptorTable) {
-		let f: extern "x86-interrupt" fn(InterruptStackFrame) = core::mem::transmute([<irq_ $irq>] as usize);
+		let f: extern "x86-interrupt" fn(InterruptStackFrame) = core::mem::transmute([<irq_ $irq>] as *const () as usize);
 		idt[$irq].set_handler_fn(f);
 	    }
 

@@ -96,7 +96,7 @@ impl<K, V> VecMap<K, V> {
         }
     }
 
-    pub fn drain(&mut self) -> Drain<K, V> {
+    pub fn drain(&mut self) -> Drain<'_, K, V> {
         Drain {
             iter: self.keys.drain(..).zip(self.values.drain(..)),
         }
@@ -125,7 +125,7 @@ impl<K, V> VecMap<K, V> {
         }
     }
 
-    pub fn entry(&mut self, key: K) -> Entry<K, V>
+    pub fn entry(&mut self, key: K) -> Entry<'_, K, V>
     where
         K: PartialEq
     {
@@ -156,13 +156,13 @@ impl<K, V> VecMap<K, V> {
         }
     }
 
-    pub fn iter(&self) -> Iter<K, V> {
+    pub fn iter(&self) -> Iter<'_, K, V> {
         Iter {
             iter: self.keys.iter().zip(self.values.iter()),
         }
     }
 
-    pub fn iter_mut(&mut self) -> IterMut<K, V> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
         IterMut {
             iter: self.keys.iter().zip(self.values.iter_mut()),
         }
@@ -190,14 +190,14 @@ impl<K, V> VecMap<K, V> {
         self.keys == other.keys && self.values == other.values
     }
 
-    pub fn keys(&self) -> Keys<K, V> {
+    pub fn keys(&self) -> Keys<'_, K, V> {
         Keys {
             iter: self.keys.iter(),
             _phantom: Default::default(),
         }
     }
 
-    pub fn values(&self) -> Values<K, V> {
+    pub fn values(&self) -> Values<'_, K, V> {
         Values {
             iter: self.values.iter(),
             _phantom: Default::default(),

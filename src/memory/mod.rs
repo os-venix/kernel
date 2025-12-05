@@ -234,7 +234,7 @@ pub fn kernel_allocate(
 	    .map(|addr| PhysFrame::containing_address(PhysAddr::new(start_addr + addr)))
 	    .collect(),
 	MemoryAllocationType::Dma => {
-	    let aligned_size = ((size + 4095) / 4096) * 4096;
+	    let aligned_size = size.div_ceil(4096);
 
 	    let start = {
 		let mut frame_allocator = VENIX_FRAME_ALLOCATOR.write();
@@ -272,7 +272,7 @@ pub fn kernel_allocate(
 pub fn allocate_mmio(
     phys_addr: usize, size: usize) -> Result<VirtAddr, MapToError<Size4KiB>> {
     let start_phys_addr = phys_addr - (phys_addr % 4096);  // Page align
-    let end_phys_addr = (((phys_addr + size) + 4095) / 4096) * 4096;
+    let end_phys_addr = (phys_addr + size).div_ceil(4096);
 
     let total_size = end_phys_addr - start_phys_addr;
 

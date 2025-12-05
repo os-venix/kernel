@@ -148,7 +148,7 @@ impl driver::Device for Keyboard {
     fn ioctl(self: Arc<Self>, _ioctl: ioctl::IoCtl, _buf: u64) -> Result<u64, ()> {
 	unimplemented!();
     }
-    fn poll(self: Arc<Self>, events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
+    fn poll(self: Arc<Self>, _events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
 	unimplemented!();
     }
 }

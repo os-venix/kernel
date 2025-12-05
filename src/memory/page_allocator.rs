@@ -148,7 +148,7 @@ impl VenixPageAllocator {
 
     // Returns the first virtaddr in the range
     pub fn get_page_range(&mut self, size: u64) -> VirtAddr {
-	let size_in_pages = size/4096 + if size % 4096 != 0 { 1 } else { 0 };
+	let size_in_pages = size/4096 + if size.is_multiple_of(4096) { 0 } else { 1 };
 
 	if let Some(ref mut free_regions) = self.free_regions {
 	    for idx in 0 .. free_regions.len() {

@@ -174,7 +174,7 @@ impl AddressSpace {
 
     // Returns the first virtaddr in the range
     pub fn get_page_range(&mut self, size: u64) -> VirtAddr {
-	let size_in_pages = size/4096 + if size % 4096 != 0 { 1 } else { 0 };
+	let size_in_pages = size/4096 + if size.is_multiple_of(4096) { 0 } else { 1 };
 
 	for idx in 0 .. self.free_regions.len() {
 	    if self.free_regions[idx].start == 0 {
@@ -208,7 +208,7 @@ impl AddressSpace {
     pub fn get_page_range_from_start(&mut self, virt_addr: VirtAddr, size: usize) -> Result<()> {
 	let addr = virt_addr.as_u64() - (virt_addr.as_u64() % 4096);
 	let mut end_addr = virt_addr.as_u64() + (size as u64);
-	if ((virt_addr.as_u64()) + (size as u64)) % 4096 != 0 {
+	if !((virt_addr.as_u64()) + (size as u64)).is_multiple_of(4096) {
 	    end_addr += 4096 - ((virt_addr.as_u64() + (size as u64)) % 4096);  // Page align
 	}
 	let total_size = end_addr - addr;

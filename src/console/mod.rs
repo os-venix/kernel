@@ -198,9 +198,9 @@ impl driver::Device for ConsoleDevice {
 
 		    let canonical = console.canonical.read();
 
-		    let mut return_buf = if *canonical {
+		    let _return_buf = if *canonical {
 			// Check for a complete line (canonical mode)
-			if let Some(pos) = (*key_buffer).iter().position(|&b| b == b'\r') {
+			if let Some(_pos) = (*key_buffer).iter().position(|&b| b == b'\r') {
 			    revents |= syscall::PollEvents::In;
 			}
 		    } else {

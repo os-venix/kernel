@@ -259,7 +259,7 @@ struct IdeController {
 
 impl IdeController {
     pub fn instantiate(control_base: u16, io_base: u16, busmaster_base: Option<u32>) {
-	let arena = arena::Arena::new();
+	let mut arena = arena::Arena::new();
 	let (prdt, prdt_phys_addr) = arena.acquire_slice_by_tag(0, 4096).unwrap();
 
 	let ide_controller = IdeController {
@@ -340,7 +340,7 @@ impl driver::Device for IdeDrive {
 	panic!("Shouldn't have attempted to ioctl to the IDE drive. That makes no sense.");
     }
 
-    fn poll(self: Arc<Self>, events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
+    fn poll(self: Arc<Self>, _events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
 	unimplemented!();
     }
 }

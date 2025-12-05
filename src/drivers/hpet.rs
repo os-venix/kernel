@@ -262,7 +262,7 @@ impl driver::Device for HpetDevice {
     fn ioctl(self: Arc<Self>, _ioctl: ioctl::IoCtl, _buf: u64) -> Result<u64, ()> {
 	panic!("Shouldn't have attempted to ioctl to the HPET. That makes no sense.");
     }
-    fn poll(self: Arc<Self>, events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
+    fn poll(self: Arc<Self>, _events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
 	unimplemented!();
     }
 }

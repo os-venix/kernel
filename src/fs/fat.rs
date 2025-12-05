@@ -528,7 +528,7 @@ impl vfs::FileSystem for Fat16Fs {
 	})
     }
 
-    fn poll(self: Arc<Self>, path: String, events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
+    fn poll(self: Arc<Self>, _path: String, events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
 	Box::pin(async move {
 	    let mut revents = syscall::PollEvents::empty();
 

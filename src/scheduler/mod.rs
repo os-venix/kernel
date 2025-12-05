@@ -30,7 +30,7 @@ pub fn init() {
     NEXT_PID.call_once(|| Mutex::new(1));  // PID 0 is idle thread
 
     let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
-    process_tbl.insert(0, Arc::new(process::Process::new_kthread(idle_thread as usize as u64)));
+    process_tbl.insert(0, Arc::new(process::Process::new_kthread(idle_thread as *const () as usize as u64)));
 }
 
 pub fn start() -> ! {
