@@ -279,7 +279,7 @@ impl Fat16Fs {
 		    .trim()
 		    .to_string();
 
-		if extn.len() != 0 {
+		if !extn.is_empty() {
 		    file_name.push('.');
 		    file_name.push_str(extn.as_str());
 		}

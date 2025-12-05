@@ -151,7 +151,7 @@ fn init() {
     drivers::pcie::init_pci_subsystem_for_acpi();
 
     let usable_ram = memory::get_usable_ram();
-    log::info!("Total usable RAM: {} MiB", (FixedU64::<U3>::from_num(usable_ram) / FixedU64::<U3>::from_num(1024 * 1024)).to_string());
+    log::info!("Total usable RAM: {} MiB", (FixedU64::<U3>::from_num(usable_ram) / FixedU64::<U3>::from_num(1024 * 1024)));
 
     let rsdp_addr = RSDP_REQUEST.get_response().expect("Limine did not return RDSP pointer.").address() as u64;
     sys::acpi::init(rsdp_addr - direct_map_offset);
