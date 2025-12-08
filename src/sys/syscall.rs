@@ -844,7 +844,6 @@ unsafe extern "C" fn syscall_inner(stack_frame: process::GeneralPurposeRegisters
 
     process.set_state(process::TaskState::AsyncSyscall {
 	future: Arc::new(Mutex::new(fut)),
-	waker: None,
     });
 
     scheduler::schedule_next();

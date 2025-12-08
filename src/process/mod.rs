@@ -9,7 +9,6 @@ use alloc::collections::BTreeMap;
 use alloc::boxed::Box;
 use core::pin::Pin;
 use core::future::Future;
-use core::task::Waker;
 
 use crate::memory;
 use crate::sys::vfs;
@@ -24,6 +23,8 @@ const AT_PHENT: u64 = 4;
 const AT_PHNUM: u64 = 5;
 const AT_BASE: u64 = 7;
 const AT_ENTRY: u64 = 9;
+
+pub type SyscallFuture = Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + 'static>>;
 
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug)]
@@ -66,8 +67,10 @@ pub enum TaskState {
     Setup,
     Running,
     AsyncSyscall {
-	future: Arc<Mutex<Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + 'static>>>>,
-	waker: Option<Waker>,
+	future: Arc<Mutex<SyscallFuture>>,
+    },
+    Waiting {
+	future: Arc<Mutex<SyscallFuture>>,
     },
 }
 

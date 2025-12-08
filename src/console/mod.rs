@@ -8,13 +8,13 @@ use spin::{Once, RwLock};
 use bytes::{Bytes, BytesMut, BufMut};
 use core::cmp;
 use core::ffi::{c_int, c_uint};
-use core::future::Future;
-use core::pin::Pin;
 use core::task::Context;
 use core::task::Poll;
 use alloc::boxed::Box;
 use futures_util::future::BoxFuture;
 use x86_64::VirtAddr;
+use core::task::Waker;
+use core::future::poll_fn;
 
 use crate::sys::ioctl;
 use crate::sys::syscall;
@@ -44,6 +44,8 @@ pub struct ConsoleDevice {
     // Local flags
     canonical: RwLock<bool>,
     pub local_loopback: RwLock<bool>,
+
+    read_waker: RwLock<Option<Waker>>,
 }
 unsafe impl Send for ConsoleDevice { }
 unsafe impl Sync for ConsoleDevice { }
@@ -60,62 +62,60 @@ impl ConsoleDevice {
 	    let printk = crate::PRINTK.get().expect("Unable to get printk");
 	    printk.write_char(k);
 	}
+
+	let mut read_waker = self.read_waker.write();
+	if let Some(waker) = read_waker.take() {
+	    waker.wake();
+	    *read_waker = None;
+	}
     }
 }
 
 impl driver::Device for ConsoleDevice {
     fn read(self: Arc<Self>, _offset: u64, size: u64) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
-	struct Wait {
-	    size: u64
-	}
+	Box::pin(poll_fn(move |cx: &mut Context<'_>| {
+	    let mut key_buffer = self.key_buffer.write();
+	    let canonical = self.canonical.read();
 
-	impl Future for Wait {
-	    type Output = Result<Bytes, syscall::CanonicalError>;
+	    let mut return_buf = if *canonical {
+		// Check for a complete line (canonical mode)
+		if let Some(pos) = (*key_buffer).iter().position(|&b| b == b'\r') {
+		    // Include the newline character
+		    let line_len = pos + 1;
+		    let to_read = cmp::min(line_len, size as usize);
 
-	    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-		let console = CONSOLE.get().unwrap();
-		let mut key_buffer = console.key_buffer.write();
-
-		let canonical = console.canonical.read();
-
-		let mut return_buf = if *canonical {
-		    // Check for a complete line (canonical mode)
-		    if let Some(pos) = (*key_buffer).iter().position(|&b| b == b'\r') {
-			// Include the newline character
-			let line_len = pos + 1;
-			let to_read = cmp::min(line_len, self.size as usize);
-
-			(*key_buffer).split_to(to_read)
-		    } else {
-			return Poll::Pending;
-		    }
+		    (*key_buffer).split_to(to_read)
 		} else {
-		    // TODO - this should handle VMIN, and doesn't yet - right now, VMIN is assumed as 1
-		    let l = (*key_buffer).len();
-		    if l > 0 {
-			(*key_buffer).split_to(l)
-		    } else {
-			return Poll::Pending;
+		    let mut read_waker = self.read_waker.write();
+		    *read_waker = Some(cx.waker().clone());
+		    return Poll::Pending;
+		}
+	    } else {
+		// TODO - this should handle VMIN, and doesn't yet - right now, VMIN is assumed as 1
+		let l = (*key_buffer).len();
+		if l > 0 {
+		    (*key_buffer).split_to(l)
+		} else {
+		    let mut read_waker = self.read_waker.write();
+		    *read_waker = Some(cx.waker().clone());
+		    return Poll::Pending;
+		}
+	    };
+
+	    let crnl = self.crnl.read();
+	    let nlcr = self.nlcr.read();
+
+	    return_buf.iter_mut()
+		.for_each(|c| {
+		    if *c == b'\r' && *crnl {
+			*c = b'\n';
+		    } else if *c == b'\n' && *nlcr {
+			*c = b'\r'
 		    }
-		};
+		});
 
-		let crnl = console.crnl.read();
-		let nlcr = console.nlcr.read();
-
-		return_buf.iter_mut()
-		    .for_each(|c| {
-			if *c == b'\r' && *crnl {
-			    *c = b'\n';
-			} else if *c == b'\n' && *nlcr {
-			    *c = b'\r'
-			}
-		    });
-
-		Poll::Ready(Ok(return_buf.freeze()))
-	    }
-	}
-
-	Box::pin(Wait { size })
+	    Poll::Ready(Ok(return_buf.freeze()))
+	}))
     }
 
     fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()> {
@@ -177,50 +177,40 @@ impl driver::Device for ConsoleDevice {
     }
 
     fn poll(self: Arc<Self>, events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
-	struct Wait {
-	    events: syscall::PollEvents
-	}
+	Box::pin(poll_fn(move |cx: &mut Context<'_>| {
+	    let mut revents = syscall::PollEvents::empty();
 
-	impl Future for Wait {
-	    type Output = syscall::PollEvents;
+	    // We can always write
+	    if events.contains(syscall::PollEvents::Out) {
+                revents |= syscall::PollEvents::Out;
+	    }
 
-	    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-		let mut revents = syscall::PollEvents::empty();
+	    if events.contains(syscall::PollEvents::In) {
+		let key_buffer = self.key_buffer.read();
+		let canonical = self.canonical.read();
 
-		// We can always write
-		if self.events.contains(syscall::PollEvents::Out) {
-                    revents |= syscall::PollEvents::Out;
-		}
-
-		if self.events.contains(syscall::PollEvents::In) {
-		    let console = CONSOLE.get().unwrap();
-		    let key_buffer = console.key_buffer.read();
-
-		    let canonical = console.canonical.read();
-
-		    if *canonical {
-			// Check for a complete line (canonical mode)
-			if let Some(_pos) = (*key_buffer).iter().position(|&b| b == b'\r') {
-			    revents |= syscall::PollEvents::In;
-			}
-		    } else {
-			// TODO - this should handle VMIN, and doesn't yet - right now, VMIN is assumed as 1
-			let l = (*key_buffer).len();
-			if l > 0 {
-			    revents |= syscall::PollEvents::In;
-			}
-		    };
-		}
-
+		if *canonical {
+		    // Check for a complete line (canonical mode)
+		    if let Some(_pos) = (*key_buffer).iter().position(|&b| b == b'\r') {
+			revents |= syscall::PollEvents::In;
+		    }
+		} else {
+		    // TODO - this should handle VMIN, and doesn't yet - right now, VMIN is assumed as 1
+		    let l = (*key_buffer).len();
+		    if l > 0 {
+			revents |= syscall::PollEvents::In;
+		    }
+		};
+		
 		if revents.is_empty() {
+		    let mut read_waker = self.read_waker.write();
+		    *read_waker = Some(cx.waker().clone());
 		    return Poll::Pending;
 		}
-
-		Poll::Ready(revents)
 	    }
-	}
 
-	Box::pin(Wait { events })
+	    Poll::Ready(revents)
+	}))
     }
 }
 
@@ -234,6 +224,7 @@ pub fn init() {
 	canonical: RwLock::new(true),
 	crnl: RwLock::new(false),
 	nlcr: RwLock::new(false),
+	read_waker: RwLock::new(None),
     });
     CONSOLE.call_once(|| device.clone());
     let devid = driver::register_device(device);

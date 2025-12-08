@@ -227,7 +227,6 @@ fn kthread_init_block_devices() -> ! {
     let process = scheduler::get_current_process();
     process.set_state(process::TaskState::AsyncSyscall {
 	future: Arc::new(Mutex::new(Box::pin(fut))),
-	waker: None,
     });
 
     unsafe {

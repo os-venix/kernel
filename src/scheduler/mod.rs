@@ -3,9 +3,6 @@ use alloc::vec::Vec;
 use spin::{Once, RwLock, Mutex};
 use alloc::collections::BTreeMap;
 use alloc::boxed::Box;
-use core::pin::Pin;
-use core::future::Future;
-use core::task::Waker;
 
 use crate::drivers::hpet;
 use crate::sys::syscall;
@@ -13,6 +10,7 @@ use crate::process;
 
 pub mod elf_loader;
 pub mod signal;
+mod process_waker;
 
 pub static PROCESS_TABLE: Once<RwLock<BTreeMap<u64, Arc<process::Process>>>> = Once::new();
 pub static RUNNING_PROCESS: Once<RwLock<Option<u64>>> = Once::new();
@@ -63,6 +61,12 @@ pub fn get_current_pid() -> u64 {
 	.expect("RUNNING_PROCESS not initialized")
 	.read();
     running_process.expect("Couldn't find running PID")
+}
+
+pub fn get_process_by_id(id: u64) -> Option<Arc<process::Process>> {
+    let process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").read();
+
+    process_tbl.get(&id).cloned()
 }
 
 pub fn get_current_process() -> Arc<process::Process> {
@@ -123,10 +127,8 @@ pub fn exit(exit_code: u64) -> ! {
     schedule_next();
 }
 
-type SyscallFuture = Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + 'static>>;
-
-fn get_futures_to_poll() -> BTreeMap<u64, (Arc<Mutex<SyscallFuture>>, Option<Waker>)> {
-    let mut r: BTreeMap<u64, (Arc<Mutex<SyscallFuture>>, Option<Waker>)> = BTreeMap::new();
+fn get_futures_to_poll() -> BTreeMap<u64, Arc<Mutex<process::SyscallFuture>>> {
+    let mut r: BTreeMap<u64, Arc<Mutex<process::SyscallFuture>>> = BTreeMap::new();
     let mut process_tbl = PROCESS_TABLE
 	.get()
 	.expect("PROCESS_TABLE not initialized")
@@ -136,15 +138,16 @@ fn get_futures_to_poll() -> BTreeMap<u64, (Arc<Mutex<SyscallFuture>>, Option<Wak
 	match &mut process.get_state() {
 	    process::TaskState::Setup => {},
 	    process::TaskState::Running => {},
-	    process::TaskState::AsyncSyscall { future, waker } => {
-		let dummy: Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + 'static>> = Box::pin(async {		
+	    process::TaskState::Waiting { future: _ } => {},
+	    process::TaskState::AsyncSyscall { future } => {
+		let dummy: process::SyscallFuture = Box::pin(async {
 		    syscall::SyscallResult {
 			return_value: 0,
 			err_num: syscall::CanonicalError::Ok as u64,
 		    }
 		});
 		let future_taken = core::mem::replace(future, Arc::new(Mutex::new(dummy)));
-		r.insert(*pid, (future_taken, waker.take()));
+		r.insert(*pid, future_taken);
 	    }
 	}
     }
@@ -152,21 +155,10 @@ fn get_futures_to_poll() -> BTreeMap<u64, (Arc<Mutex<SyscallFuture>>, Option<Wak
     r
 }
 
-fn poll_process_future(pid: u64, future: Arc<Mutex<Pin<Box<dyn Future<Output = syscall::SyscallResult> + Send + 'static>>>>, waker: Option<Waker>) {
-    use core::task::{RawWaker, RawWakerVTable, Context};
+fn poll_process_future(pid: u64, future: Arc<Mutex<process::SyscallFuture>>) {
+    use core::task::Context;
 
-    fn dummy_raw_waker() -> RawWaker {
-        fn clone(_: *const ()) -> RawWaker { dummy_raw_waker() }
-        fn wake(_: *const ()) {}
-        fn wake_by_ref(_: *const ()) {}
-        fn drop(_: *const ()) {}
-
-        RawWaker::new(core::ptr::null(), &RawWakerVTable::new(clone, wake, wake_by_ref, drop))
-    }
-
-    let waker = waker
-        .unwrap_or_else(|| unsafe { Waker::from_raw(dummy_raw_waker()) });
-
+    let waker = process_waker::ProcessWaker::new(pid);
     let mut ctx = Context::from_waker(&waker);
 
     {
@@ -191,9 +183,8 @@ fn poll_process_future(pid: u64, future: Arc<Mutex<Pin<Box<dyn Future<Output = s
 		.expect("PROCESS_TABLE not initialized")
 		.write();
 	    let process = process_tbl.get_mut(&pid).unwrap();
-	    process.clone().set_state(process::TaskState::AsyncSyscall {
+	    process.clone().set_state(process::TaskState::Waiting {
                 future,
-                waker: Some(waker),
             });
 	}
     }
@@ -236,7 +227,6 @@ fn next_task() -> process::ProcessContext {
 	}
 
 	match &mut process.get_state() {
-	    process::TaskState::Setup => {},
             process::TaskState::Running => {
 		*running_process = Some(*pid);
 
@@ -250,7 +240,7 @@ fn next_task() -> process::ProcessContext {
 
 		return process.get_context();
             }
-            process::TaskState::AsyncSyscall { future: _, waker: _ } => { },
+	    _ => { },
 	}
     }
 
@@ -322,10 +312,8 @@ fn context_switch(context: &process::ProcessContext) -> ! {
 pub fn schedule_next() -> ! {
     let futures = get_futures_to_poll();
 
-    for (pid, f) in futures {
-	let future = f.0;
-	let waker = f.1;
-	poll_process_future(pid, future, waker);
+    for (pid, future) in futures {
+	poll_process_future(pid, future);
     }
 
     let context = next_task();
