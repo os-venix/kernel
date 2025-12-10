@@ -10,9 +10,10 @@ pub struct ProcessWaker {
 }
 
 impl ProcessWaker {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(task_id: u64) -> Waker {
 	Waker::from(Arc::new(Self {
-	    task_id: task_id,
+	    task_id,
 	}))
     }
 }

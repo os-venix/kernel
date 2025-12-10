@@ -226,22 +226,19 @@ fn next_task() -> process::ProcessContext {
 	    continue;
 	}
 
-	match &mut process.get_state() {
-            process::TaskState::Running => {
-		*running_process = Some(*pid);
+	if let process::TaskState::Running = process.get_state() {
+	    *running_process = Some(*pid);
 
-		// Switch to address space
-		let mut task_type = process.task_type.write();
-		if let process::TaskType::User(ref mut address_space) = *task_type {
-		    unsafe {
-			address_space.switch_to();
-		    }
+	    // Switch to address space
+	    let mut task_type = process.task_type.write();
+	    if let process::TaskType::User(ref mut address_space) = *task_type {
+		unsafe {
+		    address_space.switch_to();
 		}
+	    }
 
-		return process.get_context();
-            }
-	    _ => { },
-	}
+	    return process.get_context();
+        }
     }
 
     *running_process = Some(0);
