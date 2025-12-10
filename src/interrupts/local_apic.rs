@@ -1,11 +1,9 @@
-use ::acpi::InterruptModel;
 use x86_64::registers::model_specific::Msr;
 use raw_cpuid::CpuId;
 use pic8259::ChainedPics;
 use spin::RwLock;
 
 use crate::interrupts::IRQ_BASE;
-use crate::sys::acpi;
 
 const PIC_2_OFFSET: u8 = IRQ_BASE + 8;
 
@@ -35,25 +33,7 @@ pub fn init_bsp_local_apic() -> u64 {
     if !features.has_x2apic() {
 	panic!("System APIC does not support X2 mode. CPU not supported.");
     }
-
-    {
-	let acpi = acpi::ACPI.get().expect("Attempted to access ACPI tables before ACPI is initialised").read();
-	let platform_info = match acpi.platform_info() {
-	    Ok(pi) => pi,
-	    Err(e) => panic!("{:#?}", e),
-	};
-
-	let interrupt_model = match platform_info.interrupt_model {
-	    InterruptModel::Unknown => panic!("ACPI reports no APIC presence. CPU not supported."),
-	    InterruptModel::Apic(a) => a,
-	    _ => panic!("Unrecognised interrupt model."),
-	};
-
-	if interrupt_model.also_has_legacy_pics {
-	    log::info!("Legacy PIC is present. Remapping.");
-	    remap_pics();
-	}
-    }
+    remap_pics();
 
     // Get the base address of the APIC
     let mut ia32_apic_base_msr = Msr::new(IA32_APIC_BASE_MSR);

@@ -1,16 +1,21 @@
+#![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
+#![allow(non_snake_case)]
+#![allow(dead_code)]
+
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::{c_char, c_void, CStr};
+use core::fmt;
+use core::fmt::Display;
 use pci_types::{ConfigRegionAccess, PciAddress};
 use spin;
 use spin::Once;
 use x86_64::PhysAddr;
 use x86_64::instructions::port::Port;
 use x86_64::registers::rflags;
-use core::fmt;
-use core::fmt::Display;
 
 use crate::sys::acpi::acpi_lock::{Mutex, Semaphore};
 use crate::drivers::pcie;
@@ -18,88 +23,65 @@ use crate::memory;
 use crate::interrupts;
 use crate::allocator;
 
-#[repr(C)]
-#[derive(PartialEq, Eq, Debug)]
-#[allow(dead_code)]
-pub enum UacpiStatus {
-    Ok = 0,
-    MappingFailed = 1,
-    OutOfMemory = 2,
-    BadChecksum = 3,
-    InvalidSignature = 4,
-    InvalidTableLength = 5,
-    NotFound = 6,
-    InvalidArgument = 7,
-    Unimplemented = 8,
-    AlreadyExists = 9,
-    InternalError = 10,
-    TypeMismatch = 11,
-    InitLevelMismatch = 12,
-    NamespaceNodeDangling = 13,
-    NoHandler = 14,
-    NoResourceEndTag = 15,
-    CompiledOut = 16,
-    HardwareTimeout = 17,
-    Timeout = 18,
-    Overridden = 19,
-    Denied = 20,
+include!(concat!(env!("OUT_DIR"), "/uacpi_bindings.rs"));
 
-    // all ERRORS THAT HAVE BYTECODE-RELATED ORIGIN SHOULD GO HERE
-    AmlUndefinedReference = 0x0eff_0000,
-    AmlInvalidNamestring = 0x0eff_0001,
-    AmlObjectAlreadyExists = 0x0eff_0002,
-    AmlInvalidOpcode = 0x0eff_0003,
-    AmlIncompatibleObjectType = 0x0eff_0004,
-    AmlBadEncoding = 0x0eff_0005,
-    AmlOutOfBoundsIndex = 0x0eff_0006,
-    AmlSyncLevelTooHigh = 0x0eff_0007,
-    AmlInvalidResource = 0x0eff_0008,
-    AmlLoopTimeout = 0x0eff_0009,
-    AmlCallStackDepthLimit = 0x0eff_000a,
+impl core::convert::TryFrom<u32> for uacpi_resource_type {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        use uacpi_resource_type::*;
+
+        Ok(match value {
+            x if x == UACPI_RESOURCE_TYPE_IRQ as u32 => UACPI_RESOURCE_TYPE_IRQ,
+            x if x == UACPI_RESOURCE_TYPE_EXTENDED_IRQ as u32 => UACPI_RESOURCE_TYPE_EXTENDED_IRQ,
+            x if x == UACPI_RESOURCE_TYPE_DMA as u32 => UACPI_RESOURCE_TYPE_DMA,
+            x if x == UACPI_RESOURCE_TYPE_FIXED_DMA as u32 => UACPI_RESOURCE_TYPE_FIXED_DMA,
+            x if x == UACPI_RESOURCE_TYPE_IO as u32 => UACPI_RESOURCE_TYPE_IO,
+            x if x == UACPI_RESOURCE_TYPE_FIXED_IO as u32 => UACPI_RESOURCE_TYPE_FIXED_IO,
+            x if x == UACPI_RESOURCE_TYPE_ADDRESS16 as u32 => UACPI_RESOURCE_TYPE_ADDRESS16,
+            x if x == UACPI_RESOURCE_TYPE_ADDRESS32 as u32 => UACPI_RESOURCE_TYPE_ADDRESS32,
+            x if x == UACPI_RESOURCE_TYPE_ADDRESS64 as u32 => UACPI_RESOURCE_TYPE_ADDRESS64,
+            x if x == UACPI_RESOURCE_TYPE_ADDRESS64_EXTENDED as u32 =>
+                UACPI_RESOURCE_TYPE_ADDRESS64_EXTENDED,
+            x if x == UACPI_RESOURCE_TYPE_MEMORY24 as u32 => UACPI_RESOURCE_TYPE_MEMORY24,
+            x if x == UACPI_RESOURCE_TYPE_MEMORY32 as u32 => UACPI_RESOURCE_TYPE_MEMORY32,
+            x if x == UACPI_RESOURCE_TYPE_FIXED_MEMORY32 as u32 => UACPI_RESOURCE_TYPE_FIXED_MEMORY32,
+            x if x == UACPI_RESOURCE_TYPE_START_DEPENDENT as u32 => UACPI_RESOURCE_TYPE_START_DEPENDENT,
+            x if x == UACPI_RESOURCE_TYPE_END_DEPENDENT as u32 => UACPI_RESOURCE_TYPE_END_DEPENDENT,
+            x if x == UACPI_RESOURCE_TYPE_VENDOR_SMALL as u32 => UACPI_RESOURCE_TYPE_VENDOR_SMALL,
+            x if x == UACPI_RESOURCE_TYPE_VENDOR_LARGE as u32 => UACPI_RESOURCE_TYPE_VENDOR_LARGE,
+            x if x == UACPI_RESOURCE_TYPE_GENERIC_REGISTER as u32 => UACPI_RESOURCE_TYPE_GENERIC_REGISTER,
+            x if x == UACPI_RESOURCE_TYPE_GPIO_CONNECTION as u32 => UACPI_RESOURCE_TYPE_GPIO_CONNECTION,
+            x if x == UACPI_RESOURCE_TYPE_SERIAL_I2C_CONNECTION as u32 =>
+                UACPI_RESOURCE_TYPE_SERIAL_I2C_CONNECTION,
+            x if x == UACPI_RESOURCE_TYPE_SERIAL_SPI_CONNECTION as u32 =>
+                UACPI_RESOURCE_TYPE_SERIAL_SPI_CONNECTION,
+            x if x == UACPI_RESOURCE_TYPE_SERIAL_UART_CONNECTION as u32 =>
+                UACPI_RESOURCE_TYPE_SERIAL_UART_CONNECTION,
+            x if x == UACPI_RESOURCE_TYPE_SERIAL_CSI2_CONNECTION as u32 =>
+                UACPI_RESOURCE_TYPE_SERIAL_CSI2_CONNECTION,
+            x if x == UACPI_RESOURCE_TYPE_PIN_FUNCTION as u32 => UACPI_RESOURCE_TYPE_PIN_FUNCTION,
+            x if x == UACPI_RESOURCE_TYPE_PIN_CONFIGURATION as u32 =>
+                UACPI_RESOURCE_TYPE_PIN_CONFIGURATION,
+            x if x == UACPI_RESOURCE_TYPE_PIN_GROUP as u32 => UACPI_RESOURCE_TYPE_PIN_GROUP,
+            x if x == UACPI_RESOURCE_TYPE_PIN_GROUP_FUNCTION as u32 =>
+                UACPI_RESOURCE_TYPE_PIN_GROUP_FUNCTION,
+            x if x == UACPI_RESOURCE_TYPE_PIN_GROUP_CONFIGURATION as u32 =>
+                UACPI_RESOURCE_TYPE_PIN_GROUP_CONFIGURATION,
+            x if x == UACPI_RESOURCE_TYPE_CLOCK_INPUT as u32 => UACPI_RESOURCE_TYPE_CLOCK_INPUT,
+            x if x == UACPI_RESOURCE_TYPE_END_TAG as u32 => UACPI_RESOURCE_TYPE_END_TAG,
+            _ => return Err(()),
+        })
+    }
 }
 
-#[repr(C)]
-#[allow(dead_code)]
-pub enum UacpiIterationDecision {    
-    Continue,
-    Break,
-    NextPeer,
-}
-
-#[repr(C)]
-#[allow(dead_code)]
-enum UacpiInitLevel {
-    Early,
-    SubsystemInitialized,
-    NamespaceLoaded,
-    NamespaceInitialized,
-}
-
-#[repr(C)]
-#[allow(dead_code)]
-enum UacpiLogLevel {
-    Error = 1,
-    Warn,
-    Info,
-    Trace,
-    Debug,
-}
-
-#[repr(C)]
-#[allow(dead_code)]
-pub enum InterruptModel {
-    Pic,
-    IoApic,
-    IosApic,
-}
-
-#[repr(C)]
-#[allow(dead_code)]
-struct UacpiPciAddress {
-    segment: u16,
-    bus: u8,
-    device: u8,
-    function: u8,
+impl Display for uacpi_id_string {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // SAFETY: `self.contents` must be a valid NUL-terminated C string.
+        let cstr = unsafe { CStr::from_ptr(self.value) };
+        let s = String::from_utf8_lossy(cstr.to_bytes());
+        f.write_str(&s)
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -109,71 +91,13 @@ struct PortRange {
     pub length: u16,
 }
 
-#[repr(C)]
-#[derive(Eq, PartialEq, Copy, Clone)]
-#[allow(dead_code)]
-pub struct Namespace(pub u64);
-
-#[repr(C)]
-#[allow(dead_code)]
-pub enum UacpiObjectType {
-    Uninitialized,
-    Integer,
-    String,
-    Buffer,
-    Package,
-    FieldUnit,
-    Device,
-    Event,
-    Method,
-    Mutex,
-    OperationRegion,
-    PowerResource,
-    Processor,
-    ThermalZone,
-    BufferField,
-    Debug,
-
-    Reference = 20,
-    BufferIndex,
-}
-
-#[repr(C)]
-#[allow(dead_code)]
-pub struct UacpiIdString {
-    size: u32,
-    contents: *const c_char,
-}
-
-impl Display for UacpiIdString {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // SAFETY: `self.contents` must be a valid NUL-terminated C string.
-        let cstr = unsafe { CStr::from_ptr(self.contents) };
-        let s = String::from_utf8_lossy(cstr.to_bytes());
-        f.write_str(&s)
-    }
-}
-
-#[repr(C)]
-#[allow(dead_code)]
-pub struct UacpiObject {
-    dummy: u8,
-}
-
-#[repr(C)]
-#[allow(dead_code)]
-pub struct UacpiObjectArray {
-    objects: *mut *mut UacpiObject,
-    count: usize,
-}
-
 static RDSP_PHYS_PTR: Once<u64> = Once::new();
 static ACPI_ALLOCS: Once<spin::Mutex<BTreeMap<usize, usize>>> = Once::new();
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_initialize(_uacpi_init_level: UacpiInitLevel) -> UacpiStatus {
-    UacpiStatus::Ok
+extern "C" fn uacpi_kernel_initialize(_uacpi_init_level: uacpi_init_level) -> uacpi_status {
+    uacpi_status::UACPI_STATUS_OK
 }
 
 #[no_mangle]
@@ -182,13 +106,13 @@ extern "C" fn uacpi_kernel_deinitialize() { }
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_pci_device_open(address: UacpiPciAddress, handle: *mut *mut PciAddress) -> UacpiStatus {
+extern "C" fn uacpi_kernel_pci_device_open(address: uacpi_pci_address, handle: *mut *mut PciAddress) -> uacpi_status {
     let address = Box::new(PciAddress::new(address.segment, address.bus, address.device, address.function));
     unsafe {
 	*handle = Box::into_raw(address);
     }
 
-    UacpiStatus::Ok
+    uacpi_status::UACPI_STATUS_OK
 }
 #[no_mangle]
 #[allow(dead_code)]
@@ -198,11 +122,11 @@ extern "C" fn uacpi_kernel_pci_device_close(handle: *mut PciAddress) {
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_pci_read8(address: *mut PciAddress, offset: usize, out: *mut u8) -> UacpiStatus {
+extern "C" fn uacpi_kernel_pci_read8(address: *mut PciAddress, offset: usize, out: *mut u8) -> uacpi_status {
     let pci_address = if let Some(r) = unsafe { address.as_ref() } {
 	r
     } else {
-	return UacpiStatus::InvalidArgument;
+	return uacpi_status::UACPI_STATUS_INVALID_ARGUMENT;
     };
 
     let pci_access = pcie::PCI_ACCESS.get().unwrap().lock();
@@ -212,15 +136,15 @@ extern "C" fn uacpi_kernel_pci_read8(address: *mut PciAddress, offset: usize, ou
 	*out = val as u8;
     }
 
-    UacpiStatus::Ok
+    uacpi_status::UACPI_STATUS_OK
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_pci_read16(address: *mut PciAddress, offset: usize, out: *mut u16) -> UacpiStatus {
+extern "C" fn uacpi_kernel_pci_read16(address: *mut PciAddress, offset: usize, out: *mut u16) -> uacpi_status {
     let pci_address = if let Some(r) = unsafe { address.as_ref() } {
 	r
     } else {
-	return UacpiStatus::InvalidArgument;
+	return uacpi_status::UACPI_STATUS_INVALID_ARGUMENT;
     };
 
     let pci_access = pcie::PCI_ACCESS.get().unwrap().lock();
@@ -230,15 +154,15 @@ extern "C" fn uacpi_kernel_pci_read16(address: *mut PciAddress, offset: usize, o
 	*out = val as u16;
     }
 
-    UacpiStatus::Ok
+    uacpi_status::UACPI_STATUS_OK
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_pci_read32(address: *mut PciAddress, offset: usize, out: *mut u32) -> UacpiStatus {
+extern "C" fn uacpi_kernel_pci_read32(address: *mut PciAddress, offset: usize, out: *mut u32) -> uacpi_status {
     let pci_address = if let Some(r) = unsafe { address.as_ref() } {
 	r
     } else {
-	return UacpiStatus::InvalidArgument;
+	return uacpi_status::UACPI_STATUS_INVALID_ARGUMENT;
     };
 
     let pci_access = pcie::PCI_ACCESS.get().unwrap().lock();
@@ -248,30 +172,30 @@ extern "C" fn uacpi_kernel_pci_read32(address: *mut PciAddress, offset: usize, o
 	*out = val;
     }
 
-    UacpiStatus::Ok
+    uacpi_status::UACPI_STATUS_OK
 }
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_pci_write8(_handle: *const c_void, _offset: usize, _out: u8) -> UacpiStatus {
+extern "C" fn uacpi_kernel_pci_write8(_handle: *const c_void, _offset: usize, _out: u8) -> uacpi_status {
     unimplemented!()
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_pci_write16(_handle: *const c_void, _offset: usize, _out: u16) -> UacpiStatus {
+extern "C" fn uacpi_kernel_pci_write16(_handle: *const c_void, _offset: usize, _out: u16) -> uacpi_status {
     unimplemented!()
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_pci_write32(_handle: *const c_void, _offset: usize, _out: u32) -> UacpiStatus {
+extern "C" fn uacpi_kernel_pci_write32(_handle: *const c_void, _offset: usize, _out: u32) -> uacpi_status {
     unimplemented!()
 }
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_io_map(base: u64, len: usize, handle: *mut *mut PortRange) -> UacpiStatus {
+extern "C" fn uacpi_kernel_io_map(base: u64, len: usize, handle: *mut *mut PortRange) -> uacpi_status {
     if base + len as u64 > 0xFFFF {
-	return UacpiStatus::InvalidArgument;
+	return uacpi_status::UACPI_STATUS_INVALID_ARGUMENT;
     }
 
     let port_range = Box::new(PortRange {
@@ -283,7 +207,7 @@ extern "C" fn uacpi_kernel_io_map(base: u64, len: usize, handle: *mut *mut PortR
 	*handle = Box::into_raw(port_range);
     }
 
-    UacpiStatus::Ok
+    uacpi_status::UACPI_STATUS_OK
 }
 #[no_mangle]
 #[allow(dead_code)]
@@ -293,100 +217,100 @@ extern "C" fn uacpi_kernel_io_unmap(handle: *mut PortRange) {
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_io_read8(port_range: *const PortRange, offset: usize, out: *mut u8) -> UacpiStatus {
+extern "C" fn uacpi_kernel_io_read8(port_range: *const PortRange, offset: usize, out: *mut u8) -> uacpi_status {
     let port_range_ref = if let Some(r) = unsafe { port_range.as_ref() } {
 	r
     } else {
-	return UacpiStatus::InvalidArgument;
+	return uacpi_status::UACPI_STATUS_INVALID_ARGUMENT;
     };
 
     if port_range_ref.length <= offset as u16 {
-	return UacpiStatus::InvalidArgument;
+	return uacpi_status::UACPI_STATUS_INVALID_ARGUMENT;
     }
     let mut port = Port::<u8>::new(port_range_ref.base + offset as u16);
     unsafe { *out = port.read(); }
-    UacpiStatus::Ok
+    uacpi_status::UACPI_STATUS_OK
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_io_read16(port_range: *const PortRange, offset: usize, out: *mut u16) -> UacpiStatus {
+extern "C" fn uacpi_kernel_io_read16(port_range: *const PortRange, offset: usize, out: *mut u16) -> uacpi_status {
     let port_range_ref = if let Some(r) = unsafe { port_range.as_ref() } {
 	r
     } else {
-	return UacpiStatus::InvalidArgument;
+	return uacpi_status::UACPI_STATUS_INVALID_ARGUMENT;
     };
 
     if port_range_ref.length <= offset as u16 {
-	return UacpiStatus::InvalidArgument;
+	return uacpi_status::UACPI_STATUS_INVALID_ARGUMENT;
     }
     let mut port = Port::<u16>::new(port_range_ref.base + offset as u16);
     unsafe { *out = port.read(); }
-    UacpiStatus::Ok
+    uacpi_status::UACPI_STATUS_OK
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_io_read32(port_range: *const PortRange, offset: usize, out: *mut u32) -> UacpiStatus {
+extern "C" fn uacpi_kernel_io_read32(port_range: *const PortRange, offset: usize, out: *mut u32) -> uacpi_status {
     let port_range_ref = if let Some(r) = unsafe { port_range.as_ref() } {
 	r
     } else {
-	return UacpiStatus::InvalidArgument;
+	return uacpi_status::UACPI_STATUS_INVALID_ARGUMENT;
     };
 
     if port_range_ref.length <= offset as u16 {
-	return UacpiStatus::InvalidArgument;
+	return uacpi_status::UACPI_STATUS_INVALID_ARGUMENT;
     }
     let mut port = Port::<u32>::new(port_range_ref.base + offset as u16);
     unsafe { *out = port.read(); }
-    UacpiStatus::Ok
+    uacpi_status::UACPI_STATUS_OK
 }
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_io_write8(port_range: *const PortRange, offset: usize, out: u8) -> UacpiStatus {
+extern "C" fn uacpi_kernel_io_write8(port_range: *const PortRange, offset: usize, out: u8) -> uacpi_status {
     let port_range_ref = if let Some(r) = unsafe { port_range.as_ref() } {
 	r
     } else {
-	return UacpiStatus::InvalidArgument;
+	return uacpi_status::UACPI_STATUS_INVALID_ARGUMENT;
     };
 
     if port_range_ref.length <= offset as u16 {
-	return UacpiStatus::InvalidArgument;
+	return uacpi_status::UACPI_STATUS_INVALID_ARGUMENT;
     }
     let mut port = Port::<u8>::new(port_range_ref.base + offset as u16);
     unsafe { port.write(out); }
-    UacpiStatus::Ok
+    uacpi_status::UACPI_STATUS_OK
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_io_write16(port_range: *const PortRange, offset: usize, out: u16) -> UacpiStatus {
+extern "C" fn uacpi_kernel_io_write16(port_range: *const PortRange, offset: usize, out: u16) -> uacpi_status {
     let port_range_ref = if let Some(r) = unsafe { port_range.as_ref() } {
 	r
     } else {
-	return UacpiStatus::InvalidArgument;
+	return uacpi_status::UACPI_STATUS_INVALID_ARGUMENT;
     };
 
     if port_range_ref.length <= offset as u16 {
-	return UacpiStatus::InvalidArgument;
+	return uacpi_status::UACPI_STATUS_INVALID_ARGUMENT;
     }
     let mut port = Port::<u16>::new(port_range_ref.base + offset as u16);
     unsafe { port.write(out); }
-    UacpiStatus::Ok
+    uacpi_status::UACPI_STATUS_OK
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_io_write32(port_range: *const PortRange, offset: usize, out: u32) -> UacpiStatus {
+extern "C" fn uacpi_kernel_io_write32(port_range: *const PortRange, offset: usize, out: u32) -> uacpi_status {
     let port_range_ref = if let Some(r) = unsafe { port_range.as_ref() } {
 	r
     } else {
-	return UacpiStatus::InvalidArgument;
+	return uacpi_status::UACPI_STATUS_INVALID_ARGUMENT;
     };
 
     if port_range_ref.length <= offset as u16 {
-	return UacpiStatus::InvalidArgument;
+	return uacpi_status::UACPI_STATUS_INVALID_ARGUMENT;
     }
     let mut port = Port::<u32>::new(port_range_ref.base + offset as u16);
     unsafe { port.write(out); }
-    UacpiStatus::Ok
+    uacpi_status::UACPI_STATUS_OK
 }
 
 #[no_mangle]
@@ -461,9 +385,9 @@ extern "C" fn uacpi_kernel_free_mutex(handle: *mut Mutex) {
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_acquire_mutex(mutex: *mut Mutex, _msec: u16) -> UacpiStatus {
+extern "C" fn uacpi_kernel_acquire_mutex(mutex: *mut Mutex, _msec: u16) -> uacpi_status {
     unsafe { mutex.as_mut().unwrap().lock(); }
-    UacpiStatus::Ok
+    uacpi_status::UACPI_STATUS_OK
 }
 #[no_mangle]
 #[allow(dead_code)]
@@ -508,20 +432,20 @@ extern "C" fn uacpi_kernel_get_thread_id() -> u64 {
 #[no_mangle]
 #[allow(dead_code)]
 // TODO: struct UacpiFirmwareRequest
-extern "C" fn uacpi_kernel_handle_firmware_request(_request: *const c_void) -> UacpiStatus {
+extern "C" fn uacpi_kernel_handle_firmware_request(_request: *const c_void) -> uacpi_status {
     unimplemented!()
 }
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_install_interrupt_handler(irq: u32, handler: unsafe extern "C" fn(u64), ctx: u64, _out_handle: *const c_void) -> UacpiStatus {
+extern "C" fn uacpi_kernel_install_interrupt_handler(irq: u32, handler: unsafe extern "C" fn(u64), ctx: u64, _out_handle: *const c_void) -> uacpi_status {
     let route = interrupts::InterruptRoute::Irq(irq as u8);
     route.register_handler(Box::new(move || unsafe { handler(ctx) }));
-    UacpiStatus::Ok
+    uacpi_status::UACPI_STATUS_OK
 }
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_uninstall_interrupt_handler(_handler: *const c_void, _out_handle: *const c_void) -> UacpiStatus {
+extern "C" fn uacpi_kernel_uninstall_interrupt_handler(_handler: *const c_void, _out_handle: *const c_void) -> uacpi_status {
     unimplemented!()
 }
 
@@ -562,40 +486,29 @@ extern "C" fn uacpi_kernel_wait_for_work_completion() {
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_log(level: UacpiLogLevel, log: *const c_char) {
+extern "C" fn uacpi_kernel_log(level: uacpi_log_level, log: *const c_char) {
     let cstr = unsafe { CStr::from_ptr(log) };
     let rust_string_untrimmed = String::from_utf8_lossy(cstr.to_bytes()).to_string();
     let rust_string = rust_string_untrimmed.trim();
 
     match level {
-	UacpiLogLevel::Error => log::error!("{}", rust_string),
-	UacpiLogLevel::Warn => log::warn!("{}", rust_string),
-	UacpiLogLevel::Info => log::info!("{}", rust_string),
-	UacpiLogLevel::Trace => log::trace!("{}", rust_string),
-	UacpiLogLevel::Debug => log::debug!("{}", rust_string),
+	uacpi_log_level::UACPI_LOG_ERROR => log::error!("{}", rust_string),
+	uacpi_log_level::UACPI_LOG_WARN => log::warn!("{}", rust_string),
+	uacpi_log_level::UACPI_LOG_INFO => log::info!("{}", rust_string),
+	uacpi_log_level::UACPI_LOG_TRACE => log::trace!("{}", rust_string),
+	uacpi_log_level::UACPI_LOG_DEBUG => log::debug!("{}", rust_string),
     }
 }
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_get_rsdp(rdsp_address: *mut u64) -> UacpiStatus {
+pub fn uacpi_kernel_get_rsdp(rdsp_address: *mut uacpi_phys_addr) -> uacpi_status {
     if let Some(addr) = RDSP_PHYS_PTR.get() {
 	unsafe { *rdsp_address = *addr; }
-	UacpiStatus::Ok
+	uacpi_status::UACPI_STATUS_OK
     } else {
-	UacpiStatus::NotFound
+	uacpi_status::UACPI_STATUS_NOT_FOUND
     }
-}
-
-#[allow(dead_code)]
-extern "C" {
-    fn uacpi_initialize(flags: u64) -> UacpiStatus;
-    fn uacpi_namespace_load() -> UacpiStatus;
-    fn uacpi_namespace_initialize() -> UacpiStatus;
-    fn uacpi_finalize_gpe_initialization() -> UacpiStatus;
-
-    fn uacpi_execute(parent_node: u64, path: *const i8, args: *mut UacpiObjectArray) -> UacpiStatus;
-    pub fn uacpi_set_interrupt_model(model: InterruptModel) -> UacpiStatus;
 }
 
 pub fn init(rdsp_addr: u64) {
@@ -603,22 +516,22 @@ pub fn init(rdsp_addr: u64) {
     ACPI_ALLOCS.call_once(|| spin::Mutex::new(BTreeMap::new()));
 
     let status = unsafe { uacpi_initialize(0) };
-    if status != UacpiStatus::Ok {
+    if status != uacpi_status::UACPI_STATUS_OK {
 	panic!("Not okay");
     }
 
     let status = unsafe { uacpi_namespace_load() };
-    if status != UacpiStatus::Ok {
+    if status != uacpi_status::UACPI_STATUS_OK {
 	panic!("Not okay");
     }
 
     let status = unsafe { uacpi_namespace_initialize() };
-    if status != UacpiStatus::Ok {
+    if status != uacpi_status::UACPI_STATUS_OK {
 	panic!("Not okay");
     }
 
     let status = unsafe { uacpi_finalize_gpe_initialization() };
-    if status != UacpiStatus::Ok {
+    if status != uacpi_status::UACPI_STATUS_OK {
 	panic!("Not okay");
     }
 }

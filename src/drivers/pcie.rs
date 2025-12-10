@@ -10,7 +10,7 @@ use alloc::sync::Arc;
 
 use crate::driver;
 use crate::interrupts;
-use crate::sys::acpi::{Namespace, namespace};
+use crate::sys::acpi::{uacpi_namespace_node, namespace};
 use crate::utils::vector_map::VecMap;
 
 #[derive(Eq, PartialEq, Ord, PartialOrd, Debug)]
@@ -113,7 +113,7 @@ unsafe impl Send for PciBus { }
 unsafe impl Sync for PciBus { }
 
 impl PciBus {
-    pub fn new(acpi_namespace: Namespace, segment: u16, bus: u8) -> PciBus {
+    pub fn new(acpi_namespace: *mut uacpi_namespace_node, segment: u16, bus: u8) -> PciBus {
 	let routing_table = namespace::get_pci_routing_table(acpi_namespace).unwrap();
 	PciBus {
 	    routing_table,

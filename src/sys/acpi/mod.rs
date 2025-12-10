@@ -7,7 +7,7 @@ mod tables;
 pub mod resources;
 pub mod namespace;
 
-pub use uacpi::{InterruptModel, Namespace, UacpiIterationDecision, UacpiStatus, UacpiObjectType, UacpiIdString};
+pub use uacpi::{uacpi_status, uacpi_interrupt_model, uacpi_namespace_node};
 pub use tables::ACPI;
 
 pub fn init(rdsp_addr: u64) {
@@ -27,13 +27,13 @@ pub fn eisa_id_to_string(eisa_id: u64) -> String {
     format!("{}{}{}{:02X}{:02X}", c1, c2, c3, (eisa_id & 0x00FF0000) >> 16, (eisa_id & 0xFF000000) >> 24)
 }
 
-pub fn set_interrupt_model(model: InterruptModel) -> Result<(), UacpiStatus> {
+pub fn set_interrupt_model(model: uacpi_interrupt_model) -> Result<(), uacpi_status> {
     let ret = unsafe {
 	uacpi::uacpi_set_interrupt_model(model)
     };
 
     match ret {
-	UacpiStatus::Ok => Ok(()),
+	uacpi_status::UACPI_STATUS_OK => Ok(()),
 	e => Err(e),
     }
 }
