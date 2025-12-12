@@ -195,7 +195,9 @@ pub async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
     // Similarly, there isn't yet a concept of a controlling TTY, so let's not worry about that either for now
     // TODO - support read/write/exec/etc modes
     // TODO - support O_NOCTTY (0x80)
-    if flags & 0xFFFF_FFFF_FFFF_FF78 != 0 {
+    // TODO - support O_TRUNC (0x200)
+    // TODO - support O_NOFOLLOW (0x10)
+    if flags & 0xFFFF_FFFF_FFFF_FD68 != 0 {
 	log::info!("Open flags are 0x{:x} for {}", flags, path);
 	unimplemented!();
     }

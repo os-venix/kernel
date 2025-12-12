@@ -182,20 +182,10 @@ extern "C" fn kmain() -> ! {
 // TODO - this will need to mount the rootfs, as that can no longer happen in the boot context due to async code
 // TODO - anywhere where a syscall will write to user memory, expectations now break; before, we were snooping memory from current PID. That doens't work any more.
 fn init_setup() -> ! {
-    // First, open stdin, stdout, and stderr
-    let console_cstring = CString::new("/dev/console").unwrap();
-    let console_ptr = console_cstring.as_ptr() as u64;
-
-    unsafe {
-	syscall::do_syscall6(0x02, console_ptr, 0, 0, 0, 0, 0);  // Open stdin
-	syscall::do_syscall6(0x02, console_ptr, 0, 0, 0, 0, 0);  // Open stdout
-	syscall::do_syscall6(0x02, console_ptr, 0, 0, 0, 0, 0);  // Open stderr
-    }
-
-    // Second, actually run init
-    let path_cstring = CString::new("/usr/bin/zsh").unwrap();
+    // Run init
+    let path_cstring = CString::new("/usr/bin/init").unwrap();
     let args_strs: Vec<&str> = vec![];
-    let env_strs: Vec<&str> = vec!["PATH=/bin", "USER=root", "LD_SHOW_AUXV=1"];
+    let env_strs: Vec<&str> = vec!["PATH=/bin", "USER=root"];
 
     let args_cstrings: Vec<CString> = args_strs.iter()
         .map(|s| CString::new(*s).unwrap())

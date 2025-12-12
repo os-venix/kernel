@@ -140,9 +140,10 @@ impl Process {
 		let address_space = memory::user_address_space::AddressSpace::new();
 		*task_type = TaskType::User(address_space);
 	    },
-	    // TODO: will this break any file I/O, mmap, etc?
 	    TaskType::User(ref mut address_space) => {
 		address_space.clear_user_space();
+		let address_space = memory::user_address_space::AddressSpace::new();
+		*task_type = TaskType::User(address_space);
 	    },
 	};
 
@@ -218,20 +219,19 @@ impl Process {
 	    *old_sigmask
 	};
 
+	let mut context = {
+	    let old_context = old.context.read();
+	    *old_context
+	};
+	context.gprs.rax = 0;
+
 	Process {
 	    file_descriptors: RwLock::new(file_descriptors.clone()),
 	    args: RwLock::new(args),
 	    envvars: RwLock::new(envvars),
 	    auxvs: RwLock::new(auxvs),
-	    context: RwLock::new(ProcessContext {
-		gprs: GeneralPurposeRegisters::default(),
-		rflags: 0x202,
-		rip,
-		rsp: 0,
-		cs,
-		ss,
-	    }),
-	    state: RwLock::new(TaskState::Setup),
+	    context: RwLock::new(context),
+	    state: RwLock::new(TaskState::Running),
 	    task_type: Arc::new(RwLock::new(task_type)),
 	    cwd: RwLock::new(cwd),
 	    signals: RwLock::new(signals),
