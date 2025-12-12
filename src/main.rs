@@ -154,8 +154,6 @@ fn init() {
 
     let rsdp_addr = RSDP_REQUEST.get_response().expect("Limine did not return RDSP pointer.").address() as u64;
     sys::acpi::init(rsdp_addr - direct_map_offset);
-    interrupts::init_bsp_apic();
-    sys::acpi::init_aml(rsdp_addr - direct_map_offset);
     interrupts::enable_interrupts();
 
     scheduler::init();

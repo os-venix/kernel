@@ -15,6 +15,7 @@ use spin;
 use spin::Once;
 use x86_64::PhysAddr;
 use x86_64::instructions::port::Port;
+use core::convert::TryFrom;
 use x86_64::registers::rflags;
 
 use crate::sys::acpi::acpi_lock::{Mutex, Semaphore};
@@ -25,7 +26,7 @@ use crate::allocator;
 
 include!(concat!(env!("OUT_DIR"), "/uacpi_bindings.rs"));
 
-impl core::convert::TryFrom<u32> for uacpi_resource_type {
+impl TryFrom<u32> for uacpi_resource_type {
     type Error = ();
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
@@ -75,6 +76,77 @@ impl core::convert::TryFrom<u32> for uacpi_resource_type {
     }
 }
 
+impl TryFrom<u8> for acpi_madt_entry_type {
+    type Error = ();
+
+    fn try_from(v: u8) -> Result<Self, Self::Error> {
+        use acpi_madt_entry_type::*;
+
+        match v {
+            x if x == ACPI_MADT_ENTRY_TYPE_LAPIC as u8 => Ok(ACPI_MADT_ENTRY_TYPE_LAPIC),
+            x if x == ACPI_MADT_ENTRY_TYPE_IOAPIC as u8 => Ok(ACPI_MADT_ENTRY_TYPE_IOAPIC),
+            x if x == ACPI_MADT_ENTRY_TYPE_INTERRUPT_SOURCE_OVERRIDE as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_INTERRUPT_SOURCE_OVERRIDE),
+            x if x == ACPI_MADT_ENTRY_TYPE_NMI_SOURCE as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_NMI_SOURCE),
+            x if x == ACPI_MADT_ENTRY_TYPE_LAPIC_NMI as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_LAPIC_NMI),
+            x if x == ACPI_MADT_ENTRY_TYPE_LAPIC_ADDRESS_OVERRIDE as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_LAPIC_ADDRESS_OVERRIDE),
+            x if x == ACPI_MADT_ENTRY_TYPE_IOSAPIC as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_IOSAPIC),
+            x if x == ACPI_MADT_ENTRY_TYPE_LSAPIC as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_LSAPIC),
+            x if x == ACPI_MADT_ENTRY_TYPE_PLATFORM_INTERRUPT_SOURCES as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_PLATFORM_INTERRUPT_SOURCES),
+            x if x == ACPI_MADT_ENTRY_TYPE_LOCAL_X2APIC as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_LOCAL_X2APIC),
+            x if x == ACPI_MADT_ENTRY_TYPE_LOCAL_X2APIC_NMI as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_LOCAL_X2APIC_NMI),
+            x if x == ACPI_MADT_ENTRY_TYPE_GICC as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_GICC),
+            x if x == ACPI_MADT_ENTRY_TYPE_GICD as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_GICD),
+            x if x == ACPI_MADT_ENTRY_TYPE_GIC_MSI_FRAME as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_GIC_MSI_FRAME),
+            x if x == ACPI_MADT_ENTRY_TYPE_GICR as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_GICR),
+            x if x == ACPI_MADT_ENTRY_TYPE_GIC_ITS as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_GIC_ITS),
+            x if x == ACPI_MADT_ENTRY_TYPE_MULTIPROCESSOR_WAKEUP as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_MULTIPROCESSOR_WAKEUP),
+            x if x == ACPI_MADT_ENTRY_TYPE_CORE_PIC as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_CORE_PIC),
+            x if x == ACPI_MADT_ENTRY_TYPE_LIO_PIC as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_LIO_PIC),
+            x if x == ACPI_MADT_ENTRY_TYPE_HT_PIC as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_HT_PIC),
+            x if x == ACPI_MADT_ENTRY_TYPE_EIO_PIC as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_EIO_PIC),
+            x if x == ACPI_MADT_ENTRY_TYPE_MSI_PIC as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_MSI_PIC),
+            x if x == ACPI_MADT_ENTRY_TYPE_BIO_PIC as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_BIO_PIC),
+            x if x == ACPI_MADT_ENTRY_TYPE_LPC_PIC as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_LPC_PIC),
+            x if x == ACPI_MADT_ENTRY_TYPE_RINTC as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_RINTC),
+            x if x == ACPI_MADT_ENTRY_TYPE_IMSIC as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_IMSIC),
+            x if x == ACPI_MADT_ENTRY_TYPE_APLIC as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_APLIC),
+            x if x == ACPI_MADT_ENTRY_TYPE_PLIC as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_PLIC),
+            x if x == ACPI_MADT_ENTRY_TYPE_RESERVED as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_RESERVED),
+            x if x == ACPI_MADT_ENTRY_TYPE_OEM as u8 =>
+                Ok(ACPI_MADT_ENTRY_TYPE_OEM),
+
+            _ => Err(()),
+        }
+    }
+}
+
 impl Display for uacpi_id_string {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // SAFETY: `self.contents` must be a valid NUL-terminated C string.
@@ -96,7 +168,11 @@ static ACPI_ALLOCS: Once<spin::Mutex<BTreeMap<usize, usize>>> = Once::new();
 
 #[no_mangle]
 #[allow(dead_code)]
-extern "C" fn uacpi_kernel_initialize(_uacpi_init_level: uacpi_init_level) -> uacpi_status {
+pub extern "C" fn uacpi_kernel_initialize(init_level: uacpi_init_level) -> uacpi_status {
+    if init_level == uacpi_init_level::UACPI_INIT_LEVEL_SUBSYSTEM_INITIALIZED {
+	interrupts::init_bsp_apic();
+    }
+
     uacpi_status::UACPI_STATUS_OK
 }
 

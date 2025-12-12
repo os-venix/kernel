@@ -1,20 +1,15 @@
 use alloc::format;
 use alloc::string::String;
 
-mod uacpi;
+pub mod uacpi;
 mod acpi_lock;
-mod tables;
+pub mod interrupts;
 pub mod resources;
 pub mod namespace;
 
 pub use uacpi::{uacpi_status, uacpi_interrupt_model, uacpi_namespace_node};
-pub use tables::ACPI;
 
 pub fn init(rdsp_addr: u64) {
-    tables::init(rdsp_addr);
-}
-
-pub fn init_aml(rdsp_addr: u64) {
     uacpi::init(rdsp_addr);
 }
 

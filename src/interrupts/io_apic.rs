@@ -1,13 +1,12 @@
 use spin::{Once, RwLock};
 use core::ptr::{read_volatile, write_volatile};
-use ::acpi::platform::interrupt::{TriggerMode, Polarity};
-use ::acpi::InterruptModel;
 use alloc::vec::Vec;
 use alloc::collections::btree_map::BTreeMap;
 
 use crate::interrupts::IRQ_BASE;
 use crate::memory;
 use crate::sys::acpi;
+use crate::sys::acpi::interrupts::{Polarity, TriggerMode};
 
 const IOAPICVER: u8 = 0x01;
 const IOAPIC_MAX_REDIRECITON_ENTRY_MASK: u32 = 0x00FF_0000;
@@ -78,18 +77,18 @@ impl IoApic {
 	    gsi <= self.global_system_interrupt_base + self.get_max_redirection_table_entries() as u32
     }
 
-    pub fn map_interrupt(&mut self, gsi: u32, dest_apic: u32, trigger_mode: TriggerMode, polarity: Polarity, vector: u8) {
+    pub fn map_interrupt(&mut self, gsi: u32, dest_apic: u32, trigger_mode: acpi::interrupts::TriggerMode, polarity: acpi::interrupts::Polarity, vector: u8) {
 	self.gsi_to_irq.entry(gsi).and_modify(|irq| *irq = vector).or_insert(vector);
 
 	let ioredtbl_hi = dest_apic << 24;
 	let ioredtbl_lo = IOAPIC_INTMASK_DISABLED | match trigger_mode {
 	    TriggerMode::Edge => IOAPIC_TRIGGER_EDGE,
 	    TriggerMode::Level => IOAPIC_TRIGGER_LEVEL,
-	    TriggerMode::SameAsBus => IOAPIC_TRIGGER_EDGE,
+	    TriggerMode::Conforming => IOAPIC_TRIGGER_EDGE,
 	} | match polarity {
 	    Polarity::ActiveHigh => IOAPIC_POLARITY_HIGH,
 	    Polarity::ActiveLow => IOAPIC_POLARITY_LOW,
-	    Polarity::SameAsBus => IOAPIC_POLARITY_HIGH,
+	    Polarity::Conforming => IOAPIC_POLARITY_HIGH,
 	} | IOAPIC_DESTINATION_PHYSICAL | IOAPIC_DELIVERY_FIXED | vector as u32;
 
 	let ioredtbl_idx = gsi - self.global_system_interrupt_base;
@@ -120,53 +119,42 @@ static IOAPICS: Once<RwLock<Vec<IoApic>>> = Once::new();
 static IRQ_TO_GSI: Once<RwLock<BTreeMap<u8, u32>>> = Once::new();
 
 pub fn init_io_apics(bsp_apic_id: u64) {
-    let acpi = acpi::ACPI.get().expect("Attempted to access ACPI tables before ACPI is initialised").read();
-    let platform_info = match acpi.platform_info() {
-	Ok(pi) => pi,
-	Err(e) => panic!("{:#?}", e),
-    };
-
-    let interrupt_model = match platform_info.interrupt_model {
-	InterruptModel::Unknown => panic!("ACPI reports no APIC presence. CPU not supported."),
-	InterruptModel::Apic(a) => a,
-	_ => panic!("Unrecognised interrupt model."),
-    };
+    let io_apic_data = acpi::interrupts::iterate_madt_ioapics().unwrap();
 
     let mut ioapics = IOAPICS.call_once(|| RwLock::new(Vec::<IoApic>::new())).write();
-    for io_apic in interrupt_model.io_apics.iter() {
-	log::info!("Found I/O APIC, ID=0x{:x}, GSI base=0x{:x}", io_apic.id, io_apic.global_system_interrupt_base);
-	ioapics.push(IoApic::new(io_apic.address, io_apic.global_system_interrupt_base));
+    for io_apic in io_apic_data.io_apics.iter() {
+	let gsi_base = io_apic.gsi_base;
+	log::info!("Found I/O APIC, ID=0x{:x}, GSI base=0x{:x}", io_apic.id, gsi_base);
+	ioapics.push(IoApic::new(io_apic.address, gsi_base));
     }
 
     let mut irq_to_gsi = IRQ_TO_GSI.call_once(|| RwLock::new(BTreeMap::<u8, u32>::new())).write();
-    let interrupt_source_overrides = interrupt_model.interrupt_source_overrides;
-    for over in interrupt_source_overrides.iter() {
-	irq_to_gsi.insert(over.isa_source, over.global_system_interrupt);
+    for over in io_apic_data.isos.iter() {
+	let gsi = over.gsi;
+	irq_to_gsi.insert(over.source, gsi);
 
-	ioapics.iter_mut().find(|apic| (*apic).contains_gsi(over.global_system_interrupt))
+	ioapics.iter_mut().find(|apic| (*apic).contains_gsi(over.gsi))
 	    .unwrap_or_else(|| panic!("Unable to find an I/O APIC for legacy IRQ {}/GSI {}",
-			over.isa_source,
-			over.global_system_interrupt))
+			over.source,
+			gsi))
 	    .map_interrupt(
-		over.global_system_interrupt,
+		gsi,
 		bsp_apic_id as u32,
-		over.trigger_mode,
-		over.polarity,
-		over.isa_source + IRQ_BASE);
+		over.trigger_mode().unwrap(),
+		over.polarity().unwrap(),
+		over.source + IRQ_BASE);
     }
 
     for legacy_irq in 0..=15 {
 	// If something is already mapped here, don't map anything
-	if interrupt_source_overrides
-	    .iter()
-	    .any(|over| over.isa_source == legacy_irq) {
+	if io_apic_data.isos.iter()
+	    .any(|over| over.source == legacy_irq) {
 		continue;
 	    }
 
 	// If this IRQ is already mapped, don't remap
-	if interrupt_source_overrides
-	    .iter()
-	    .any(|over| over.global_system_interrupt == legacy_irq as u32) {
+	if io_apic_data.isos.iter()
+	    .any(|over| over.gsi == legacy_irq as u32) {
 		continue;
 	    }
 
@@ -177,8 +165,8 @@ pub fn init_io_apics(bsp_apic_id: u64) {
 	    .map_interrupt(
 		legacy_irq as u32,
 		bsp_apic_id as u32,
-		TriggerMode::SameAsBus,
-		Polarity::SameAsBus,
+		TriggerMode::Conforming,
+		Polarity::Conforming,
 		legacy_irq + IRQ_BASE);
     }
 }

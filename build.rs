@@ -47,11 +47,14 @@ fn generate_bindings(out: &str, manifest_dir: &Path) {
 	.header(header.to_str().unwrap())
 	.clang_arg(format!("-I{}", include_dir.display()))
 	.allowlist_type("uacpi_.*")
+	.allowlist_type("acpi_.*")
 	.allowlist_function("uacpi_.*")
 	.allowlist_var("UACPI_.*")
 	.blocklist_function("uacpi_kernel_.*")
+	.derive_default(true)
 	.layout_tests(false)
 	.rustified_enum("uacpi_.*")
+	.rustified_enum("acpi_.*")
 	.generate()
 	.expect("Unable to generate bindings for uACPI");
 
