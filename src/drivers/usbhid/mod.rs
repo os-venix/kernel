@@ -2,15 +2,11 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::RwLock;
-use bytes::Bytes;
-use futures_util::future::BoxFuture;
 
 use crate::console;
 use crate::driver;
 use crate::drivers::usb::protocol as usb_protocol;
 use crate::drivers::usb::usbdevice;
-use crate::sys::syscall;
-use crate::sys::ioctl;
 
 mod protocol;
 
@@ -138,21 +134,6 @@ impl Keyboard {
 unsafe impl Send for Keyboard {}
 unsafe impl Sync for Keyboard {}
 
-impl driver::Device for Keyboard {
-    fn read(self: Arc<Self>, _offset: u64, _size: u64) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
-	unimplemented!();
-    }
-    fn write(&self, _buf: *const u8, _size: u64) -> Result<u64, ()> {
-	unimplemented!();
-    }
-    fn ioctl(self: Arc<Self>, _ioctl: ioctl::IoCtl, _buf: u64) -> Result<u64, ()> {
-	unimplemented!();
-    }
-    fn poll(self: Arc<Self>, _events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
-	unimplemented!();
-    }
-}
-
 pub fn init() {
     let usb_hid_driver = HidDriver {};
     driver::register_driver(Box::new(usb_hid_driver));
@@ -184,7 +165,6 @@ impl driver::Driver for HidDriver {
 		    let (_, keypresses) = protocol::parse_boot_buffer(buf.as_ref()).unwrap();
 		    dc.keypresses(keypresses);
 		}));
-		driver::register_device(device.clone());
 	    } else if usb_info.interface_descriptor.protocol == 2 {
 		log::info!("  Mouse");
 	    }

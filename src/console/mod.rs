@@ -1,8 +1,6 @@
 use crate::driver;
 use crate::memory;
 use alloc::sync::Arc;
-use core::ascii;
-use core::slice;
 use alloc::string::String;
 use spin::{Once, RwLock};
 use bytes::{Bytes, BytesMut, BufMut};
@@ -15,9 +13,12 @@ use futures_util::future::BoxFuture;
 use x86_64::VirtAddr;
 use core::task::Waker;
 use core::future::poll_fn;
+use futures_util::FutureExt;
+use spin::Mutex;
 
 use crate::sys::ioctl;
-use crate::sys::syscall;
+use crate::sys::syscall::{CanonicalError, PollEvents};
+use crate::vfs;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -46,6 +47,8 @@ pub struct ConsoleDevice {
     pub local_loopback: RwLock<bool>,
 
     read_waker: RwLock<Option<Waker>>,
+
+    fsi: Mutex<vfs::filesystem::FileSystemInstance>,
 }
 unsafe impl Send for ConsoleDevice { }
 unsafe impl Sync for ConsoleDevice { }
@@ -71,8 +74,42 @@ impl ConsoleDevice {
     }
 }
 
-impl driver::Device for ConsoleDevice {
-    fn read(self: Arc<Self>, _offset: u64, size: u64) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
+impl vfs::filesystem::VNode for ConsoleDevice {
+    fn inode(&self) -> u64 {
+	0
+    }
+    
+    fn kind(&self) -> vfs::filesystem::VNodeKind {
+	vfs::filesystem::VNodeKind::Directory
+    }
+	
+    fn stat(&self) -> Result<vfs::filesystem::Stat, CanonicalError> {
+	Err(CanonicalError::Inval)
+    }
+
+    fn open(self: Arc<Self>/*, flags: OpenFlags */) -> Result<Arc<dyn vfs::filesystem::FileHandle>, CanonicalError> {
+	Ok(self.clone())
+    }
+    
+    fn filesystem(&self) -> Arc<dyn vfs::filesystem::FileSystem> {
+	driver::get_devfs()
+    }
+
+    fn fsi(&self) -> vfs::filesystem::FileSystemInstance {
+	*self.fsi.lock()
+    }
+
+    fn parent(&self) -> Result<Arc<dyn vfs::filesystem::VNode>, CanonicalError> {
+	unimplemented!();
+    }
+
+    fn set_fsi(self: Arc<Self>, fsi: vfs::filesystem::FileSystemInstance) {
+	*(self.fsi.lock()) = fsi;
+    }
+}
+
+impl vfs::filesystem::FileHandle for ConsoleDevice {
+    fn read(self: Arc<Self>, len: u64) -> BoxFuture<'static, Result<bytes::Bytes, CanonicalError>> {
 	Box::pin(poll_fn(move |cx: &mut Context<'_>| {
 	    let mut key_buffer = self.key_buffer.write();
 	    let canonical = self.canonical.read();
@@ -82,7 +119,7 @@ impl driver::Device for ConsoleDevice {
 		if let Some(pos) = (*key_buffer).iter().position(|&b| b == b'\r') {
 		    // Include the newline character
 		    let line_len = pos + 1;
-		    let to_read = cmp::min(line_len, size as usize);
+		    let to_read = cmp::min(line_len, len as usize);
 
 		    (*key_buffer).split_to(to_read)
 		} else {
@@ -117,88 +154,41 @@ impl driver::Device for ConsoleDevice {
 	    Poll::Ready(Ok(return_buf.freeze()))
 	}))
     }
+    
+    fn write(self: Arc<Self>, buf: bytes::Bytes) -> BoxFuture<'static, Result<u64, CanonicalError>> {
+	async move {
+	    // TODO - this should handle ONLCR and doesn't.
+	    // At present, due to the way printk works, all \n implies \r, which isn't correct
+	    let printk = crate::PRINTK.get().expect("Unable to get printk");
+	    printk.write_str(str::from_utf8(&buf).map_err(|_| CanonicalError::Inval)?);
 
-    fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()> {
-	// TODO - this should handle ONLCR and doesn't. At present, due to the way printk works, all \n implies \r, which isn't correct
-	let s = unsafe {
-	    slice::from_raw_parts(buf as *const ascii::Char, size as usize).as_str()
-	};
-
-	let printk = crate::PRINTK.get().expect("Unable to get printk");
-	printk.write_str(s);
-
-	Ok(size)
+	    Ok(buf.len() as u64)
+	}.boxed()
     }
 
-    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()> {
-	match ioctl {
-	    ioctl::IoCtl::TCGETS => {
-		// For now, we'll stub this out
-		Ok(0)
-	    },
-	    ioctl::IoCtl::TCSETS => {
-		let termios = memory::copy_value_from_user::<Termios>(VirtAddr::new(buf)).unwrap();
-
-		// Input flags
-		let mut crnl = self.crnl.write();
-		let mut nlcr = self.nlcr.write();
-		*crnl = termios.iflag & 2 != 0;
-		*nlcr = termios.iflag & 0x20 != 0;
-
-		// Local flags
-		let mut canonical = self.canonical.write();
-		let mut local_loopback = self.local_loopback.write();
-		*canonical = termios.lflag & 0x10 != 0;
-		*local_loopback = termios.lflag & 0x01 != 0;
-
-		Err(())
-	    },
-	    ioctl::IoCtl::TIOCGWINSZ => {
-		let printk = crate::PRINTK.get().expect("Unable to get printk");
-
-		let read_buf = Bytes::copy_from_slice(&[
-		    printk.get_rows(),
-		    printk.get_cols(),
-		    0, 0]);
-		memory::copy_to_user(VirtAddr::new(buf), read_buf.as_ref()).unwrap();
-		Ok(0)
-	    },
-	    ioctl::IoCtl::TIOCGPGRP => {
-		let pgrp = self.pgrp.read();
-		Ok(*pgrp)
-	    },
-	    ioctl::IoCtl::TIOCSPGRP => {
-		let mut pgrp = self.pgrp.write();
-		*pgrp = memory::copy_value_from_user::<c_int>(VirtAddr::new(buf)).unwrap() as u64;
-
-		Ok(0)
-	    },
-	}
-    }
-
-    fn poll(self: Arc<Self>, events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
+    fn poll(self: Arc<Self>, events: PollEvents) -> BoxFuture<'static, Result<PollEvents, CanonicalError>> {
 	Box::pin(poll_fn(move |cx: &mut Context<'_>| {
-	    let mut revents = syscall::PollEvents::empty();
+	    let mut revents = PollEvents::empty();
 
 	    // We can always write
-	    if events.contains(syscall::PollEvents::Out) {
-                revents |= syscall::PollEvents::Out;
+	    if events.contains(PollEvents::Out) {
+                revents |= PollEvents::Out;
 	    }
 
-	    if events.contains(syscall::PollEvents::In) {
+	    if events.contains(PollEvents::In) {
 		let key_buffer = self.key_buffer.read();
 		let canonical = self.canonical.read();
 
 		if *canonical {
 		    // Check for a complete line (canonical mode)
 		    if let Some(_pos) = (*key_buffer).iter().position(|&b| b == b'\r') {
-			revents |= syscall::PollEvents::In;
+			revents |= PollEvents::In;
 		    }
 		} else {
 		    // TODO - this should handle VMIN, and doesn't yet - right now, VMIN is assumed as 1
 		    let l = (*key_buffer).len();
 		    if l > 0 {
-			revents |= syscall::PollEvents::In;
+			revents |= PollEvents::In;
 		    }
 		};
 		
@@ -209,8 +199,64 @@ impl driver::Device for ConsoleDevice {
 		}
 	    }
 
-	    Poll::Ready(revents)
+	    Poll::Ready(Ok(revents))
 	}))
+    }
+
+    fn stat(self: Arc<Self>) -> Result<vfs::filesystem::Stat, CanonicalError> {
+	unimplemented!()
+    }
+
+    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, arg: u64) -> BoxFuture<'static, Result<u64, CanonicalError>> {
+	async move {
+	    match ioctl {
+		ioctl::IoCtl::TCGETS => {
+		    // For now, we'll stub this out
+		    Ok(0)
+		},
+		ioctl::IoCtl::TCSETS => {
+		    let termios = memory::copy_value_from_user::<Termios>(VirtAddr::new(arg)).unwrap();
+
+		    // Input flags
+		    let mut crnl = self.crnl.write();
+		    let mut nlcr = self.nlcr.write();
+		    *crnl = termios.iflag & 2 != 0;
+		    *nlcr = termios.iflag & 0x20 != 0;
+
+		    // Local flags
+		    let mut canonical = self.canonical.write();
+		    let mut local_loopback = self.local_loopback.write();
+		    *canonical = termios.lflag & 0x10 != 0;
+		    *local_loopback = termios.lflag & 0x01 != 0;
+
+		    Ok(0)
+		},
+		ioctl::IoCtl::TIOCGWINSZ => {
+		    let printk = crate::PRINTK.get().expect("Unable to get printk");
+
+		    let read_buf = Bytes::copy_from_slice(&[
+			printk.get_rows(),
+			printk.get_cols(),
+			0, 0]);
+		    memory::copy_to_user(VirtAddr::new(arg), read_buf.as_ref()).unwrap();
+		    Ok(0)
+		},
+		ioctl::IoCtl::TIOCGPGRP => {
+		    let pgrp = self.pgrp.read();
+		    Ok(*pgrp)
+		},
+		ioctl::IoCtl::TIOCSPGRP => {
+		    let mut pgrp = self.pgrp.write();
+		    *pgrp = memory::copy_value_from_user::<c_int>(VirtAddr::new(arg)).unwrap() as u64;
+
+		    Ok(0)
+		},
+	    }
+	}.boxed()
+    }
+
+    fn seek(&self, _offset: vfs::filesystem::SeekFrom) -> Result<u64, CanonicalError> {
+	Err(CanonicalError::SPipe)
     }
 }
 
@@ -225,10 +271,10 @@ pub fn init() {
 	crnl: RwLock::new(false),
 	nlcr: RwLock::new(false),
 	read_waker: RwLock::new(None),
+	fsi: Mutex::new(vfs::filesystem::FileSystemInstance(0)),
     });
     CONSOLE.call_once(|| device.clone());
-    let devid = driver::register_device(device);
-    driver::register_devfs(String::from("console"), devid);
+    driver::register_devfs(String::from("console"), device);
 }
 
 pub fn register_keypress(k: char) {

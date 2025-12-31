@@ -4,10 +4,10 @@ use xmas_elf::{header, ElfFile, program::{SegmentData, Type}};
 use x86_64::VirtAddr;
 use alloc::vec;
 
-use crate::sys;
 use crate::memory;
 use crate::process;
 use crate::scheduler;
+use crate::vfs;
 
 pub struct Elf {
     pub entry: u64,
@@ -19,14 +19,15 @@ pub struct Elf {
 
 impl Elf {
     pub async fn new(file_name: String) -> Result<Elf> {
-	let stat = sys::vfs::stat(file_name.clone()).await?;
-	let file_contents = match sys::vfs::read(file_name.clone(), /* offset= */ 0, /* size= */ stat.size.unwrap()).await {
-	    Ok(f) => f,
-	    Err(_) => {
-		return Err(anyhow!("Could not load /init/init"));
-	    }
-	};
+	log::info!("a");
+	let fh = vfs::vfs_open(&file_name).await?;
+	log::info!("a");
+	let stat = fh.clone().stat()?;
 
+	log::info!("a");
+	let file_contents = fh.read(stat.size.unwrap()).await?;
+
+	log::info!("b");
 	let elf = match ElfFile::new(&file_contents[..]) {
 	    Ok(f) => f,
 	    Err(e) => {
@@ -34,10 +35,12 @@ impl Elf {
 	    },
 	};
 
+	log::info!("c");
 	if elf.header.pt2.entry_point() == 0 {
 	    panic!("Not an executable with an entry point");
 	}
 
+	log::info!("a");
 	let mut lowest_virt_addr: Option<u64> = None;
 	let mut highest_virt_addr: Option<u64> = None;
 	for program_header in elf.program_iter() {
@@ -56,6 +59,7 @@ impl Elf {
 		}
 	}
 
+	log::info!("a");
 	let virt_start_addr = {
 	    let process = scheduler::get_current_process();
 	    let mut task_type = process.task_type.write();
@@ -96,12 +100,14 @@ impl Elf {
 	    }
 	};
 
+	log::info!("a");
 	{
 	    let size_to_zero = highest_virt_addr.expect("No loadable sections were found") - lowest_virt_addr.expect("No loadable sections were found");
 	    let empty_buf = vec![0; size_to_zero as usize];
 	    memory::copy_to_user(virt_start_addr, empty_buf.as_slice())?;
 	}
 
+	log::info!("a");
 	for program_header in elf.program_iter() {
 	    // PT_LOAD is a loadable segment that needs to be in the address space.
 	    // All else can be skipped.
@@ -135,12 +141,14 @@ impl Elf {
 	    }
 	}
 
+	log::info!("a");
 	let entry = match elf.header.pt2.type_().as_type() {
 	    header::Type::Executable => elf.header.pt2.entry_point(),
 	    header::Type::SharedObject => virt_start_addr.as_u64() + elf.header.pt2.entry_point(),
 	    _ => unimplemented!(),
 	};
 
+	log::info!("a");
 	Ok(Elf {
 	    entry,
 	    base: virt_start_addr.as_u64(),

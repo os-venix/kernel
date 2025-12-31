@@ -13,7 +13,6 @@ use core::pin::Pin;
 use alloc::sync::Arc;
 use spin::Mutex;
 use num_enum::TryFromPrimitive;
-use spin::RwLock;
 use core::slice;
 use core::mem;
 use bitflags::bitflags;
@@ -23,9 +22,42 @@ use crate::gdt;
 use crate::scheduler;
 use crate::scheduler::signal;
 use crate::scheduler::elf_loader;
-use crate::sys::vfs;
+use crate::vfs;
 use crate::memory;
 use crate::process;
+use crate::vfs::filesystem::VNode;
+
+macro_rules! syscall_try {
+    ($expr:expr) => {
+        match $expr {
+            Ok(val) => val,
+            Err(err) => {
+                return SyscallResult {
+                    return_value: 0xFFFF_FFFF_FFFF_FFFF,
+                    err_num: err as u64,
+                };
+            }
+        }
+    };
+}
+
+macro_rules! syscall_success {
+    ($expr:expr) => {
+        return SyscallResult {
+            return_value: $expr,
+            err_num: CanonicalError::Ok as u64,
+        }
+    };
+}
+
+macro_rules! syscall_err {
+    ($expr:expr) => {
+        return SyscallResult {
+            return_value: 0xFFFF_FFFF_FFFF_FFFF,
+            err_num: $expr as u64,
+        }
+    };
+}
 
 #[repr(u64)]
 #[derive(Debug)]
@@ -38,7 +70,9 @@ pub enum CanonicalError {
     Again = 11,
     Access = 13,
     Fault = 14,
+    NotDir = 20,
     Inval = 22,
+    SPipe = 29,
     Range = 34,
 }
 
@@ -130,15 +164,15 @@ async fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
     // 	},
     // };
 
-    let mut w = actual_fd.file_description.write();
-    match w.write(kbuf, count) {
+    let w = actual_fd.file_handle;
+    match w.write(bytes::Bytes::from(kbuf)).await {
 	Ok(len) => SyscallResult {
 	    return_value: len,
 	    err_num: CanonicalError::Ok as u64,
 	},
-	Err(_) => SyscallResult {
+	Err(e) => SyscallResult {
 	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::Io as u64
+	    err_num: e as u64
 	},
     }
 }
@@ -156,14 +190,8 @@ async fn sys_read(fd: u64, buf: u64, count: u64) -> SyscallResult {
     // 	},
     // };
 
-    let mut w = actual_fd.file_description.write();
-    let read_buffer = match w.read(count).await {
-	Ok(b) => b,
-	Err(_) => return SyscallResult {
-	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::Io as u64
-	},
-    };
+    let w = actual_fd.file_handle;
+    let read_buffer = syscall_try!(w.read(count).await);
 
     match memory::copy_to_user(VirtAddr::new(buf), read_buffer.to_vec().as_slice()) {
 	Ok(()) => SyscallResult {
@@ -202,19 +230,11 @@ pub async fn sys_open(path_ptr: u64, flags: u64) -> SyscallResult {
 	unimplemented!();
     }
 
-    if vfs::stat(path.clone()).await.is_err() {
-	// File does not exist
-	return SyscallResult {
-	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::Access as u64
-	};
-    }
-
+    let fh = syscall_try!(vfs::vfs_open(&path).await);
     let fd = process::FileDescriptor {
 	flags,
-	file_description: Arc::new(RwLock::new(vfs::FileDescriptor::new(path))),
+	file_handle: fh,
     };
-
     let fd_num = process.emplace_fd(fd);
 
     SyscallResult {
@@ -254,17 +274,9 @@ async fn sys_ioctl(fd_num: u64, ioctl: u64, buf: u64) -> SyscallResult {
     // 	},
     // };
 
-    let r = actual_fd.file_description.read();
-    match r.ioctl(op, buf) {
-	Ok(ret) => SyscallResult {
-	    return_value: ret,
-	    err_num: CanonicalError::Ok as u64,
-	},
-	Err(_) => SyscallResult {
-	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::Io as u64
-	},
-    }
+    let r = actual_fd.file_handle;
+    let r = syscall_try!(r.ioctl(op, buf).await);
+    syscall_success!(r);
 }
 
 async fn sys_stat(filename: u64, _buf: u64) -> SyscallResult {
@@ -278,7 +290,8 @@ async fn sys_stat(filename: u64, _buf: u64) -> SyscallResult {
 	},
     };
 
-    match vfs::stat(path).await {
+    let fh = syscall_try!(vfs::vfs_open(&path).await);
+    match fh.stat() {
 	Ok(_ret) => SyscallResult {
 	    return_value: 0,
 	    err_num: CanonicalError::Ok as u64
@@ -293,17 +306,8 @@ async fn sys_stat(filename: u64, _buf: u64) -> SyscallResult {
 async fn sys_fstat(fd: u64, _buf: u64) -> SyscallResult {
     let process = scheduler::get_current_process();
     let actual_fd = process.get_file_descriptor(fd);
-    let file_description = actual_fd.file_description.read();
 
-    let path = match &*file_description {
-	vfs::FileDescriptor::File { file_name, .. } => file_name.clone(),
-	_ => return SyscallResult {
-	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::Inval as u64,
-	}
-    };
-
-    match vfs::stat(path).await {
+    match actual_fd.file_handle.stat() {
 	Ok(_ret) => SyscallResult {
 	    return_value: 0,
 	    err_num: CanonicalError::Ok as u64
@@ -422,25 +426,17 @@ async fn sys_seek(fd_num: u64, offset: u64, whence: u64) -> SyscallResult {
     // 	},
     // };
 
-    // Valid values are SEEK_SET, SEEK_CUR, or SEEK_END
-    if whence > 3 || whence == 0 {
-	return SyscallResult {
-	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::Inval as u64
-	};
-    }
+    let whence = match whence {
+	1 => vfs::filesystem::SeekFrom::Cur(offset as i64),
+	2 => vfs::filesystem::SeekFrom::End(offset as i64),
+	3 => vfs::filesystem::SeekFrom::Set(offset as i64),
 
-    let mut w = actual_fd.file_description.write();
-    match w.seek(offset, whence).await {
-	Ok(offs) => SyscallResult {
-	    return_value: offs,
-	    err_num: CanonicalError::Ok as u64,
-	},
-	Err(_) => SyscallResult {
-	    return_value: 0xFFFF_FFFF_FFFF_FFFF,
-	    err_num: CanonicalError::Inval as u64
-	},
-    }
+	_ => syscall_err!(CanonicalError::Inval),
+    };
+
+    let w = actual_fd.file_handle;
+    let offs = syscall_try!(w.seek(whence));
+    syscall_success!(offs);
 }
 
 async fn sys_poll(fds: u64, nfds: u64, _timeout: u64) -> SyscallResult {
@@ -480,9 +476,9 @@ async fn sys_poll(fds: u64, nfds: u64, _timeout: u64) -> SyscallResult {
 	// Actually poll
 	let process = scheduler::get_current_process();
 	let actual_fd = process.get_file_descriptor(fd);
-	let r = actual_fd.file_description.read();
+	let r = actual_fd.file_handle;
 
-	let revents = r.poll(fds_vec[0].events).await;
+	let revents = syscall_try!(r.poll(fds_vec[0].events).await);
 	fds_vec[0].revents = revents;
     }
 
@@ -575,15 +571,15 @@ async fn sys_mmap(start_val: u64, count: u64, r8: u64) -> SyscallResult {
 
 async fn sys_pipe(fds: u64, flags: u64) -> SyscallResult {
     let process = scheduler::get_current_process();
-    let file_description = Arc::new(RwLock::new(vfs::FileDescriptor::new_pipe()));
+    let file_description = Arc::new(vfs::fifo::Fifo::new());
 
     let fd1 = process::FileDescriptor {
 	flags,
-	file_description: file_description.clone(),
+	file_handle: syscall_try!(file_description.clone().open()),
     };
     let fd2 = process::FileDescriptor {
 	flags,
-	file_description: file_description.clone(),
+	file_handle: syscall_try!(file_description.clone().open()),
     };
 
     let fd1_number = process.clone().emplace_fd(fd1);
@@ -615,8 +611,8 @@ async fn sys_getcwd(buf: u64, _count: u64) -> SyscallResult {
     }
 }
 
-async fn sys_fork(start: u64) -> SyscallResult {
-    let pid = scheduler::fork_current_process(start);
+async fn sys_fork() -> SyscallResult {
+    let pid = scheduler::fork_current_process();
     SyscallResult {
 	return_value: pid,
 	err_num: CanonicalError::Ok as u64,
@@ -658,12 +654,20 @@ pub async fn sys_execve(path_ptr: u64, args_ptr: u64, envvars_ptr: u64) -> Sysca
 	envvar_ptr += 8;
     }
 
+    log::info!("y");
+
     let process = scheduler::get_current_process();
+    log::info!("y.1");
     process.clone().execve(args, envvars);
+    log::info!("y.2");
 
     let elf = elf_loader::Elf::new(path).await.expect("Failed to load ELF");
+    log::info!("y.3");
     let ld = elf_loader::Elf::new(String::from("/usr/lib/ld.so")).await.expect("Failed to load ld.so");
+    log::info!("y.4");
     process.clone().attach_loaded_elf(elf, ld);
+
+    log::info!("z");
 
     if let Err(_e) = process.clone().init_stack_and_start() {
 	return SyscallResult {
@@ -789,7 +793,7 @@ async fn sys_sigprocmask(how: u64, set: u64, oldset: u64) -> SyscallResult {
     }
 }
 
-fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u64, rcx: u64) -> Pin<Box<dyn Future<Output = SyscallResult> + Send + 'static>> {
+fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u64) -> Pin<Box<dyn Future<Output = SyscallResult> + Send + 'static>> {
     match rax {
 	0x00 => Box::pin(sys_write(rdi, rsi, rdx)),
 	0x01 => Box::pin(sys_read(rdi, rsi, rdx)),
@@ -808,7 +812,7 @@ fn do_syscall(rax: u64, rdi: u64, rsi: u64, rdx: u64, _r10: u64, r8: u64, _r9: u
 	0x10 => Box::pin(sys_sigaction(rdi, rsi, rdx)),
 	0x11 => Box::pin(sys_sigprocmask(rdi, rsi, rdx)),
 	0x20 => Box::pin(sys_getcwd(rdi, rsi)),
-	0x39 => Box::pin(sys_fork(rcx)),
+	0x39 => Box::pin(sys_fork()),
 	0x3b => Box::pin(sys_execve(rdi, rsi, rdx)),
 	0x3c => Box::pin(sys_getpid()),
 	0x3d => Box::pin(sys_getppid()),
@@ -841,8 +845,7 @@ unsafe extern "C" fn syscall_inner(stack_frame: process::GeneralPurposeRegisters
 	rdx,
 	stack_frame.r10,
 	stack_frame.r8,
-	stack_frame.r9,
-	stack_frame.rcx);
+	stack_frame.r9);
 
     process.set_state(process::TaskState::AsyncSyscall {
 	future: Arc::new(Mutex::new(fut)),

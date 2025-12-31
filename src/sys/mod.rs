@@ -2,8 +2,9 @@ use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
 
 pub mod acpi;
 pub mod block;
+
+#[macro_use]
 pub mod syscall;
-pub mod vfs;
 pub mod ioctl;
 
 // CPU init

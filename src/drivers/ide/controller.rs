@@ -14,11 +14,9 @@ use futures_util::future::BoxFuture;
 use alloc::boxed::Box;
 
 use crate::dma::arena;
-use crate::driver;
 use crate::memory;
 use crate::sys::block;
 use crate::sys::syscall;
-use crate::sys::ioctl;
 
 const IDE_CTL_REG: u16 = 0;
 const IDE_CTL_NIEN: u8 = 1 << 1;
@@ -280,7 +278,6 @@ impl IdeController {
 
 	    log::info!("Drive 0: {} - {} MiB", model, size / (1024 * 2));
 	    let device_arc = Arc::new(ide_drive);
-	    driver::register_device(device_arc.clone());
 	    block::register_block_device(device_arc);
 	}
 	if let Some(ide_drive) = IdeDrive::new(locked, 1) {
@@ -289,7 +286,6 @@ impl IdeController {
 	    log::info!("Drive 1: {} - {} MiB", model, size / (1024 * 2));
 
 	    let device_arc = Arc::new(ide_drive);
-	    driver::register_device(device_arc.clone());
 	    block::register_block_device(device_arc);
 	}
     }
@@ -319,7 +315,7 @@ struct IdeDrive {
 unsafe impl Send for IdeDrive { }
 unsafe impl Sync for IdeDrive { }
 
-impl driver::Device for IdeDrive {
+impl block::BlockDevice for IdeDrive {
     fn read(self: Arc<Self>, offset: u64, size: u64) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
 	if self.drive_type != DriveType::Ata {
 	    return Box::pin(async move { Err(syscall::CanonicalError::Io) });
@@ -330,18 +326,6 @@ impl driver::Device for IdeDrive {
 	    Mode::Pio => Box::pin(async move { self.clone().pio_read(offset, size).await }),
 	    _ => Box::pin(async move { self.clone().dma_read(offset, size).await }),
 	}
-    }
-
-    fn write(&self, _buf: *const u8, _size: u64) -> Result<u64, ()> {
-	panic!("Attempted to write to IDE drive. Not yet implemented");
-    }
-
-    fn ioctl(self: Arc<Self>, _ioctl: ioctl::IoCtl, _buf: u64) -> Result<u64, ()> {
-	panic!("Shouldn't have attempted to ioctl to the IDE drive. That makes no sense.");
-    }
-
-    fn poll(self: Arc<Self>, _events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
-	unimplemented!();
     }
 }
 
@@ -677,7 +661,7 @@ impl IdeDrive {
 
 	// Marshall into a Bytes
 	let data_from = unsafe {
-	    slice::from_raw_parts(buf_virt.as_ptr::<u8>(), size as usize)
+	    slice::from_raw_parts(buf_virt.as_ptr::<u8>(), (size * 512) as usize)
 	};
 	
 	Ok(bytes::Bytes::from(data_from))

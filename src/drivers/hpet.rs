@@ -1,17 +1,12 @@
 use crate::driver;
 use alloc::vec::Vec;
-use alloc::sync::Arc;
 use alloc::boxed::Box;
 use spin::{Once, RwLock};
 use core::ptr::{read_volatile, write_volatile};
-use bytes::Bytes;
-use futures_util::future::BoxFuture;
 
 use crate::sys::acpi::{namespace, resources};
 use crate::memory;
 use crate::interrupts;
-use crate::sys::syscall;
-use crate::sys::ioctl;
 
 const ENABLE_CNF: u64 = 0x01;
 
@@ -249,24 +244,6 @@ pub fn init() {
     driver::register_driver(Box::new(hpet_driver));
 }
 
-pub struct HpetDevice {}
-unsafe impl Send for HpetDevice { }
-unsafe impl Sync for HpetDevice { }
-impl driver::Device for HpetDevice {
-    fn read(self: Arc<Self>, _offset: u64, _size: u64) -> BoxFuture<'static, Result<Bytes, syscall::CanonicalError>> {
-	panic!("Shouldn't have attempted to read from the HPET. That makes no sense.");
-    }
-    fn write(&self, _buf: *const u8, _size: u64) -> Result<u64, ()> {
-	panic!("Shouldn't have attempted to write to the HPET. That makes no sense.");
-    }
-    fn ioctl(self: Arc<Self>, _ioctl: ioctl::IoCtl, _buf: u64) -> Result<u64, ()> {
-	panic!("Shouldn't have attempted to ioctl to the HPET. That makes no sense.");
-    }
-    fn poll(self: Arc<Self>, _events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
-	unimplemented!();
-    }
-}
-
 pub struct HpetDriver {}
 impl driver::Driver for HpetDriver {
     fn init(&self, info: &dyn driver::DeviceTypeIdentifier) {
@@ -287,9 +264,6 @@ impl driver::Driver for HpetDriver {
 		} => (address, length),
 		_ => panic!("This shouldn't happen"),
 	    }).nth(0).expect("No memory ranges returned for HPET");
-
-	let device = Arc::new(HpetDevice {});
-	driver::register_device(device);
 
 	HPET.call_once(|| RwLock::new(Hpet::new(*base_address, *range_length)));
 

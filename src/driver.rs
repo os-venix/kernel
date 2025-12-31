@@ -7,11 +7,12 @@ use alloc::sync::Arc;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use futures_util::future::BoxFuture;
+use futures_util::FutureExt;
 
 use crate::sys::acpi;
-use crate::sys::syscall;
-use crate::sys::vfs;
-use crate::sys::ioctl;
+use crate::sys::syscall::CanonicalError;
+use crate::vfs;
+use crate::sys::syscall::SyscallResult;
 
 pub trait Driver {
     fn init(&self, info: &dyn DeviceTypeIdentifier);
@@ -29,15 +30,46 @@ pub trait Bus {
     fn enumerate(&mut self) -> Vec<Box<dyn DeviceTypeIdentifier>>;
 }
 
-pub trait Device {
-    fn read(self: Arc<Self>, offset: u64, size: u64) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>>;
-    fn write(&self, buf: *const u8, size: u64) -> Result<u64, ()>;
-    fn ioctl(self: Arc<Self>, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()>;
-    fn poll(self: Arc<Self>, events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents>;
+struct DevFSRootVNode {
+    fs: Arc<DevFS>,
+    fsi: Mutex<vfs::filesystem::FileSystemInstance>,
+}
+impl vfs::filesystem::VNode for DevFSRootVNode {
+    fn inode(&self) -> u64 {
+	0
+    }
+    
+    fn kind(&self) -> vfs::filesystem::VNodeKind {
+	vfs::filesystem::VNodeKind::Directory
+    }
+	
+    fn stat(&self) -> Result<vfs::filesystem::Stat, CanonicalError> {
+	Err(CanonicalError::Inval)
+    }
+
+    fn open(self: Arc<Self>/*, flags: OpenFlags */) -> Result<Arc<dyn vfs::filesystem::FileHandle>, CanonicalError> {
+	unimplemented!();
+    }
+    
+    fn filesystem(&self) -> Arc<dyn vfs::filesystem::FileSystem> {
+	self.fs.clone()
+    }
+
+    fn fsi(&self) -> vfs::filesystem::FileSystemInstance {
+	*self.fsi.lock()
+    }
+
+    fn parent(&self) -> Result<Arc<dyn vfs::filesystem::VNode>, CanonicalError> {
+	unimplemented!();
+    }
+
+    fn set_fsi(self: Arc<Self>, fsi: vfs::filesystem::FileSystemInstance) {
+	*(self.fsi.lock()) = fsi;
+    }
 }
 
-struct DevFS {
-    file_table: RwLock<BTreeMap<String, u64>>,
+pub struct DevFS {
+    file_table: RwLock<BTreeMap<String, Arc<dyn vfs::filesystem::VNode>>>,
 }
 impl DevFS {
     pub fn new() -> DevFS {
@@ -46,152 +78,69 @@ impl DevFS {
 	}
     }
 
-    pub fn add_device(&self, dev_id: u64, mount: String) {
-	self.file_table.write().insert(mount, dev_id);
+    pub fn add_device(&self, vnode: Arc<dyn vfs::filesystem::VNode>, mount: String) {
+	self.file_table.write().insert(mount, vnode);
     }
 }
-impl vfs::FileSystem for DevFS {
-    fn read(self: Arc<Self>, path: String, offset: u64, len: u64) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>> {
-	// TODO: Set the values here after seeking is supported
-	let parts = path.split("/")
-	    .filter(|s| !s.is_empty())
-	    .collect::<Vec<&str>>();
-	if parts.len() != 1 {
-	    return Box::pin(async move {
-		Err(syscall::CanonicalError::Inval)
-	    });
-	}
-
-	let device_id = {
-	    match self.file_table.read().get(parts[0]) {
-		Some(id) => *id,
-		None => return Box::pin(async move {
-		    Err(syscall::CanonicalError::Access)
-		}),
-	    }
-	};
-
-	Box::pin(async move {
-	    {
-		let device_tbl = DEVICE_TABLE.get()
-		    .expect("Attempted to access device table before it is initialised").write();
-		let device = device_tbl.get(device_id as usize)
-		    .expect("Attempted to access device that does not exist");
-		device.clone().read(offset, len)
-	    }.await
+impl vfs::filesystem::FileSystem for DevFS {
+    fn root(self: Arc<Self>, fsi: vfs::filesystem::FileSystemInstance) -> Arc<dyn vfs::filesystem::VNode> {
+	Arc::new(DevFSRootVNode {
+	    fs: self.clone(),
+	    fsi: Mutex::new(fsi),
 	})
     }
-    fn write(&self, path: String, buf: *const u8, len: usize) -> Result<u64, ()> {
-	let parts = path.split("/")
-	    .filter(|s| !s.is_empty())
-	    .collect::<Vec<&str>>();
-	if parts.len() != 1 {
-	    return Err(());
-	}
 
-	let device_id = {
-	    match self.file_table.read().get(parts[0]) {
-		Some(id) => *id,
-		None => return Err(()),
+    fn lookup(self: Arc<Self>, fsi: vfs::filesystem::FileSystemInstance, _parent: &Arc<dyn vfs::filesystem::VNode>, name: &str) -> BoxFuture<'static, Result<Arc<dyn vfs::filesystem::VNode>, CanonicalError>> {
+	let device_vnode = {
+	    match self.file_table.read().get(name) {
+		Some(vnode) => vnode.clone(),
+		None => return async move {
+		    Err(CanonicalError::Access)
+		}.boxed(),
 	    }
 	};
 
-	let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
-	let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist");
+	device_vnode.clone().set_fsi(fsi);
 
-	device.write(buf, len as u64)
-    }
-    fn stat(self: Arc<Self>, path: String) -> BoxFuture<'static, Result<vfs::Stat, ()>> {
-	let parts = path.split("/")
-	    .filter(|s| !s.is_empty())
-	    .collect::<Vec<&str>>();
-	if parts.len() != 1 {
-	    return Box::pin(async move {
-		Err(())
-	    });
-	}
-
-	Box::pin(async move {
-	    Ok(vfs::Stat {
-		file_name: path,
-		size: None,
-	    })
-	})
-    }
-    fn ioctl(&self, path: String, ioctl: ioctl::IoCtl, buf: u64) -> Result<u64, ()> {
-	let parts = path.split("/")
-	    .filter(|s| !s.is_empty())
-	    .collect::<Vec<&str>>();
-	if parts.len() != 1 {
-	    return Err(());
-	}
-
-	let device_id = {
-	    match self.file_table.read().get(parts[0]) {
-		Some(id) => *id,
-		None => return Err(()),
-	    }
-	};
-
-	let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
-	let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist");
-
-	device.clone().ioctl(ioctl, buf)
-    }
-    fn poll(self: Arc<Self>, path: String, events: syscall::PollEvents) -> BoxFuture<'static, syscall::PollEvents> {
-	let parts = path.split("/")
-	    .filter(|s| !s.is_empty())
-	    .collect::<Vec<&str>>();
-	if parts.len() != 1 {
-	    panic!("Couldn't find");
-	}
-
-	let device_id = {
-	    match self.file_table.read().get(parts[0]) {
-		Some(id) => *id,
-		None => panic!("Couldn't find"),
-	    }
-	};
-
-	let device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
-	let device = device_tbl.get(device_id as usize).expect("Attempted to access device that does not exist");
-
-	device.clone().poll(events)
+	async move {
+	    Ok(device_vnode)
+	}.boxed()
     }
 }
 
 static DRIVER_TABLE: Once<RwLock<Vec<Box<dyn Driver + Send + Sync>>>> = Once::new();
-static DEVICE_TABLE: Once<RwLock<Vec<Arc<dyn Device + Send + Sync>>>> = Once::new();
 static BUS_TABLE: Once<RwLock<Vec<Arc<Mutex<dyn Bus + Send + Sync>>>>> = Once::new();
 static DEVFS: Once<Arc<DevFS>> = Once::new();
 
 pub fn init() {
     DRIVER_TABLE.call_once(|| RwLock::new(Vec::new()));
-    DEVICE_TABLE.call_once(|| RwLock::new(Vec::new()));
     BUS_TABLE.call_once(|| RwLock::new(Vec::new()));
 
     let devfs = Arc::new(DevFS::new());
     DEVFS.call_once(|| devfs.clone());
-    vfs::mount(String::from("/dev"), devfs);
+}
+
+pub async fn mount_devfs() -> SyscallResult {
+    let devfs = DEVFS.get().unwrap();
+    syscall_try!(vfs::mount("/dev", devfs.clone()).await);
+    syscall_success!(0)
 }
 
 pub fn configure_drivers() {
     acpi::namespace::enumerate().expect("Could not enumerate ACPI devices");
 }
 
-pub fn register_devfs(mount_point: String, dev_id: u64) {
-    DEVFS.get().expect("Attempted to access devfs table before it is initialised").add_device(dev_id, mount_point);
+pub fn register_devfs(mount_point: String, vnode: Arc<dyn vfs::filesystem::VNode>) {
+    DEVFS.get().expect("Attempted to access devfs table before it is initialised").add_device(vnode, mount_point);
+}
+
+pub fn get_devfs() -> Arc<DevFS> {
+    DEVFS.get().expect("Attempted to access devfs before it is initialised").clone()
 }
 
 pub fn register_driver(driver: Box<dyn Driver + Send + Sync>) {
     let mut driver_table = DRIVER_TABLE.get().expect("Driver table is not yet initialised").write();
     driver_table.push(driver);
-}
-
-pub fn register_device(device: Arc<dyn Device + Send + Sync>) -> u64 {
-    let mut device_tbl = DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
-    device_tbl.push(device);
-    (device_tbl.len() - 1) as u64
 }
 
 pub fn register_bus_and_enumerate(bus: Arc<Mutex<dyn Bus + Send + Sync>>) {

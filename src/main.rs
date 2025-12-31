@@ -7,6 +7,7 @@
 #![feature(alloc_layout_extra)]
 #![feature(local_waker)]
 #![feature(context_ext)]
+#![feature(ptr_metadata)]
 
 extern crate alloc;
 
@@ -16,6 +17,7 @@ use spin::Once;
 use alloc::vec;
 use alloc::vec::Vec;
 use alloc::ffi::CString;
+use alloc::boxed::Box;
 
 use limine::request::{
     EntryPointRequest,
@@ -34,7 +36,10 @@ mod interrupts;
 mod gdt;
 mod memory;
 mod allocator;
+
+#[macro_use]
 mod sys;
+
 mod drivers;
 mod driver;
 mod printk;
@@ -44,8 +49,10 @@ mod dma;
 mod utils;
 mod console;
 mod process;
+mod vfs;
 
 use crate::sys::syscall;
+use crate::utils::async_kcall;
 
 #[used]
 #[link_section = ".requests"]
@@ -156,8 +163,9 @@ fn init() {
     sys::acpi::init(rsdp_addr - direct_map_offset);
     interrupts::enable_interrupts();
 
+    vfs::init();
+
     scheduler::init();
-    sys::vfs::init();
     driver::init();
     console::init();
     sys::block::init();
@@ -171,9 +179,9 @@ fn init() {
 extern "C" fn kmain() -> ! {
     init();
 
-    if let Some(printk) = PRINTK.get() {
-	printk.clear();
-    }
+    // if let Some(printk) = PRINTK.get() {
+    // 	printk.clear();
+    // }
 
     scheduler::kthread_start(init_setup);
     scheduler::start();
@@ -182,6 +190,25 @@ extern "C" fn kmain() -> ! {
 // TODO - this will need to mount the rootfs, as that can no longer happen in the boot context due to async code
 // TODO - anywhere where a syscall will write to user memory, expectations now break; before, we were snooping memory from current PID. That doens't work any more.
 fn init_setup() -> ! {
+    let mount_devfs_fut = Box::pin(driver::mount_devfs());
+    let res = unsafe { async_kcall::do_kasync(mount_devfs_fut) };
+
+    if res.err_num != 0 {
+	log::info!("Couldn't mount devfs: {}", res.err_num);
+    }
+
+    // // TMP: start console
+    // unsafe {
+    // 	let console_cstring = CString::new("/dev/console").unwrap();
+	
+    // 	async_kcall::do_kasync(Box::pin(syscall::sys_open(
+    // 	    console_cstring.as_ptr() as u64, 0)));
+    // 	async_kcall::do_kasync(Box::pin(syscall::sys_open(
+    // 	    console_cstring.as_ptr() as u64, 0)));
+    // 	async_kcall::do_kasync(Box::pin(syscall::sys_open(
+    // 	    console_cstring.as_ptr() as u64, 0)));
+    // }
+
     // Run init
     let path_cstring = CString::new("/usr/bin/init").unwrap();
     let args_strs: Vec<&str> = vec![];

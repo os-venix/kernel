@@ -80,7 +80,7 @@ pub fn get_current_process() -> Arc<process::Process> {
     }
 }
 
-pub fn fork_current_process(rip: u64) -> u64 {
+pub fn fork_current_process() -> u64 {
     let pid = {
 	let mut next_pid = NEXT_PID.get().expect("Attempted to access next PID before it is initialised").lock();
 	let pid = *next_pid;
@@ -93,7 +93,7 @@ pub fn fork_current_process(rip: u64) -> u64 {
 	let mut process_tbl = PROCESS_TABLE.get().expect("Attempted to access process table before it is initialised").write();
 
 	let new_process = process::Process::from_existing(
-	    &process_tbl[&running_process.expect("No running process")], rip);
+	    &process_tbl[&running_process.expect("No running process")]);
 
 	process_tbl.insert(pid, Arc::new(new_process));
     };
@@ -136,7 +136,6 @@ fn get_futures_to_poll() -> BTreeMap<u64, Arc<Mutex<process::SyscallFuture>>> {
 
     for (pid, process) in process_tbl.iter_mut() {
 	match &mut process.get_state() {
-	    process::TaskState::Setup => {},
 	    process::TaskState::Running => {},
 	    process::TaskState::Waiting { future: _ } => {},
 	    process::TaskState::AsyncSyscall { future } => {

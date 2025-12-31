@@ -9,12 +9,13 @@ use bytes::Bytes;
 use alloc::boxed::Box;
 use core::mem::offset_of;
 use x86_64::structures::tss::TaskStateSegment;
+use futures_util::future::BoxFuture;
 
-use crate::driver;
 use crate::fs::fat;
 use crate::scheduler;
 use crate::process;
 use crate::gdt;
+use crate::syscall;
 
 #[repr(C, packed(1))]
 #[derive(Copy, Clone)]
@@ -82,11 +83,15 @@ pub struct GptDevice {
     mbr: Mbr,
     pth: PartitionTableHeader,
     pt: Vec<PartitionEntry>,
-    dev: Arc<dyn driver::Device + Send + Sync>,
+    dev: Arc<dyn BlockDevice + Send + Sync>,
+}
+
+pub trait BlockDevice {
+    fn read(self: Arc<Self>, offset: u64, size: u64) -> BoxFuture<'static, Result<bytes::Bytes, syscall::CanonicalError>>;
 }
 
 impl GptDevice {
-    async fn new(device: Arc<dyn driver::Device + Send + Sync>) -> Option<Arc<GptDevice>> {
+    async fn new(device: Arc<dyn BlockDevice + Send + Sync>) -> Option<Arc<GptDevice>> {
 	let (mbr, pth, partition_entries) = {
 	    let mbr_buf = match device.clone().read(0, 1).await {
 		Ok(a) => a,
@@ -187,7 +192,7 @@ unsafe impl Send for GptDevice { }
 unsafe impl Sync for GptDevice { }
 
 static BLOCK_DEVICE_TABLE: Once<RwLock<Vec<Arc<GptDevice>>>> = Once::new();
-static UNINITIALISED_BLOCK_DEVICE_TABLE: Once<RwLock<Vec<Arc<dyn driver::Device + Send + Sync>>>> = Once::new();
+static UNINITIALISED_BLOCK_DEVICE_TABLE: Once<RwLock<Vec<Arc<dyn BlockDevice + Send + Sync>>>> = Once::new();
 
 pub fn init() {
     BLOCK_DEVICE_TABLE.call_once(|| RwLock::new(Vec::new()));
@@ -196,7 +201,7 @@ pub fn init() {
     scheduler::kthread_start(kthread_init_block_devices);
 }
 
-pub fn register_block_device(dev: Arc<dyn driver::Device + Send + Sync>) {
+pub fn register_block_device(dev: Arc<dyn BlockDevice + Send + Sync>) {
     let mut device_tbl = UNINITIALISED_BLOCK_DEVICE_TABLE.get().expect("Attempted to access device table before it is initialised").write();
     device_tbl.push(dev);
 }

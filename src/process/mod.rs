@@ -11,7 +11,7 @@ use core::pin::Pin;
 use core::future::Future;
 
 use crate::memory;
-use crate::sys::vfs;
+use crate::vfs;
 use crate::sys::syscall;
 use crate::gdt;
 use crate::scheduler::elf_loader;
@@ -64,7 +64,6 @@ struct AuxVector {
 
 #[derive(Clone)]
 pub enum TaskState {
-    Setup,
     Running,
     AsyncSyscall {
 	future: Arc<Mutex<SyscallFuture>>,
@@ -81,7 +80,7 @@ pub enum TaskType {
 
 #[derive(Clone)]
 pub struct FileDescriptor {
-    pub file_description: Arc<RwLock<vfs::FileDescriptor>>,
+    pub file_handle: Arc<dyn vfs::filesystem::FileHandle>,
     pub flags: u64,
 }
 
@@ -161,7 +160,7 @@ impl Process {
 	*signals = BTreeMap::new();
     }
 
-    pub fn from_existing(old: &Self, rip: u64) -> Self {
+    pub fn from_existing(old: &Self) -> Self {
 	let signals = {
 	    let old_signals = old.signals.read();
 	    old_signals.clone()
@@ -170,11 +169,6 @@ impl Process {
 	let auxvs = {
 	    let old_auxvs = old.auxvs.read();
 	    old_auxvs.clone()
-	};
-
-	let (cs, ss) = {
-	    let old_context = old.context.read();
-	    (old_context.cs, old_context.ss)
 	};
 
 	let file_descriptors = {
@@ -474,7 +468,7 @@ impl Process {
 	if let Some(actual_fd) = file_descriptors.get(&fd) {
 	    actual_fd.clone()
 	} else {
-	    panic!("Could not find FD");
+	    panic!("Could not find FD {}", fd);
 	}
     }
 
